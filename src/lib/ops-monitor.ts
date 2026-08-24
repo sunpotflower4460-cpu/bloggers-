@@ -4,7 +4,6 @@ import { join, resolve } from "node:path";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
 import { platformAdapter } from "./platforms";
-import type { Blog } from "./types";
 
 type DB = InstanceType<typeof Database>;
 type Severity = "warning" | "critical";
@@ -107,8 +106,12 @@ function checkDue(key: string, intervalHours: number): boolean {
   return !row || hoursSince(row.checked_at) >= intervalHours;
 }
 
+function backupDir(): string {
+  return resolve(process.env.BACKUP_DIR || "./backups");
+}
+
 function latestBackup(): { ageHours: number; name: string } | null {
-  const dir = resolve(process.env.BACKUP_DIR || "./backups");
+  const dir = backupDir();
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir)
     .filter((name) => /^blog-garden-\d{8}-\d{6}Z\.sqlite$/.test(name))
@@ -117,6 +120,14 @@ function latestBackup(): { ageHours: number; name: string } | null {
     .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
   if (!files.length) return null;
   return { ageHours: Math.max(0, (Date.now() - files[0].stat.mtimeMs) / 3600000), name: files[0].name };
+}
+
+function offsiteMarker(): { ageHours: number } | null {
+  const marker = join(backupDir(), ".offsite-last-success");
+  if (!existsSync(marker)) return null;
+  const stat = statSync(marker);
+  if (!stat.isFile()) return null;
+  return { ageHours: Math.max(0, (Date.now() - stat.mtimeMs) / 3600000) };
 }
 
 function consecutiveErrors(blogId: string, kind: string): { failed: boolean; detail: string } {
@@ -175,6 +186,28 @@ async function collectSignals(): Promise<{ signals: Map<string, Signal>; evaluat
         scope: "system",
         severity: backup.ageHours > 72 ? "critical" : "warning",
         detail: `最新バックアップ ${backup.name} が${backup.ageHours.toFixed(1)}時間前です`,
+      });
+    }
+  }
+
+  if (process.env.RESTIC_REPOSITORY?.trim()) {
+    const offsiteKey = keyOf("offsite-backup-stale", "system");
+    evaluated.add(offsiteKey);
+    const marker = offsiteMarker();
+    const gardenAge = blogs.length ? Math.max(...blogs.map((blog) => hoursSince(blog.createdAt))) : 0;
+    if (!marker && gardenAge > 36) {
+      addSignal(signals, {
+        code: "offsite-backup-stale",
+        scope: "system",
+        severity: gardenAge > 72 ? "critical" : "warning",
+        detail: "RESTIC_REPOSITORYは設定済みですが、成功したoffsite backup markerがありません",
+      });
+    } else if (marker && marker.ageHours > 36) {
+      addSignal(signals, {
+        code: "offsite-backup-stale",
+        scope: "system",
+        severity: marker.ageHours > 72 ? "critical" : "warning",
+        detail: `offsite backupの最終成功が${marker.ageHours.toFixed(1)}時間前です`,
       });
     }
   }
