@@ -44,5 +44,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  monitor:
+    build: .
+    env_file: .env
+    environment:
+      BACKUP_DIR: /backups
+      MONITOR_INTERVAL_SECONDS: ${MONITOR_INTERVAL_SECONDS:-3600}
+    command: ["sh", "-lc", "while true; do ./node_modules/.bin/tsx src/cli/monitor.ts; sleep \"$${MONITOR_INTERVAL_SECONDS}\"; done"]
+    volumes:
+      - blog_data:/app/data
+      - ${BLOG_GARDEN_BACKUP_DIR:-./backups}:/backups:ro
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   blog_data:
