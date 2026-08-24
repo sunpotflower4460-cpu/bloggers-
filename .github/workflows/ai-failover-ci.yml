@@ -1,0 +1,20 @@
+name: ai-failover-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/autonomous-blog-garden
+
+jobs:
+  ai-failover-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: Smoke test bounded provider/model failover
+        run: ./node_modules/.bin/tsx scripts/ci/ai-failover-smoke.ts
