@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { pingExternalHeartbeat } from "../lib/external-heartbeat";
 
 function positiveInt(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
@@ -54,11 +55,20 @@ for (const name of readdirSync(backupDir)) {
   }
 }
 
+// Only a fully-created and integrity-verified backup earns a success heartbeat.
+// If the external monitor itself is unavailable, the backup remains successful;
+// the dead-man service will observe the missing ping independently.
+const external = await pingExternalHeartbeat("backup");
+if (external.configured && !external.delivered) {
+  console.error(`[backup] external dead-man heartbeat delivery failed: ${external.detail || "unknown error"}`);
+}
+
 console.log(JSON.stringify({
   ok: true,
   backup: basename(output),
   database: basename(databasePath),
   retentionDays,
   pruned,
+  externalHeartbeat: { configured: external.configured, delivered: external.delivered },
   createdAt: new Date().toISOString(),
 }));
