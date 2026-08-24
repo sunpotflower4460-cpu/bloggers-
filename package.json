@@ -1,0 +1,11 @@
+{
+  "name": "gpt-guardrail-template",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "status": "node scripts/guard/status.mjs",
+    "guard": "node scripts/guard/index.mjs",
+    "guard:selftest": "node scripts/guard/selftest.mjs"
+  }
+}

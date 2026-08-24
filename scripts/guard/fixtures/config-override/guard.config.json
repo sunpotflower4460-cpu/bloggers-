@@ -1,0 +1,4 @@
+{
+  "sourceRoot": "app",
+  "entranceDirs": ["routes"]
+}

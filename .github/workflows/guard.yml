@@ -1,0 +1,21 @@
+name: guard
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # phase-not-bundled / no-new-deps は git diff で base コミットと比較するため、
+          # 浅いクローンだと比較対象が解決できずスキップされてしまう。
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm run guard
+      - run: npm run guard:selftest
