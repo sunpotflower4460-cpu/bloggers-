@@ -5,7 +5,7 @@ import { platformAdapter } from "../platforms";
 
 async function collectBatch(blog: Blog, credentials: unknown, publications: Publication[], date: string): Promise<number> {
   const adapter = platformAdapter(blog.platform);
-  const outcomes = await Promise.all(publications.map(async (publication) => {
+  const outcomes: number[] = await Promise.all(publications.map(async (publication): Promise<number> => {
     try {
       const reaction = await adapter.collectReactions!(blog, credentials, publication);
       upsertReaction(publication.id, date, Math.max(0, reaction.comments));
