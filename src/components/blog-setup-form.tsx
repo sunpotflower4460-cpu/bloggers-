@@ -39,6 +39,7 @@ function CredentialFields({ platform }: { platform: BlogPlatform }) {
 export function BlogSetupForm() {
   const [platform, setPlatform] = useState<BlogPlatform>("wordpress");
   const [test, setTest] = useState<TestState>({ kind: "idle" });
+  const [searchTest, setSearchTest] = useState<TestState>({ kind: "idle" });
   const formRef = useRef<HTMLFormElement>(null);
 
   async function testConnection() {
@@ -55,8 +56,21 @@ export function BlogSetupForm() {
     }
   }
 
+  async function testSearch() {
+    if (!formRef.current) return;
+    setSearchTest({ kind: "testing", message: "Search Consoleを確認しています…" });
+    try {
+      const response = await fetch("/api/search-console/test", { method: "POST", body: new FormData(formRef.current) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Search Consoleを確認できませんでした");
+      setSearchTest({ kind: "ok", message: payload.detail ? `${payload.label} — ${payload.detail}` : payload.label });
+    } catch (error) {
+      setSearchTest({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   return (
-    <form ref={formRef} className="setupForm" action="/api/blogs" method="post" onChange={() => test.kind !== "idle" && setTest({ kind: "idle" })}>
+    <form ref={formRef} className="setupForm" action="/api/blogs" method="post" onChange={() => { if (test.kind !== "idle") setTest({ kind: "idle" }); if (searchTest.kind !== "idle") setSearchTest({ kind: "idle" }); }}>
       <label>ブログ名<input name="name" required placeholder="例: 暮らしの小さな研究所" /></label>
       <label>テーマ / 誰に何を届けるか<textarea name="niche" required placeholder="例: 忙しい人向けに、生活を軽くするAI活用を実体験ベースで紹介" /></label>
       <div className="two">
@@ -77,6 +91,10 @@ export function BlogSetupForm() {
 
       <label>GA4 Property ID<input name="ga4PropertyId" inputMode="numeric" placeholder="123456789" /><small>任意。設定すると実PV・セッション・エンゲージメントを次の記事判断へ戻します。</small></label>
       <label>Search Console Property<input name="searchConsoleSiteUrl" placeholder="https://example.com/ または sc-domain:example.com" /><small>任意。Search Consoleに表示されているproperty名をそのまま入力します。`GOOGLE_SERVICE_ACCOUNT_JSON` のservice accountメールをそのpropertyのユーザーとして追加すると、検索語・表示回数・CTR・平均順位を学習できます。</small></label>
+      <div className="connectionRow">
+        <button className="button secondary" type="button" onClick={testSearch} disabled={searchTest.kind === "testing"}>{searchTest.kind === "testing" ? "確認中…" : "Search Console接続テスト"}</button>
+        {searchTest.message ? <p className={`connectionMessage ${searchTest.kind}`}>{searchTest.message}</p> : <p className="connectionMessage">任意。入力したpropertyをservice accountで読み取れるか確認します。</p>}
+      </div>
       <button className="button large" type="submit">このブログを植える</button>
     </form>
   );
