@@ -1,5 +1,5 @@
 import { recordAiUsage, reserveAiCall } from "./ai-budget";
-import { isRetryableAiStatus, recordAiProviderAttempt, resolveAiRoutes, type AiRoute } from "./ai-routing";
+import { isRetryableAiStatus, recordAiProviderAttempt, resolveAiRoutePlan, type AiRoute } from "./ai-routing";
 
 function extractText(payload: any): string {
   if (typeof payload.output_text === "string") return payload.output_text;
@@ -68,7 +68,7 @@ function requestBody(route: AiRoute, system: string, user: string): Record<strin
 
 async function callRoute(route: AiRoute, system: string, user: string): Promise<any> {
   // Every actual outbound request consumes one slot from the shared daily budget.
-  // A failover therefore cannot bypass or reset the primary provider's ceiling.
+  // A failover or circuit-bypassed request therefore cannot reset the ceiling.
   reserveAiCall(`${route.label}:${route.model}`);
 
   let response: Response;
@@ -141,21 +141,29 @@ async function callRoute(route: AiRoute, system: string, user: string): Promise<
 }
 
 export async function aiJson<T>(system: string, user: string): Promise<T> {
-  const routes = resolveAiRoutes();
-  const primary = routes[0];
-  const fallback = routes[1];
-
+  const plan = resolveAiRoutePlan();
   let payload: any;
-  try {
-    payload = await callRoute(primary, system, user);
-  } catch (error) {
-    if (!(error instanceof AiRouteFailure) || !error.retryable || !fallback) throw error;
+
+  if (plan.bypassedPrimary) {
+    if (!plan.fallback) throw new Error("AI primary circuit is open but no fallback route is available");
     try {
-      payload = await callRoute(fallback, system, user);
-    } catch (fallbackError) {
-      const primaryDetail = safeProviderError(error.message);
-      const fallbackDetail = safeProviderError(fallbackError instanceof Error ? fallbackError.message : fallbackError);
-      throw new Error(`AI primary route unavailable and bounded fallback failed. primary=${primaryDetail}; fallback=${fallbackDetail}`);
+      payload = await callRoute(plan.fallback, system, user);
+    } catch (error) {
+      throw new Error(`AI primary circuit is open and fallback failed: ${safeProviderError(error instanceof Error ? error.message : error)}`);
+    }
+  } else {
+    if (!plan.primary) throw new Error("AI primary route is unavailable");
+    try {
+      payload = await callRoute(plan.primary, system, user);
+    } catch (error) {
+      if (!(error instanceof AiRouteFailure) || !error.retryable || !plan.fallback) throw error;
+      try {
+        payload = await callRoute(plan.fallback, system, user);
+      } catch (fallbackError) {
+        const primaryDetail = safeProviderError(error.message);
+        const fallbackDetail = safeProviderError(fallbackError instanceof Error ? fallbackError.message : fallbackError);
+        throw new Error(`AI primary route unavailable and bounded fallback failed. primary=${primaryDetail}; fallback=${fallbackDetail}`);
+      }
     }
   }
 
