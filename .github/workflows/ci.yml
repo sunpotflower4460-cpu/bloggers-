@@ -46,11 +46,64 @@ jobs:
             process.exit(1);
           }
           NODE
-      - name: Validate Docker Compose production configuration
+      - name: Smoke test incident dedupe and recovery webhook
+        shell: bash
+        run: |
+          mkdir -p .ci/monitor-backups
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups npm run monitor >/dev/null
+          node <<'NODE'
+          const fs = require('fs');
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/monitor.sqlite');
+          const created = new Date(Date.now() - 4 * 86400000).toISOString();
+          db.prepare(`INSERT INTO blogs
+            (id,name,niche,platform,site_url,keywords_json,feeds_json,credentials_cipher,publish_mode,cadence_hours,daily_limit,language,timezone,active,last_run_at,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+              'ci-blog','CI Blog','test','wordpress','https://example.invalid','[]','[]','unused','auto',24,1,'ja','Asia/Tokyo',1,null,created
+            );
+          db.prepare(`INSERT INTO system_heartbeats (name,last_seen,meta_json) VALUES ('worker',datetime('now','-5 hour'),'{}')`).run();
+          db.prepare(`INSERT INTO monitor_checks (check_key,checked_at) VALUES ('platform-auth:ci-blog',datetime('now'))`).run();
+          db.close();
+          fs.writeFileSync('.ci/monitor-backups/blog-garden-20260825-000000Z.sqlite', 'verified-placeholder');
+          NODE
+          node <<'NODE' &
+          const http = require('http');
+          const fs = require('fs');
+          const server = http.createServer((req, res) => {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+              fs.appendFileSync('.ci/webhook.log', body + '\n');
+              res.writeHead(200, {'content-type':'text/plain'});
+              res.end('ok');
+            });
+          });
+          server.listen(48765, '127.0.0.1');
+          NODE
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
+          grep -q 'worker-stale' .ci/webhook.log
+          FIRST_COUNT="$(wc -l < .ci/webhook.log)"
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
+          test "$(wc -l < .ci/webhook.log)" -eq "$FIRST_COUNT"
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/monitor.sqlite');
+          db.prepare(`UPDATE system_heartbeats SET last_seen=datetime('now') WHERE name='worker'`).run();
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
+          test "$(wc -l < .ci/webhook.log)" -eq "$((FIRST_COUNT + 1))"
+          tail -n 1 .ci/webhook.log | grep -q 'recovery'
+      - name: Validate Docker Compose production and offsite configurations
         shell: bash
         run: |
           cp .env.example .env
           docker compose -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.offsite.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.offsite.yml config >/dev/null
           rm .env
       - run: npm run build
         env:
