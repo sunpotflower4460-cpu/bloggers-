@@ -6,6 +6,10 @@ import type { Blog, BlogPlatform, DashboardBlog, Publication, PublishMode, Sourc
 
 type DB = InstanceType<typeof Database>;
 
+type UpdateBlogInput = Pick<Blog, "name" | "niche" | "siteUrl" | "keywords" | "feeds" | "publishMode" | "cadenceHours" | "dailyLimit" | "ga4PropertyId"> & {
+  credentialsCipher?: string;
+};
+
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
 
@@ -127,6 +131,27 @@ export function createBlog(input: Omit<Blog, "id" | "lastRunAt" | "createdAt">):
   return getBlog(id)!;
 }
 
+export function updateBlog(blogId: string, input: UpdateBlogInput): Blog | null {
+  const current = getBlog(blogId);
+  if (!current) return null;
+  db.prepare(`UPDATE blogs SET
+    name=?, niche=?, site_url=?, keywords_json=?, feeds_json=?, credentials_cipher=?, publish_mode=?,
+    cadence_hours=?, daily_limit=?, ga4_property_id=? WHERE id=?`).run(
+      input.name,
+      input.niche,
+      input.siteUrl,
+      JSON.stringify(input.keywords),
+      JSON.stringify(input.feeds),
+      input.credentialsCipher ?? current.credentialsCipher,
+      input.publishMode,
+      input.cadenceHours,
+      input.dailyLimit,
+      input.ga4PropertyId,
+      blogId,
+    );
+  return getBlog(blogId);
+}
+
 export function setBlogActive(blogId: string, active: boolean): Blog | null {
   db.prepare("UPDATE blogs SET active = ? WHERE id = ?").run(active ? 1 : 0, blogId);
   return getBlog(blogId);
@@ -164,11 +189,7 @@ export function recordPublication(input: Omit<Publication, "id" | "createdAt">):
       input.blogId, input.platformPostId, input.title, input.url, input.status,
       JSON.stringify(input.sourceUrls), input.publishedAt, now,
     );
-  return {
-    ...input,
-    id: Number(info.lastInsertRowid),
-    createdAt: now,
-  };
+  return { ...input, id: Number(info.lastInsertRowid), createdAt: now };
 }
 
 export function recentPublications(blogId: string, limit = 50): Publication[] {
@@ -196,17 +217,22 @@ export function upsertMetric(publicationId: number, date: string, views: number,
 
 export function performanceContext(blogId: string): string {
   const rows = db.prepare(`SELECT p.title,
-    COALESCE(SUM(m.views),0) views,
-    COALESCE(SUM(m.sessions),0) sessions,
-    COALESCE(SUM(m.engaged_sessions),0) engaged
+    COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.views ELSE 0 END),0) views7,
+    COALESCE(SUM(CASE WHEN m.snapshot_date BETWEEN date('now','-13 day') AND date('now','-7 day') THEN m.views ELSE 0 END),0) prev7,
+    COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-29 day') THEN m.sessions ELSE 0 END),0) sessions30,
+    COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-29 day') THEN m.engaged_sessions ELSE 0 END),0) engaged30
     FROM publications p
-    LEFT JOIN metric_snapshots m ON m.publication_id=p.id AND m.snapshot_date >= date('now','-30 day')
+    LEFT JOIN metric_snapshots m ON m.publication_id=p.id AND m.snapshot_date >= date('now','-29 day')
     WHERE p.blog_id=?
     GROUP BY p.id
-    ORDER BY views DESC
-    LIMIT 8`).all(blogId) as Array<{title:string;views:number;sessions:number;engaged:number}>;
+    ORDER BY views7 DESC
+    LIMIT 8`).all(blogId) as Array<{title:string;views7:number;prev7:number;sessions30:number;engaged30:number}>;
   if (!rows.length) return "まだ十分な実績データはない。初期探索を優先する。";
-  return rows.map((r, i) => `${i + 1}. ${r.title} / views=${r.views} sessions=${r.sessions} engaged=${r.engaged}`).join("\n");
+  return rows.map((r, i) => {
+    const momentum = r.prev7 > 0 ? Math.round(((r.views7 - r.prev7) / r.prev7) * 100) : null;
+    const engagement = r.sessions30 > 0 ? Math.round((r.engaged30 / r.sessions30) * 100) : null;
+    return `${i + 1}. ${r.title} / views7=${r.views7} / previous7=${r.prev7} / momentum=${momentum === null ? "new" : `${momentum}%`} / engagement30=${engagement === null ? "n/a" : `${engagement}%`}`;
+  }).join("\n");
 }
 
 export function recordRun(blogId: string | null, kind: string, status: string, message: string, meta: unknown, startedAt: string): void {
@@ -215,21 +241,32 @@ export function recordRun(blogId: string | null, kind: string, status: string, m
 }
 
 export function dashboard(): DashboardBlog[] {
-  const blogs = listBlogs();
-  return blogs.map((blog) => {
+  return listBlogs().map((blog) => {
     const latest = db.prepare("SELECT title,url,published_at FROM publications WHERE blog_id=? ORDER BY created_at DESC LIMIT 1").get(blog.id) as any;
-    const metrics = db.prepare(`SELECT COALESCE(SUM(m.views),0) views, COALESCE(SUM(m.sessions),0) sessions
+    const metrics = db.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.views ELSE 0 END),0) views7,
+      COALESCE(SUM(CASE WHEN m.snapshot_date BETWEEN date('now','-13 day') AND date('now','-7 day') THEN m.views ELSE 0 END),0) prev7,
+      COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.sessions ELSE 0 END),0) sessions7,
+      COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.engaged_sessions ELSE 0 END),0) engaged7
       FROM metric_snapshots m JOIN publications p ON p.id=m.publication_id
-      WHERE p.blog_id=? AND m.snapshot_date >= date('now','-7 day')`).get(blog.id) as any;
+      WHERE p.blog_id=? AND m.snapshot_date >= date('now','-13 day')`).get(blog.id) as any;
     const runs = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) failed
       FROM run_logs WHERE blog_id=? AND started_at >= datetime('now','-7 day')`).get(blog.id) as any;
+    const views7d = Number(metrics?.views7 ?? 0);
+    const viewsPrev7d = Number(metrics?.prev7 ?? 0);
+    const sessions7d = Number(metrics?.sessions7 ?? 0);
+    const engagedSessions7d = Number(metrics?.engaged7 ?? 0);
     return {
       ...blog,
       latestTitle: latest?.title ?? null,
       latestUrl: latest?.url ?? null,
       latestPublishedAt: latest?.published_at ?? null,
-      views7d: Number(metrics?.views ?? 0),
-      sessions7d: Number(metrics?.sessions ?? 0),
+      views7d,
+      viewsPrev7d,
+      sessions7d,
+      engagedSessions7d,
+      momentumPercent: viewsPrev7d > 0 ? Math.round(((views7d - viewsPrev7d) / viewsPrev7d) * 100) : null,
+      engagementRate: sessions7d > 0 ? Math.round((engagedSessions7d / sessions7d) * 100) : null,
       recentRuns: Number(runs?.n ?? 0),
       failedRuns: Number(runs?.failed ?? 0),
     };
