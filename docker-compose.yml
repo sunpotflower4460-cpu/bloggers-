@@ -25,5 +25,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  backup:
+    build: .
+    env_file: .env
+    environment:
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    command: ["sh", "-lc", "while true; do ./node_modules/.bin/tsx src/cli/backup.ts; sleep \"$${BACKUP_INTERVAL_SECONDS}\"; done"]
+    volumes:
+      - blog_data:/app/data
+      - ${BLOG_GARDEN_BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   blog_data:
