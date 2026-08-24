@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "daily": "tsx src/cli/daily.ts",
     "backup": "tsx src/cli/backup.ts",
+    "restore": "tsx src/cli/restore.ts",
     "status": "node scripts/guard/status.mjs",
     "guard": "node scripts/guard/index.mjs",
     "guard:selftest": "node scripts/guard/selftest.mjs"
