@@ -10,6 +10,11 @@ function date(value: string | null) {
   return new Intl.DateTimeFormat("ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
 }
 
+function momentum(value: number | null) {
+  if (value === null) return "new";
+  return `${value > 0 ? "+" : ""}${value}%`;
+}
+
 export default function Home() {
   const blogs = dashboard();
   const active = blogs.filter((b) => b.active).length;
@@ -41,11 +46,17 @@ export default function Home() {
             <article className="blogCard" key={blog.id}>
               <div className="cardTop"><div><span className={`dot ${blog.active ? "on" : ""}`} />{blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
               <h3>{blog.name}</h3><p className="muted">{blog.niche}</p>
-              <div className="miniStats"><div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div><div><span>runs</span><strong>{blog.recentRuns}</strong></div><div><span>errors</span><strong>{blog.failedRuns}</strong></div></div>
+              <div className="miniStats four">
+                <div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div>
+                <div><span>前週比</span><strong>{momentum(blog.momentumPercent)}</strong></div>
+                <div><span>engaged</span><strong>{blog.engagementRate === null ? "—" : `${blog.engagementRate}%`}</strong></div>
+                <div><span>errors</span><strong>{blog.failedRuns}</strong></div>
+              </div>
               <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
               <div className="cardFoot">
-                <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h cadence</span>
+                <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs</span>
                 <div className="actions">
+                  <Link className="button secondary" href={`/blogs/${blog.id}/settings`}>設定</Link>
                   <BlogToggleButton blogId={blog.id} active={blog.active} />
                   <RunButton blogId={blog.id} />
                 </div>
