@@ -8,6 +8,15 @@ function csv(value: FormDataEntryValue | null): string[] {
   return String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
 
+function searchConsoleSiteFrom(value: FormDataEntryValue | null): string | null {
+  const site = String(value || "").trim();
+  if (!site) return null;
+  if (site.startsWith("sc-domain:") && site.length > "sc-domain:".length) return site;
+  const url = new URL(site);
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Search Console property が正しくありません");
+  return site;
+}
+
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const current = getBlog(id);
@@ -29,6 +38,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     catch (error) { return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 }); }
   }
 
+  let searchConsoleSiteUrl: string | null;
+  try { searchConsoleSiteUrl = searchConsoleSiteFrom(form.get("searchConsoleSiteUrl")); }
+  catch (error) { return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 }); }
+
   const updated = updateBlog(id, {
     name,
     niche,
@@ -40,6 +53,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     cadenceHours: Math.max(1, Number(form.get("cadenceHours") || 24)),
     dailyLimit: Math.max(1, Math.min(10, Number(form.get("dailyLimit") || 1))),
     ga4PropertyId: String(form.get("ga4PropertyId") || "").trim() || null,
+    searchConsoleSiteUrl,
   });
   if (!updated) return new NextResponse("Blog not found", { status: 404 });
   return NextResponse.redirect(new URL("/", request.url), 303);
