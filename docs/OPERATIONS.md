@@ -103,7 +103,7 @@ BLOG_GARDEN_UPTIME_WEBHOOK_URL=https://...   # optional
 1. GitHub runnerが `/api/health` のHTTP 200かつ `{ "status": "ok" }` を期待する
 2. 初回異常時だけ `[Blog Garden] External uptime incident` Issueを作成
 3. Webhook設定済みならCRITICALを1回送信
-4. 停止継続中は同じIssueを状態ストアとして使い、IssueやWebhookを増殖させない
+4. 停止継続中は同じIssueを状態ストアとして使い、IssueやWebhookを増殖させない一方、workflow自体は失敗状態を維持する
 5. 復旧確認時に同じIssueへ復旧コメントを追加
 6. Issueを自動close
 7. Webhook設定済みならRECOVERYを1回送信
