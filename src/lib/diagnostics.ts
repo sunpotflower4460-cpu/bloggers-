@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { aiBudgetStatus } from "./ai-budget";
+import { aiRoutingStatus } from "./ai-routing";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
@@ -89,6 +90,36 @@ function aiBudgetDiagnostic(): DiagnosticItem {
   };
 }
 
+function aiRoutingDiagnostic(): DiagnosticItem {
+  const routing = aiRoutingStatus();
+  if (!routing.configured) {
+    return {
+      scope: "system",
+      label: "AI failover",
+      status: "error",
+      detail: routing.configError || "AI routing configuration is invalid",
+    };
+  }
+  if (!routing.fallbackConfigured) {
+    return {
+      scope: "system",
+      label: "AI failover",
+      status: "warn",
+      detail: `${routing.primaryLabel}/${routing.primaryModel} の単一路線 · 24h attempts ${routing.primaryAttempts24h} · fallback未設定`,
+    };
+  }
+  const status: DiagnosticStatus = routing.primaryDegraded
+    ? routing.fallbackCurrentlyHealthy ? "warn" : "error"
+    : "ok";
+  const lastFallback = routing.lastFallbackAt ? ` · last fallback ${routing.lastFallbackAt}` : "";
+  return {
+    scope: "system",
+    label: "AI failover",
+    status,
+    detail: `${routing.primaryLabel}/${routing.primaryModel} → ${routing.fallbackLabel}/${routing.fallbackModel} · primary retryable ${routing.primaryRetryableFailures24h}/${routing.primaryAttempts24h} · fallback success ${routing.fallbackSuccesses24h}/${routing.fallbackAttempts24h}${lastFallback}`,
+  };
+}
+
 export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   const items: DiagnosticItem[] = [];
   const encryptionKey = process.env.APP_ENCRYPTION_KEY || "";
@@ -108,6 +139,11 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
     items.push(aiBudgetDiagnostic());
   } catch (error) {
     items.push({ scope: "system", label: "AI日次予算", status: "error", detail: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    items.push(aiRoutingDiagnostic());
+  } catch (error) {
+    items.push({ scope: "system", label: "AI failover", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
   items.push({
     scope: "system",
