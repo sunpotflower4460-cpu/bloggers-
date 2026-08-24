@@ -63,6 +63,7 @@ export function BlogSettingsForm({ blog }: { blog: SafeBlog }) {
       <div className="two"><label>投稿間隔（時間）<input name="cadenceHours" type="number" min="1" defaultValue={blog.cadenceHours} /></label><label>1日最大本数<input name="dailyLimit" type="number" min="1" max="10" defaultValue={blog.dailyLimit} /></label></div>
       <label>公開方針<select name="publishMode" defaultValue={blog.publishMode}><option value="review">まず下書きへ送る</option><option value="auto">自動公開する</option></select></label>
       <label>GA4 Property ID<input name="ga4PropertyId" inputMode="numeric" defaultValue={blog.ga4PropertyId || ""} /><small>空欄にするとGA4反応学習を無効にします。</small></label>
+      <label>Search Console Property<input name="searchConsoleSiteUrl" defaultValue={blog.searchConsoleSiteUrl || ""} placeholder="https://example.com/ または sc-domain:example.com" /><small>空欄にすると検索反応学習を無効にします。service accountメールには対象propertyの閲覧権限が必要です。</small></label>
 
       <RotationFields platform={blog.platform} />
 
