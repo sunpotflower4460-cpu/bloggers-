@@ -14,6 +14,14 @@ export interface RefreshCandidate {
   topQueries: string[];
 }
 
+export interface ContentRefreshSummary {
+  beforeTitle: string;
+  afterTitle: string;
+  hypothesis: string;
+  reason: string;
+  createdAt: string;
+}
+
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
 const globalDb = globalThis as typeof globalThis & { __blogGardenRefreshDb?: DB };
@@ -85,6 +93,20 @@ export function findRefreshCandidate(blogId: string): RefreshCandidate | null {
     ctr: Number(row.search_ctr || 0),
     position: Number(row.search_position || 0),
     topQueries: topQueries.slice(0, 8),
+  };
+}
+
+export function latestContentRefresh(blogId: string): ContentRefreshSummary | null {
+  const row = db.prepare(`SELECT r.before_title,r.after_title,r.hypothesis,r.reason,r.created_at
+    FROM content_refreshes r JOIN publications p ON p.id=r.publication_id
+    WHERE p.blog_id=? ORDER BY r.created_at DESC LIMIT 1`).get(blogId) as any;
+  if (!row) return null;
+  return {
+    beforeTitle: String(row.before_title),
+    afterTitle: String(row.after_title),
+    hypothesis: String(row.hypothesis),
+    reason: String(row.reason),
+    createdAt: String(row.created_at),
   };
 }
 
