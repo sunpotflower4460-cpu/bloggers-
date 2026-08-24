@@ -76,6 +76,7 @@ export function BlogSetupForm() {
       </div>
 
       <label>GA4 Property ID<input name="ga4PropertyId" inputMode="numeric" placeholder="123456789" /><small>任意。設定すると実PV・セッション・エンゲージメントを次の記事判断へ戻します。</small></label>
+      <label>Search Console Property<input name="searchConsoleSiteUrl" placeholder="https://example.com/ または sc-domain:example.com" /><small>任意。Search Consoleに表示されているproperty名をそのまま入力します。`GOOGLE_SERVICE_ACCOUNT_JSON` のservice accountメールをそのpropertyのユーザーとして追加すると、検索語・表示回数・CTR・平均順位を学習できます。</small></label>
       <button className="button large" type="submit">このブログを植える</button>
     </form>
   );
