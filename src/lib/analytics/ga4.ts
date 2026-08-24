@@ -1,47 +1,10 @@
-import { createSign } from "node:crypto";
 import type { Blog } from "../types";
 import { recentPublications, upsertMetric } from "../db";
-
-interface ServiceAccount {
-  client_email: string;
-  private_key: string;
-  token_uri?: string;
-}
-
-function b64(value: string): string {
-  return Buffer.from(value).toString("base64url");
-}
-
-async function googleToken(): Promise<string | null> {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) return null;
-  const sa = JSON.parse(raw) as ServiceAccount;
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = b64(JSON.stringify({
-    iss: sa.client_email,
-    scope: "https://www.googleapis.com/auth/analytics.readonly",
-    aud: sa.token_uri || "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600,
-  }));
-  const unsigned = `${header}.${payload}`;
-  const signer = createSign("RSA-SHA256");
-  signer.update(unsigned);
-  signer.end();
-  const assertion = `${unsigned}.${signer.sign(sa.private_key).toString("base64url")}`;
-  const response = await fetch(sa.token_uri || "https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
-  });
-  if (!response.ok) throw new Error(`GA4 OAuth failed ${response.status}: ${await response.text()}`);
-  return (await response.json()).access_token;
-}
+import { googleServiceToken } from "../google-auth";
 
 export async function collectGa4(blog: Blog): Promise<number> {
   if (!blog.ga4PropertyId) return 0;
-  const token = await googleToken();
+  const token = await googleServiceToken(["https://www.googleapis.com/auth/analytics.readonly"]);
   if (!token) return 0;
   const response = await fetch(`https://analyticsdata.googleapis.com/v1beta/properties/${blog.ga4PropertyId}:runReport`, {
     method: "POST",
