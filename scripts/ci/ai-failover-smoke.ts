@@ -12,6 +12,7 @@ process.env.AI_MODEL = "ci-primary-model";
 process.env.AI_PRIMARY_PROVIDER_LABEL = "ci-primary";
 process.env.AI_FALLBACK_MODEL = "ci-fallback-model";
 process.env.AI_FALLBACK_PROVIDER_LABEL = "ci-fallback";
+process.env.AI_PRIMARY_CIRCUIT_MINUTES = "1";
 process.env.AI_DAILY_CALL_LIMIT = "30";
 process.env.AI_DAILY_TOKEN_LIMIT = "100000";
 process.env.AI_BUDGET_TIMEZONE = "UTC";
@@ -85,9 +86,16 @@ try {
   }
 
   let routing = aiRoutingStatus();
-  if (!routing.primaryDegraded || routing.fallbackSuccesses24h !== 3 || !routing.fallbackCurrentlyHealthy) {
-    throw new Error(`routing degradation was not detected: ${JSON.stringify(routing)}`);
+  if (!routing.primaryDegraded || !routing.circuitOpen || routing.fallbackSuccesses24h !== 3 || !routing.fallbackCurrentlyHealthy) {
+    throw new Error(`routing degradation/circuit was not detected: ${JSON.stringify(routing)}`);
   }
+
+  const circuitResult = await aiJson<{ route: string }>("system", "circuit should bypass primary");
+  if (circuitResult.route !== "fallback") throw new Error("open circuit did not route directly to fallback");
+  if (primaryRequests !== 3 || fallbackRequests !== 4) {
+    throw new Error(`circuit did not save the failed primary call: primary=${primaryRequests} fallback=${fallbackRequests}`);
+  }
+  if (aiBudgetStatus().calls !== 7) throw new Error("circuit-bypassed request should consume exactly one call");
 
   const db = new Database(dbPath);
   const created = new Date(Date.now() - 86400000).toISOString();
@@ -106,11 +114,20 @@ try {
     throw new Error(`degraded primary incident was not opened as warning: ${JSON.stringify(incident)}`);
   }
 
+  // Expire the one-minute circuit without sleeping. The next logical request must
+  // probe primary again; a success clears degraded state and closes the incident.
+  const adjustDb = new Database(dbPath);
+  const twoMinutesAgo = new Date(Date.now() - 2 * 60000).toISOString();
+  adjustDb.prepare("UPDATE ai_provider_attempts SET attempted_at=? WHERE route='primary'").run(twoMinutesAgo);
+  adjustDb.close();
+  routing = aiRoutingStatus();
+  if (routing.circuitOpen || !routing.primaryDegraded) throw new Error("expired circuit did not enter primary probe state");
+
   primaryMode = "healthy";
   const healthy = await aiJson<{ route: string }>("system", "primary recovered");
-  if (healthy.route !== "primary") throw new Error("healthy primary unexpectedly used fallback");
+  if (healthy.route !== "primary") throw new Error("expired circuit did not probe healthy primary");
   routing = aiRoutingStatus();
-  if (routing.primaryDegraded) throw new Error("primary degradation did not clear after successful probe");
+  if (routing.primaryDegraded || routing.circuitOpen) throw new Error("primary degradation did not clear after successful probe");
   await reconcileAiRoutingIncidents();
   incidentDb = new Database(dbPath, { readonly: true });
   incident = incidentDb.prepare("SELECT status,severity FROM operational_incidents WHERE code='ai-primary-degraded' AND scope='system'").get() as { status: string; severity: string } | undefined;
@@ -129,6 +146,7 @@ try {
   if (fallbackRequests !== fallbackBeforeAuth) throw new Error("401 incorrectly triggered fallback");
 
   const safeFallbackBase = process.env.AI_FALLBACK_BASE_URL;
+  const safeFallbackModel = process.env.AI_FALLBACK_MODEL;
   process.env.AI_FALLBACK_BASE_URL = `http://127.0.0.2:${port}/fallback`;
   delete process.env.AI_FALLBACK_API_KEY;
   let crossHostRejected = false;
@@ -138,9 +156,30 @@ try {
     crossHostRejected = String(error).includes("AI_FALLBACK_API_KEY is required");
   }
   if (!crossHostRejected) throw new Error("cross-host fallback reused primary credential");
+
+  process.env.AI_FALLBACK_API_KEY = process.env.AI_API_KEY;
+  let sameCredentialRejected = false;
+  try {
+    resolveAiRoutes();
+  } catch (error) {
+    sameCredentialRejected = String(error).includes("credential different from AI_API_KEY");
+  }
+  if (!sameCredentialRejected) throw new Error("cross-host fallback accepted the primary credential value");
+
   process.env.AI_FALLBACK_API_KEY = "ci-dedicated-fallback-key";
   if (resolveAiRoutes().length !== 2) throw new Error("dedicated cross-host fallback key was not accepted");
+
+  delete process.env.AI_FALLBACK_API_KEY;
   process.env.AI_FALLBACK_BASE_URL = safeFallbackBase;
+  delete process.env.AI_FALLBACK_MODEL;
+  let partialConfigRejected = false;
+  try {
+    resolveAiRoutes();
+  } catch (error) {
+    partialConfigRejected = String(error).includes("AI_FALLBACK_MODEL is required");
+  }
+  if (!partialConfigRejected) throw new Error("partial fallback configuration was silently ignored");
+  process.env.AI_FALLBACK_MODEL = safeFallbackModel;
 
   console.log(JSON.stringify({
     ok: true,
