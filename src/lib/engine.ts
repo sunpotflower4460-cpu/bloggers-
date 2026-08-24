@@ -16,6 +16,7 @@ import {
   rememberSources,
   setLastRun,
 } from "./db";
+import { acquireBlogLease, releaseBlogLease } from "./leases";
 import { platformAdapter } from "./platforms";
 import {
   evaluateDueRefreshes,
@@ -155,10 +156,16 @@ async function refreshExistingPost(blog: Blog, candidate: RefreshCandidate, star
 
 async function runOne(blog: Blog, force = false): Promise<{ blog: string; status: string; title?: string }> {
   const started = new Date().toISOString();
-  try {
-    if (!blog.active) return { blog: blog.name, status: "inactive" };
-    if (!force && !due(blog)) return { blog: blog.name, status: "not-due" };
+  if (!blog.active) return { blog: blog.name, status: "inactive" };
+  if (!force && !due(blog)) return { blog: blog.name, status: "not-due" };
 
+  const lease = acquireBlogLease(blog.id);
+  if (!lease) {
+    recordRun(blog.id, "execution", "ok", "Skipped because another run already holds this blog lease", { force }, started);
+    return { blog: blog.name, status: "busy" };
+  }
+
+  try {
     try {
       const matched = await collectGa4(blog);
       recordRun(blog.id, "analytics", "ok", `GA4 matched ${matched} publications`, { matched }, started);
@@ -234,6 +241,8 @@ async function runOne(blog: Blog, force = false): Promise<{ blog: string; status
   } catch (error) {
     recordRun(blog.id, "editorial", "error", error instanceof Error ? error.message : String(error), { force }, started);
     return { blog: blog.name, status: "error" };
+  } finally {
+    releaseBlogLease(lease);
   }
 }
 
