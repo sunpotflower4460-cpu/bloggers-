@@ -151,7 +151,11 @@ jobs:
           if (state.notifications.length !== 1 || state.notifications[0].severity !== 'critical') process.exit(1);
           NODE
 
-          npm run external-uptime >/dev/null
+          set +e
+          npm run external-uptime >/dev/null 2>&1
+          SECOND_EXIT=$?
+          set -e
+          test "$SECOND_EXIT" -eq 1
           curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
           node <<'NODE'
           const state = require('./.ci/external-state.json');
