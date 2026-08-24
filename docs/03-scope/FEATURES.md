@@ -27,3 +27,4 @@
 | F-021 | GitHub Actions外部死活監視 | 承認 | VPS全体が停止して内部monitorも止まった場合に、別インフラから異常と復旧を検知し、停止中はworkflow失敗状態を維持する | 2026-08-25 | 有: GitHub Issue |
 | F-022 | AI生成HTML投稿安全ゲート | 承認 | 自動公開時もprompt injectionや壊れたモデル出力から実行可能HTMLを外部ブログへ持ち込まない | 2026-08-25 | 無 |
 | F-023 | AI日次予算・使用量ガード | 承認 | 放置運用でAPI再試行やブログ増加による予期しないAIコスト暴走を止め、使用量を診断・通知する | 2026-08-25 | 有: `/diagnostics` |
+| F-024 | bounded AI provider / model failover | 承認 | 主AIの一時障害で庭全体が止まらないようにしつつ、無限再試行や別providerへの秘密漏洩・予算迂回を防ぐ | 2026-08-25 | 有: `/diagnostics` |
