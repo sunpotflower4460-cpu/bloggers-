@@ -16,7 +16,6 @@ import { collectTrends } from "./trends";
 import type { ArticlePlan, Blog, GeneratedArticle, SourceCandidate } from "./types";
 
 function due(blog: Blog): boolean {
-  if (!blog.active) return false;
   if (!blog.lastRunAt) return true;
   return Date.now() - new Date(blog.lastRunAt).getTime() >= blog.cadenceHours * 3600000;
 }
@@ -54,12 +53,12 @@ async function writeArticle(blog: Blog, plan: ArticlePlan, items: SourceCandidat
   );
 }
 
-async function runOne(blog: Blog): Promise<{ blog: string; status: string; title?: string }> {
+async function runOne(blog: Blog, force = false): Promise<{ blog: string; status: string; title?: string }> {
   const started = new Date().toISOString();
   try {
-    if (!due(blog)) return { blog: blog.name, status: "not-due" };
-    if (countTodayPublications(blog.id) >= blog.dailyLimit) {
-      setLastRun(blog.id);
+    if (!blog.active) return { blog: blog.name, status: "inactive" };
+    if (!force && !due(blog)) return { blog: blog.name, status: "not-due" };
+    if (!force && countTodayPublications(blog.id) >= blog.dailyLimit) {
       return { blog: blog.name, status: "daily-limit" };
     }
 
@@ -96,18 +95,19 @@ async function runOne(blog: Blog): Promise<{ blog: string; status: string; title
       publishedAt: result.publishedAt,
     });
     setLastRun(blog.id);
-    recordRun(blog.id, "editorial", "ok", `Published ${article.title}`, { plan, result }, started);
+    recordRun(blog.id, "editorial", "ok", `Published ${article.title}`, { plan, result, force }, started);
     return { blog: blog.name, status: result.status, title: article.title };
   } catch (error) {
-    setLastRun(blog.id);
-    recordRun(blog.id, "editorial", "error", error instanceof Error ? error.message : String(error), {}, started);
+    // Keep lastRunAt anchored to the last successful editorial run so a transient
+    // failure can be retried by the hourly worker instead of sleeping a full cadence.
+    recordRun(blog.id, "editorial", "error", error instanceof Error ? error.message : String(error), { force }, started);
     return { blog: blog.name, status: "error" };
   }
 }
 
-export async function runGarden(blogId?: string) {
+export async function runGarden(blogId?: string, options: { force?: boolean } = {}) {
   const blogs = listBlogs().filter((blog) => !blogId || blog.id === blogId);
   const results = [];
-  for (const blog of blogs) results.push(await runOne(blog));
+  for (const blog of blogs) results.push(await runOne(blog, options.force === true));
   return results;
 }
