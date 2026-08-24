@@ -1,0 +1,68 @@
+name: require-human-approval
+
+# guard.yml が検証できるのは「台帳同士が矛盾していないか」までである。
+# FEATURES.md に「承認」と書いたのが本当にユーザーか、それとも実装した
+# GPT自身かはファイルの中身だけでは区別できない。この区別だけは、
+# GitHub上で認証されたアカウントによるレビュー承認という、GPTが
+# 単独では偽装できない事実に頼るしかない。
+#
+# このワークフロー単体では何も強制しない。効果を持たせるには、
+# リポジトリの Settings > Branches で以下を有効にする必要がある:
+#   - Require a pull request before merging
+#   - Require approvals: 1 以上
+#   - Require status checks to pass before merging
+#     （このワークフローの require-human-approval を選択）
+# README.md の設定手順を参照。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, dismissed]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-approval:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR作成者以外による承認レビューがあるか確認する
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo
+            const pull_number = context.payload.pull_request.number
+            const author = context.payload.pull_request.user.login
+
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner,
+              repo,
+              pull_number,
+            })
+
+            // レビューは提出のたびに新しいオブジェクトとして積み上がり、
+            // 過去の APPROVED は dismiss しない限り残り続ける。そのため
+            // 「一度でも承認があったか」ではなく「各レビュアーの最新の
+            // 意思表示が承認か」を見なければ、承認後に変更要求へ翻した
+            // レビュアーの古い承認がいつまでも有効として扱われてしまう。
+            const latestByReviewer = new Map()
+            for (const r of reviews) {
+              if (r.user.login === author) continue
+              const prev = latestByReviewer.get(r.user.login)
+              if (!prev || new Date(r.submitted_at) >= new Date(prev.submitted_at)) {
+                latestByReviewer.set(r.user.login, r)
+              }
+            }
+            const approvedByOther = [...latestByReviewer.values()].some(
+              (r) => r.state === 'APPROVED',
+            )
+
+            if (!approvedByOther) {
+              core.setFailed(
+                'このPRには作成者以外による承認レビューがありません。' +
+                  'AGENTS.md ルール1（承認済みIDのない機能を実装しない）を' +
+                  'ファイル上の記載だけでなく実際に担保するには、' +
+                  '人間による承認レビューが必要です。',
+              )
+            }

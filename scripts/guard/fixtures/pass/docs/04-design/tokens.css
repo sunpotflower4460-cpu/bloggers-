@@ -1,0 +1,30 @@
+:root {
+  --bg: #ffffff;
+  --surface: #f5f5f5;
+  --text: #111111;
+  --text-muted: #666666;
+  --accent: #3b82f6;
+  --border: #dddddd;
+
+  --ff-display: 'Inter', sans-serif;
+  --ff-body: 'Inter', sans-serif;
+  --fs-1: 12px;
+  --fs-2: 14px;
+  --fs-3: 16px;
+  --fs-4: 20px;
+  --fs-5: 24px;
+  --fs-6: 32px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  --radius-s: 4px;
+  --radius-m: 8px;
+
+  --dur: 150ms;
+  --ease: ease-out;
+}
