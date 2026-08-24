@@ -16,6 +16,7 @@ export interface Blog {
   language: string;
   timezone: string;
   ga4PropertyId: string | null;
+  searchConsoleSiteUrl: string | null;
   active: boolean;
   lastRunAt: string | null;
   createdAt: string;
@@ -29,11 +30,18 @@ export interface SourceCandidate {
   source: string;
 }
 
+export interface EditorialExperiment {
+  axis: "headline" | "angle" | "structure";
+  variant: string;
+  hypothesis: string;
+}
+
 export interface ArticlePlan {
   sourceUrl: string;
   angle: string;
   audience: string;
   reason: string;
+  experiment?: EditorialExperiment;
 }
 
 export interface GeneratedArticle {
@@ -67,6 +75,11 @@ export interface DashboardBlog extends Blog {
   momentumPercent: number | null;
   engagementRate: number | null;
   nativeComments: number;
+  searchClicks: number;
+  searchImpressions: number;
+  searchCtrPercent: number | null;
+  searchPosition: number | null;
+  topSearchQuery: string | null;
   recentRuns: number;
   failedRuns: number;
 }
