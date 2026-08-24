@@ -61,7 +61,11 @@ export interface DashboardBlog extends Blog {
   latestUrl: string | null;
   latestPublishedAt: string | null;
   views7d: number;
+  viewsPrev7d: number;
   sessions7d: number;
+  engagedSessions7d: number;
+  momentumPercent: number | null;
+  engagementRate: number | null;
   recentRuns: number;
   failedRuns: number;
 }
