@@ -28,3 +28,4 @@
 | F-022 | AI生成HTML投稿安全ゲート | 承認 | 自動公開時もprompt injectionや壊れたモデル出力から実行可能HTMLを外部ブログへ持ち込まない | 2026-08-25 | 無 |
 | F-023 | AI日次予算・使用量ガード | 承認 | 放置運用でAPI再試行やブログ増加による予期しないAIコスト暴走を止め、使用量を診断・通知する | 2026-08-25 | 有: `/diagnostics` |
 | F-024 | bounded AI provider / model failover | 承認 | 主AIの一時障害で庭全体が止まらないようにしつつ、無限再試行や別providerへの秘密漏洩・予算迂回を防ぐ | 2026-08-25 | 有: `/diagnostics` |
+| F-025 | AI primary circuit breaker | 承認 | 主AIの継続障害中に毎回失敗callを消費せず、一定時間fallbackへ直行して遅延とコストを抑え、時間後に自動でprimaryを再試行する | 2026-08-25 | 有: `/diagnostics` |
