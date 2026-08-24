@@ -80,9 +80,6 @@ export interface DashboardBlog extends Blog {
   searchCtrPercent: number | null;
   searchPosition: number | null;
   topSearchQuery: string | null;
-  latestExperimentAxis: string | null;
-  latestExperimentVariant: string | null;
-  latestExperimentHypothesis: string | null;
   recentRuns: number;
   failedRuns: number;
 }
