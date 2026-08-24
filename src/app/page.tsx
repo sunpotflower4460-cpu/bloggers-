@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { dashboard, experimentContext } from "@/lib/db";
+import { latestContentRefresh } from "@/lib/refresh-store";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
 import { RunButton } from "@/components/run-button";
 
@@ -50,6 +51,7 @@ export default function Home() {
         <section className="grid">
           {blogs.map((blog) => {
             const experiment = latestExperiment(blog.id);
+            const refresh = latestContentRefresh(blog.id);
             return (
               <article className="blogCard" key={blog.id}>
                 <div className="cardTop"><div><span className={`dot ${blog.active ? "on" : ""}`} />{blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
@@ -67,6 +69,13 @@ export default function Home() {
                   ) : <p>Search Console未設定</p>}
                 </div>
                 <div className="latest"><span>学習中の実験</span><p>{experiment || "最初の記事から実験記憶を開始します"}</p></div>
+                {refresh ? (
+                  <div className="latest">
+                    <span>最近の自動改善</span>
+                    <p>{refresh.beforeTitle} → {refresh.afterTitle}</p>
+                    <small>{date(refresh.createdAt)} · 仮説: {refresh.hypothesis}</small>
+                  </div>
+                ) : null}
                 <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
                 <div className="cardFoot">
                   <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs · {blog.failedRuns} errors</span>
