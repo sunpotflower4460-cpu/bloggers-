@@ -1,0 +1,28 @@
+services:
+  offsite-backup:
+    image: restic/restic:0.19.1
+    env_file: .env
+    entrypoint: ["/bin/sh", "-lc"]
+    command:
+      - >-
+        test -n "$${RESTIC_REPOSITORY}" && test -n "$${RESTIC_PASSWORD}" ||
+        { echo 'RESTIC_REPOSITORY and RESTIC_PASSWORD are required'; exit 1; };
+        if ! restic snapshots --compact >/dev/null 2>&1; then
+          restic init;
+        fi;
+        while true; do
+          restic backup /backups --tag blog-garden --host "$${BLOG_GARDEN_DOMAIN:-blog-garden}" &&
+          restic forget --tag blog-garden
+            --keep-daily "$${RESTIC_KEEP_DAILY:-14}"
+            --keep-weekly "$${RESTIC_KEEP_WEEKLY:-8}"
+            --keep-monthly "$${RESTIC_KEEP_MONTHLY:-12}"
+            --prune;
+          sleep "$${OFFSITE_BACKUP_INTERVAL_SECONDS:-86400}";
+        done
+    volumes:
+      - ${BLOG_GARDEN_BACKUP_DIR:-./backups}:/backups:ro
+      - restic_cache:/root/.cache/restic
+    restart: unless-stopped
+
+volumes:
+  restic_cache:
