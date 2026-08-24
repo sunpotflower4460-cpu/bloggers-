@@ -16,6 +16,10 @@ async function accessToken(c: BloggerCredentials): Promise<string> {
   return (await response.json()).access_token;
 }
 
+function postEndpoint(credentials: BloggerCredentials, postId: string): string {
+  return `https://www.googleapis.com/blogger/v3/blogs/${encodeURIComponent(credentials.blogId)}/posts/${encodeURIComponent(postId)}`;
+}
+
 export const bloggerAdapter: BlogPlatformAdapter = {
   async validate(_siteUrl, raw) {
     const credentials = raw as BloggerCredentials;
@@ -48,10 +52,40 @@ export const bloggerAdapter: BlogPlatformAdapter = {
       publishedAt: post.published || null,
     };
   },
+  async readPost(_blog, raw, publication) {
+    const credentials = raw as BloggerCredentials;
+    const token = await accessToken(credentials);
+    const response = await fetch(`${postEndpoint(credentials, publication.platformPostId)}?fetchBody=true&maxComments=0`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Blogger post read failed ${response.status}: ${await response.text()}`);
+    const post = await response.json();
+    return {
+      title: String(post.title || publication.title),
+      html: String(post.content || ""),
+      excerpt: "",
+      updatedAt: post.updated || null,
+    };
+  },
+  async updatePost(_blog, raw, publication, update) {
+    const credentials = raw as BloggerCredentials;
+    const token = await accessToken(credentials);
+    const body: Record<string, string> = {};
+    if (update.title !== undefined) body.title = update.title;
+    if (update.html !== undefined) body.content = update.html;
+    const response = await fetch(postEndpoint(credentials, publication.platformPostId), {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`Blogger update failed ${response.status}: ${await response.text()}`);
+    const post = await response.json();
+    return { url: post.url || publication.url, updatedAt: post.updated || null };
+  },
   async collectReactions(_blog, raw, publication) {
     const credentials = raw as BloggerCredentials;
     const token = await accessToken(credentials);
-    const response = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${encodeURIComponent(credentials.blogId)}/posts/${encodeURIComponent(publication.platformPostId)}?maxComments=0`, {
+    const response = await fetch(`${postEndpoint(credentials, publication.platformPostId)}?maxComments=0`, {
       headers: { authorization: `Bearer ${token}` },
     });
     if (!response.ok) throw new Error(`Blogger reactions failed ${response.status}`);
