@@ -53,4 +53,35 @@ export const ghostAdapter: BlogPlatformAdapter = {
       publishedAt: post.published_at || null,
     };
   },
+  async readPost(blog, raw, publication) {
+    const credentials = raw as GhostCredentials;
+    const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/ghost/api/admin/posts/${encodeURIComponent(publication.platformPostId)}/?formats=html`;
+    const response = await fetch(endpoint, { headers: headers(credentials) });
+    if (!response.ok) throw new Error(`Ghost post read failed ${response.status}: ${await response.text()}`);
+    const post = (await response.json()).posts?.[0];
+    if (!post?.updated_at) throw new Error("Ghost post response is missing updated_at");
+    return {
+      title: String(post.title || publication.title),
+      html: String(post.html || ""),
+      excerpt: String(post.custom_excerpt || post.excerpt || ""),
+      updatedAt: String(post.updated_at),
+    };
+  },
+  async updatePost(blog, raw, publication, update, existing) {
+    const credentials = raw as GhostCredentials;
+    if (!existing.updatedAt) throw new Error("Ghost update requires the latest updated_at value");
+    const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/ghost/api/admin/posts/${encodeURIComponent(publication.platformPostId)}/?source=html&save_revision=true`;
+    const post: Record<string, string> = { updated_at: existing.updatedAt };
+    if (update.title !== undefined) post.title = update.title;
+    if (update.html !== undefined) post.html = update.html;
+    if (update.excerpt !== undefined) post.custom_excerpt = update.excerpt;
+    const response = await fetch(endpoint, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...headers(credentials) },
+      body: JSON.stringify({ posts: [post] }),
+    });
+    if (!response.ok) throw new Error(`Ghost update failed ${response.status}: ${await response.text()}`);
+    const updated = (await response.json()).posts?.[0];
+    return { url: updated?.url || publication.url, updatedAt: updated?.updated_at || null };
+  },
 };
