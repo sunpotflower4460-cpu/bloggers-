@@ -1,20 +1,28 @@
+import type { WordPressCredentials } from "../credentials";
 import type { BlogPlatformAdapter } from "./base";
 
-interface WordPressCredentials {
-  username: string;
-  applicationPassword: string;
+function auth(credentials: WordPressCredentials): string {
+  if (!credentials.username || !credentials.applicationPassword) throw new Error("WordPress credentials are incomplete");
+  return `Basic ${Buffer.from(`${credentials.username}:${credentials.applicationPassword}`).toString("base64")}`;
 }
 
 export const wordpressAdapter: BlogPlatformAdapter = {
+  async validate(siteUrl, raw) {
+    const credentials = raw as WordPressCredentials;
+    const endpoint = `${siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/users/me?context=edit`;
+    const response = await fetch(endpoint, { headers: { authorization: auth(credentials) } });
+    if (!response.ok) throw new Error(`WordPress接続に失敗しました (${response.status})`);
+    const user = await response.json();
+    return { label: "WordPressに接続できました", detail: user.name || user.slug || credentials.username };
+  },
   async publish(blog, raw, article) {
     const credentials = raw as WordPressCredentials;
-    if (!credentials.username || !credentials.applicationPassword) throw new Error("WordPress credentials are incomplete");
     const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/posts`;
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Basic ${Buffer.from(`${credentials.username}:${credentials.applicationPassword}`).toString("base64")}`,
+        authorization: auth(credentials),
       },
       body: JSON.stringify({
         title: article.title,
