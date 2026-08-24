@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS metric_snapshots (
   engaged_sessions INTEGER NOT NULL DEFAULT 0,
   UNIQUE(publication_id, snapshot_date)
 );
+CREATE TABLE IF NOT EXISTS reaction_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  publication_id INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+  snapshot_date TEXT NOT NULL,
+  comments INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(publication_id, snapshot_date)
+);
 CREATE TABLE IF NOT EXISTS run_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   blog_id TEXT REFERENCES blogs(id) ON DELETE CASCADE,
@@ -82,6 +89,7 @@ CREATE TABLE IF NOT EXISTS run_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_publications_blog_created ON publications(blog_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_metrics_publication_date ON metric_snapshots(publication_id, snapshot_date DESC);
+CREATE INDEX IF NOT EXISTS idx_reactions_publication_date ON reaction_snapshots(publication_id, snapshot_date DESC);
 CREATE INDEX IF NOT EXISTS idx_runs_blog_started ON run_logs(blog_id, started_at DESC);
 `);
 
@@ -162,14 +170,12 @@ export function setLastRun(blogId: string, at = new Date().toISOString()): void 
 }
 
 export function countTodayPublications(blogId: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM publications
-    WHERE blog_id = ? AND date(created_at) = date('now')`).get(blogId) as { n: number };
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM publications WHERE blog_id = ? AND date(created_at) = date('now')`).get(blogId) as { n: number };
   return row.n;
 }
 
 export function rememberSources(blogId: string, items: SourceCandidate[]): void {
-  const stmt = db.prepare(`INSERT OR IGNORE INTO source_items
-    (blog_id,title,url,summary,published_at,source,collected_at) VALUES (?,?,?,?,?,?,?)`);
+  const stmt = db.prepare(`INSERT OR IGNORE INTO source_items (blog_id,title,url,summary,published_at,source,collected_at) VALUES (?,?,?,?,?,?,?)`);
   const now = new Date().toISOString();
   const tx = db.transaction((rows: SourceCandidate[]) => {
     for (const item of rows) stmt.run(blogId, item.title, item.url, item.summary, item.publishedAt, item.source, now);
@@ -183,12 +189,9 @@ export function recentTitles(blogId: string, limit = 30): string[] {
 
 export function recordPublication(input: Omit<Publication, "id" | "createdAt">): Publication {
   const now = new Date().toISOString();
-  const info = db.prepare(`INSERT INTO publications
-    (blog_id,platform_post_id,title,url,status,source_urls_json,published_at,created_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run(
-      input.blogId, input.platformPostId, input.title, input.url, input.status,
-      JSON.stringify(input.sourceUrls), input.publishedAt, now,
-    );
+  const info = db.prepare(`INSERT INTO publications (blog_id,platform_post_id,title,url,status,source_urls_json,published_at,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+    input.blogId, input.platformPostId, input.title, input.url, input.status, JSON.stringify(input.sourceUrls), input.publishedAt, now,
+  );
   return { ...input, id: Number(info.lastInsertRowid), createdAt: now };
 }
 
@@ -209,35 +212,40 @@ export function recentPublications(blogId: string, limit = 50): Publication[] {
 
 export function upsertMetric(publicationId: number, date: string, views: number, sessions: number, engagedSessions: number): void {
   db.prepare(`INSERT INTO metric_snapshots (publication_id,snapshot_date,views,sessions,engaged_sessions)
-    VALUES (?,?,?,?,?)
-    ON CONFLICT(publication_id,snapshot_date) DO UPDATE SET
-      views=excluded.views,sessions=excluded.sessions,engaged_sessions=excluded.engaged_sessions`)
-    .run(publicationId, date, views, sessions, engagedSessions);
+    VALUES (?,?,?,?,?) ON CONFLICT(publication_id,snapshot_date) DO UPDATE SET
+    views=excluded.views,sessions=excluded.sessions,engaged_sessions=excluded.engaged_sessions`).run(publicationId, date, views, sessions, engagedSessions);
+}
+
+export function upsertReaction(publicationId: number, date: string, comments: number): void {
+  db.prepare(`INSERT INTO reaction_snapshots (publication_id,snapshot_date,comments)
+    VALUES (?,?,?) ON CONFLICT(publication_id,snapshot_date) DO UPDATE SET comments=excluded.comments`).run(publicationId, date, comments);
 }
 
 export function performanceContext(blogId: string): string {
-  const rows = db.prepare(`SELECT p.title,
+  const rows = db.prepare(`SELECT p.id, p.title,
     COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.views ELSE 0 END),0) views7,
     COALESCE(SUM(CASE WHEN m.snapshot_date BETWEEN date('now','-13 day') AND date('now','-7 day') THEN m.views ELSE 0 END),0) prev7,
     COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-29 day') THEN m.sessions ELSE 0 END),0) sessions30,
-    COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-29 day') THEN m.engaged_sessions ELSE 0 END),0) engaged30
+    COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-29 day') THEN m.engaged_sessions ELSE 0 END),0) engaged30,
+    COALESCE((SELECT r.comments FROM reaction_snapshots r WHERE r.publication_id=p.id ORDER BY r.snapshot_date DESC LIMIT 1),0) comments
     FROM publications p
     LEFT JOIN metric_snapshots m ON m.publication_id=p.id AND m.snapshot_date >= date('now','-29 day')
     WHERE p.blog_id=?
     GROUP BY p.id
-    ORDER BY views7 DESC
-    LIMIT 8`).all(blogId) as Array<{title:string;views7:number;prev7:number;sessions30:number;engaged30:number}>;
+    ORDER BY views7 DESC, comments DESC
+    LIMIT 8`).all(blogId) as Array<{title:string;views7:number;prev7:number;sessions30:number;engaged30:number;comments:number}>;
   if (!rows.length) return "まだ十分な実績データはない。初期探索を優先する。";
   return rows.map((r, i) => {
     const momentum = r.prev7 > 0 ? Math.round(((r.views7 - r.prev7) / r.prev7) * 100) : null;
     const engagement = r.sessions30 > 0 ? Math.round((r.engaged30 / r.sessions30) * 100) : null;
-    return `${i + 1}. ${r.title} / views7=${r.views7} / previous7=${r.prev7} / momentum=${momentum === null ? "new" : `${momentum}%`} / engagement30=${engagement === null ? "n/a" : `${engagement}%`}`;
+    return `${i + 1}. ${r.title} / views7=${r.views7} / previous7=${r.prev7} / momentum=${momentum === null ? "new" : `${momentum}%`} / engagement30=${engagement === null ? "n/a" : `${engagement}%`} / comments=${r.comments}`;
   }).join("\n");
 }
 
 export function recordRun(blogId: string | null, kind: string, status: string, message: string, meta: unknown, startedAt: string): void {
-  db.prepare(`INSERT INTO run_logs (blog_id,kind,status,message,meta_json,started_at,finished_at)
-    VALUES (?,?,?,?,?,?,?)`).run(blogId, kind, status, message, JSON.stringify(meta ?? {}), startedAt, new Date().toISOString());
+  db.prepare(`INSERT INTO run_logs (blog_id,kind,status,message,meta_json,started_at,finished_at) VALUES (?,?,?,?,?,?,?)`).run(
+    blogId, kind, status, message, JSON.stringify(meta ?? {}), startedAt, new Date().toISOString(),
+  );
 }
 
 export function dashboard(): DashboardBlog[] {
@@ -250,8 +258,8 @@ export function dashboard(): DashboardBlog[] {
       COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.engaged_sessions ELSE 0 END),0) engaged7
       FROM metric_snapshots m JOIN publications p ON p.id=m.publication_id
       WHERE p.blog_id=? AND m.snapshot_date >= date('now','-13 day')`).get(blog.id) as any;
-    const runs = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) failed
-      FROM run_logs WHERE blog_id=? AND started_at >= datetime('now','-7 day')`).get(blog.id) as any;
+    const native = db.prepare(`SELECT COALESCE(SUM((SELECT r.comments FROM reaction_snapshots r WHERE r.publication_id=p.id ORDER BY r.snapshot_date DESC LIMIT 1)),0) comments FROM publications p WHERE p.blog_id=?`).get(blog.id) as any;
+    const runs = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) failed FROM run_logs WHERE blog_id=? AND started_at >= datetime('now','-7 day')`).get(blog.id) as any;
     const views7d = Number(metrics?.views7 ?? 0);
     const viewsPrev7d = Number(metrics?.prev7 ?? 0);
     const sessions7d = Number(metrics?.sessions7 ?? 0);
@@ -267,6 +275,7 @@ export function dashboard(): DashboardBlog[] {
       engagedSessions7d,
       momentumPercent: viewsPrev7d > 0 ? Math.round(((views7d - viewsPrev7d) / viewsPrev7d) * 100) : null,
       engagementRate: sessions7d > 0 ? Math.round((engagedSessions7d / sessions7d) * 100) : null,
+      nativeComments: Number(native?.comments ?? 0),
       recentRuns: Number(runs?.n ?? 0),
       failedRuns: Number(runs?.failed ?? 0),
     };
