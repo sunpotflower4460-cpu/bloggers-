@@ -17,6 +17,8 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run typecheck
+      - name: Smoke test generated article safety gate
+        run: ./node_modules/.bin/tsx scripts/ci/article-safety-smoke.ts
       - name: Smoke test backup and restore
         shell: bash
         run: |
