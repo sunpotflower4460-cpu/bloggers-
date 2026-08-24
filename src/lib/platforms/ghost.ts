@@ -1,7 +1,6 @@
 import { createHmac } from "node:crypto";
+import type { GhostCredentials } from "../credentials";
 import type { BlogPlatformAdapter } from "./base";
-
-interface GhostCredentials { adminApiKey: string }
 
 function b64(value: string): string {
   return Buffer.from(value).toString("base64url");
@@ -18,17 +17,25 @@ function token(key: string): string {
   return `${unsigned}.${sig}`;
 }
 
+function headers(credentials: GhostCredentials) {
+  return { "accept-version": "v5.0", authorization: `Ghost ${token(credentials.adminApiKey)}` };
+}
+
 export const ghostAdapter: BlogPlatformAdapter = {
+  async validate(siteUrl, raw) {
+    const credentials = raw as GhostCredentials;
+    const endpoint = `${siteUrl.replace(/\/$/, "")}/ghost/api/admin/site/`;
+    const response = await fetch(endpoint, { headers: headers(credentials) });
+    if (!response.ok) throw new Error(`Ghost接続に失敗しました (${response.status})`);
+    const site = await response.json();
+    return { label: "Ghostに接続できました", detail: site.title || site.url || siteUrl };
+  },
   async publish(blog, raw, article) {
     const credentials = raw as GhostCredentials;
     const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/ghost/api/admin/posts/?source=html`;
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "accept-version": "v5.0",
-        authorization: `Ghost ${token(credentials.adminApiKey)}`,
-      },
+      headers: { "content-type": "application/json", ...headers(credentials) },
       body: JSON.stringify({ posts: [{
         title: article.title,
         html: article.html,
