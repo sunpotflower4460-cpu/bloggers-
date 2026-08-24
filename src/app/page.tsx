@@ -52,6 +52,12 @@ export default function Home() {
                 <div><span>engaged</span><strong>{blog.engagementRate === null ? "—" : `${blog.engagementRate}%`}</strong></div>
                 <div><span>comments</span><strong>{blog.nativeComments}</strong></div>
               </div>
+              <div className="latest">
+                <span>検索シグナル</span>
+                {blog.searchConsoleSiteUrl ? (
+                  <><p>{blog.searchImpressions.toLocaleString()} impressions · {blog.searchClicks.toLocaleString()} clicks · CTR {blog.searchCtrPercent === null ? "—" : `${blog.searchCtrPercent}%`} · 平均 {blog.searchPosition ?? "—"}位</p><small>{blog.topSearchQuery ? `強い検索語: ${blog.topSearchQuery}` : "Search Consoleの学習データを蓄積中"}</small></>
+                ) : <p>Search Console未設定</p>}
+              </div>
               <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
               <div className="cardFoot">
                 <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs · {blog.failedRuns} errors</span>
