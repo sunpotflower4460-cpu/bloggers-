@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { dashboard } from "@/lib/db";
+import { dashboard, experimentContext } from "@/lib/db";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
 import { RunButton } from "@/components/run-button";
 
@@ -13,6 +13,12 @@ function date(value: string | null) {
 function momentum(value: number | null) {
   if (value === null) return "new";
   return `${value > 0 ? "+" : ""}${value}%`;
+}
+
+function latestExperiment(blogId: string): string | null {
+  const memory = experimentContext(blogId);
+  if (memory.startsWith("まだ編集実験")) return null;
+  return memory.split("\n")[0]?.replace(/^1\.\s*/, "") || null;
 }
 
 export default function Home() {
@@ -42,33 +48,37 @@ export default function Home() {
         <section className="empty"><h3>最初の土はまだ空です。</h3><p>ブログを1つ登録すると、情報収集から育成ループが始まります。</p><Link className="button" href="/setup">最初のブログを設定</Link></section>
       ) : (
         <section className="grid">
-          {blogs.map((blog) => (
-            <article className="blogCard" key={blog.id}>
-              <div className="cardTop"><div><span className={`dot ${blog.active ? "on" : ""}`} />{blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
-              <h3>{blog.name}</h3><p className="muted">{blog.niche}</p>
-              <div className="miniStats four">
-                <div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div>
-                <div><span>前週比</span><strong>{momentum(blog.momentumPercent)}</strong></div>
-                <div><span>engaged</span><strong>{blog.engagementRate === null ? "—" : `${blog.engagementRate}%`}</strong></div>
-                <div><span>comments</span><strong>{blog.nativeComments}</strong></div>
-              </div>
-              <div className="latest">
-                <span>検索シグナル</span>
-                {blog.searchConsoleSiteUrl ? (
-                  <><p>{blog.searchImpressions.toLocaleString()} impressions · {blog.searchClicks.toLocaleString()} clicks · CTR {blog.searchCtrPercent === null ? "—" : `${blog.searchCtrPercent}%`} · 平均 {blog.searchPosition ?? "—"}位</p><small>{blog.topSearchQuery ? `強い検索語: ${blog.topSearchQuery}` : "Search Consoleの学習データを蓄積中"}</small></>
-                ) : <p>Search Console未設定</p>}
-              </div>
-              <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
-              <div className="cardFoot">
-                <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs · {blog.failedRuns} errors</span>
-                <div className="actions">
-                  <Link className="button secondary" href={`/blogs/${blog.id}/settings`}>設定</Link>
-                  <BlogToggleButton blogId={blog.id} active={blog.active} />
-                  <RunButton blogId={blog.id} />
+          {blogs.map((blog) => {
+            const experiment = latestExperiment(blog.id);
+            return (
+              <article className="blogCard" key={blog.id}>
+                <div className="cardTop"><div><span className={`dot ${blog.active ? "on" : ""}`} />{blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
+                <h3>{blog.name}</h3><p className="muted">{blog.niche}</p>
+                <div className="miniStats four">
+                  <div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div>
+                  <div><span>前週比</span><strong>{momentum(blog.momentumPercent)}</strong></div>
+                  <div><span>engaged</span><strong>{blog.engagementRate === null ? "—" : `${blog.engagementRate}%`}</strong></div>
+                  <div><span>comments</span><strong>{blog.nativeComments}</strong></div>
                 </div>
-              </div>
-            </article>
-          ))}
+                <div className="latest">
+                  <span>検索シグナル</span>
+                  {blog.searchConsoleSiteUrl ? (
+                    <><p>{blog.searchImpressions.toLocaleString()} impressions · {blog.searchClicks.toLocaleString()} clicks · CTR {blog.searchCtrPercent === null ? "—" : `${blog.searchCtrPercent}%`} · 平均 {blog.searchPosition ?? "—"}位</p><small>{blog.topSearchQuery ? `強い検索語: ${blog.topSearchQuery}` : "Search Consoleの学習データを蓄積中"}</small></>
+                  ) : <p>Search Console未設定</p>}
+                </div>
+                <div className="latest"><span>学習中の実験</span><p>{experiment || "最初の記事から実験記憶を開始します"}</p></div>
+                <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
+                <div className="cardFoot">
+                  <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs · {blog.failedRuns} errors</span>
+                  <div className="actions">
+                    <Link className="button secondary" href={`/blogs/${blog.id}/settings`}>設定</Link>
+                    <BlogToggleButton blogId={blog.id} active={blog.active} />
+                    <RunButton blogId={blog.id} />
+                  </div>
+                </div>
+              </article>
+            );
+          })}
         </section>
       )}
     </main>
