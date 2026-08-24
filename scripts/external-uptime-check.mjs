@@ -142,7 +142,8 @@ async function main() {
   }
 
   if (!probeResult.healthy && incident) {
-    console.log(`External outage still open: ${incident.html_url || `#${incident.number}`}`);
+    console.error(`External outage still open: ${incident.html_url || `#${incident.number}`}`);
+    process.exitCode = 1;
     return;
   }
 
