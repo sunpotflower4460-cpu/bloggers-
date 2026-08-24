@@ -1,11 +1,5 @@
+import type { BloggerCredentials } from "../credentials";
 import type { BlogPlatformAdapter } from "./base";
-
-interface BloggerCredentials {
-  blogId: string;
-  clientId: string;
-  clientSecret: string;
-  refreshToken: string;
-}
 
 async function accessToken(c: BloggerCredentials): Promise<string> {
   const response = await fetch("https://oauth2.googleapis.com/token", {
@@ -23,6 +17,17 @@ async function accessToken(c: BloggerCredentials): Promise<string> {
 }
 
 export const bloggerAdapter: BlogPlatformAdapter = {
+  async validate(_siteUrl, raw) {
+    const credentials = raw as BloggerCredentials;
+    if (!credentials.blogId) throw new Error("Blogger blogId is required");
+    const token = await accessToken(credentials);
+    const response = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${encodeURIComponent(credentials.blogId)}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Blogger接続に失敗しました (${response.status})`);
+    const blog = await response.json();
+    return { label: "Bloggerに接続できました", detail: blog.name || blog.url || credentials.blogId };
+  },
   async publish(blog, raw, article) {
     const credentials = raw as BloggerCredentials;
     if (!credentials.blogId) throw new Error("Blogger blogId is required");
