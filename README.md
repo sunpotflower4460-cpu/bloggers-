@@ -6,22 +6,32 @@
 
 初期設定でブログごとのテーマ・媒体・投稿頻度・情報源・公開方針を登録すると、以後は次のループを自動で回します。
 
-1. トレンド / RSS / ニュースを収集
-2. 過去記事と実績を見て、今書く価値が高い題材を選定
-3. 媒体とブログ人格に合わせて記事を生成
-4. WordPress / Ghost / Blogger に下書きまたは公開
-5. GA4の実反応を回収
-6. 伸びたテーマ・角度・タイトルを次回判断へフィードバック
+1. キーワードごとにトレンド / RSS / ニュースを収集
+2. 重複を除き、鮮度・テーマ一致・ソース分散を加味して候補を整える
+3. 過去記事のPVだけでなく、前週比・エンゲージメント・取得可能なネイティブ反応も見て今書く価値が高い題材を選定
+4. 媒体とブログ人格に合わせて記事を生成
+5. WordPress / Ghost / Blogger に下書きまたは公開
+6. GA4と媒体側の実反応を回収し、次回判断へフィードバック
 
-統合HPでは、各ブログの稼働状態、最新投稿、PV、実行履歴をまとめて確認できます。
+統合HPでは、各ブログの稼働状態、最新投稿、7日PV、前週比、エンゲージメント、コメント反応、実行履歴をまとめて確認できます。
 
 ## 初期対応プラットフォーム
 
 - WordPress REST API（Application Password）
-- Ghost Admin API（Custom Integration）
+- Ghost Admin API（Custom Integration / Admin API Key）
 - Blogger API v3（Google OAuth refresh token）
 
 内部は `BlogPlatformAdapter` で分離しているため、将来ほかの媒体を追加できます。
+
+### 初期設定はJSON不要
+
+`/setup` で媒体を選ぶと必要な項目だけが表示されます。
+
+- WordPress: ユーザー名 + Application Password
+- Ghost: Admin API Key (`id:secret`)
+- Blogger: Blog ID + OAuth Client ID / Client Secret / Refresh Token
+
+保存前に「接続テスト」で実際のAPIへ到達できるか確認できます。保存後も各ブログの「設定」から投稿頻度・公開方針・キーワード・RSS・GA4を変更でき、資格情報は画面へ復号表示せず、入力し直した時だけ暗号化してローテーションします。
 
 ## ローカル起動
 
@@ -36,7 +46,7 @@ npm run dev
 
 ## 常時運用
 
-Docker Compose では Web と Worker が同じ SQLite volume を共有します。Worker は1時間ごとに起動し、各ブログの `cadenceHours` と `dailyLimit` を見て必要なブログだけを処理します。
+Docker Compose では Web と Worker が同じ SQLite volume を共有します。Worker は1時間ごとに起動し、各ブログの `cadenceHours` と `dailyLimit` を見て必要なブログだけを処理します。1日上限はブログに設定されたタイムゾーン基準で判定します。
 
 ```bash
 docker compose up -d --build
@@ -55,6 +65,18 @@ docker compose up -d --build
 - `GOOGLE_SERVICE_ACCOUNT_JSON`: GA4 Data API用Service Account JSON。対象GA4 propertyにViewer権限を付与
 - `DATABASE_PATH`: 省略時 `./data/blog-garden.sqlite`
 
+## 反応学習
+
+GA4を設定したブログでは、前日のページ別 `screenPageViews` / `sessions` / `engagedSessions` を日次で蓄積します。編集判断では単純な累計PVだけでなく、直近7日と前7日の伸び、30日エンゲージメントも材料にします。
+
+さらに現在は次のネイティブ反応を収集できます。
+
+- WordPress: 投稿ごとの承認済みコメント総数
+- Blogger: 投稿リソースのコメント総数
+- Ghost: 現時点ではGA4中心。未確認の非公式エンドポイントを推測して使いません
+
+媒体固有の反応取得が失敗しても、その1件だけをスキップして編集ループ全体は継続します。
+
 ## 自動公開の安全設計
 
 ブログごとに `publishMode` を持ちます。
@@ -63,6 +85,8 @@ docker compose up -d --build
 - `auto`: 自動公開する
 
 資格情報はDBへ平文保存せず、`APP_ENCRYPTION_KEY` で暗号化します。AIには資格情報を渡しません。外部RSS/ニュースの文面はAIにとって信頼できない入力として区切り、そこに含まれる命令を無視するよう編集プロンプト側でも固定しています。
+
+統合HPから各ブログを即時停止・再開できます。人間が明示的に「今すぐ育てる」を押した場合だけ投稿間隔・日次上限を越えた手動実行を許し、自動workerは設定上限を守ります。
 
 ## 現在のフェーズについて
 
