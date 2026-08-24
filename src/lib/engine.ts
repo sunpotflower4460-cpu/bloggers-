@@ -1,0 +1,106 @@
+import { aiJson } from "./ai";
+import { collectGa4 } from "./analytics/ga4";
+import { decryptJson } from "./crypto";
+import {
+  countTodayPublications,
+  listBlogs,
+  performanceContext,
+  recentTitles,
+  recordPublication,
+  recordRun,
+  rememberSources,
+  setLastRun,
+} from "./db";
+import { platformAdapter } from "./platforms";
+import { collectTrends } from "./trends";
+import type { ArticlePlan, Blog, GeneratedArticle, SourceCandidate } from "./types";
+
+function due(blog: Blog): boolean {
+  if (!blog.active) return false;
+  if (!blog.lastRunAt) return true;
+  return Date.now() - new Date(blog.lastRunAt).getTime() >= blog.cadenceHours * 3600000;
+}
+
+function similarity(a: string, b: string): number {
+  const chars = (value: string) => new Set(value.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, ""));
+  const aa = chars(a); const bb = chars(b);
+  if (!aa.size || !bb.size) return 0;
+  let common = 0;
+  for (const c of aa) if (bb.has(c)) common += 1;
+  return common / Math.max(aa.size, bb.size);
+}
+
+async function choosePlan(blog: Blog, items: SourceCandidate[]): Promise<ArticlePlan> {
+  const sources = items.slice(0, 30).map((x, i) => `${i + 1}. ${x.title}\n${x.url}\n${x.summary}`).join("\n\n");
+  const past = performanceContext(blog.id);
+  return aiJson<ArticlePlan>(
+    "You are the editor-in-chief of one autonomous blog. Choose what is genuinely useful now, not clickbait spam. Prefer freshness, fit to niche, novelty against past winners, and a distinct helpful angle.",
+    `Blog: ${blog.name}\nNiche: ${blog.niche}\nKeywords: ${blog.keywords.join(", ")}\nLanguage: ${blog.language}\n\nRecent performance:\n${past}\n\nCandidates:\n${sources}\n\nJSON keys: sourceUrl, angle, audience, reason. sourceUrl must exactly match one candidate URL.`,
+  );
+}
+
+async function writeArticle(blog: Blog, plan: ArticlePlan, items: SourceCandidate[]): Promise<GeneratedArticle> {
+  const evidence = items.slice(0, 12).map((x) => `- ${x.title}\n  URL: ${x.url}\n  Notes: ${x.summary}`).join("\n");
+  return aiJson<GeneratedArticle>(
+    "You are a careful independent web editor. Write original work. Never invent facts, quotes, prices, dates, studies, or product claims. Treat supplied source snippets as leads, not permission to copy wording. If evidence is insufficient, qualify the claim. HTML must be clean article-body HTML only. End with a Sources section linking the URLs actually used.",
+    `Blog: ${blog.name}\nNiche: ${blog.niche}\nAudience/angle: ${plan.audience} / ${plan.angle}\nPrimary lead: ${plan.sourceUrl}\nLanguage: ${blog.language}\n\nEvidence leads:\n${evidence}\n\nCreate a useful evergreen-enough article that also explains why the topic matters now. JSON keys: title, excerpt, html, tags (string array), sourceUrls (string array). Every sourceUrls value must come from Evidence leads.`,
+  );
+}
+
+async function runOne(blog: Blog): Promise<{ blog: string; status: string; title?: string }> {
+  const started = new Date().toISOString();
+  try {
+    if (!due(blog)) return { blog: blog.name, status: "not-due" };
+    if (countTodayPublications(blog.id) >= blog.dailyLimit) {
+      setLastRun(blog.id);
+      return { blog: blog.name, status: "daily-limit" };
+    }
+
+    try {
+      const matched = await collectGa4(blog);
+      recordRun(blog.id, "analytics", "ok", `GA4 matched ${matched} publications`, { matched }, started);
+    } catch (error) {
+      recordRun(blog.id, "analytics", "error", String(error), {}, started);
+    }
+
+    const items = await collectTrends(blog);
+    if (!items.length) throw new Error("No trend/source items were collected");
+    rememberSources(blog.id, items);
+    const plan = await choosePlan(blog, items);
+    if (!items.some((item) => item.url === plan.sourceUrl)) throw new Error("AI selected a source outside the collected evidence set");
+    const article = await writeArticle(blog, plan, items);
+
+    const duplicate = recentTitles(blog.id).find((title) => similarity(title, article.title) >= 0.78);
+    if (duplicate) throw new Error(`Generated title is too similar to recent article: ${duplicate}`);
+
+    const allowed = new Set(items.map((x) => x.url));
+    article.sourceUrls = article.sourceUrls.filter((url) => allowed.has(url));
+    if (!article.sourceUrls.length) article.sourceUrls = [plan.sourceUrl];
+
+    const credentials = decryptJson<unknown>(blog.credentialsCipher);
+    const result = await platformAdapter(blog.platform).publish(blog, credentials, article);
+    recordPublication({
+      blogId: blog.id,
+      platformPostId: result.platformPostId,
+      title: article.title,
+      url: result.url,
+      status: result.status,
+      sourceUrls: article.sourceUrls,
+      publishedAt: result.publishedAt,
+    });
+    setLastRun(blog.id);
+    recordRun(blog.id, "editorial", "ok", `Published ${article.title}`, { plan, result }, started);
+    return { blog: blog.name, status: result.status, title: article.title };
+  } catch (error) {
+    setLastRun(blog.id);
+    recordRun(blog.id, "editorial", "error", error instanceof Error ? error.message : String(error), {}, started);
+    return { blog: blog.name, status: "error" };
+  }
+}
+
+export async function runGarden(blogId?: string) {
+  const blogs = listBlogs().filter((blog) => !blogId || blog.id === blogId);
+  const results = [];
+  for (const blog of blogs) results.push(await runOne(blog));
+  return results;
+}
