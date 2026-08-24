@@ -157,15 +157,15 @@ export function recordAiProviderAttempt(input: {
       Number.isFinite(input.statusCode) ? input.statusCode : null,
       input.detail == null ? null : safeDetail(input.detail),
     );
-  db.prepare("DELETE FROM ai_provider_attempts WHERE attempted_at < datetime('now','-30 day')").run();
+  db.prepare("DELETE FROM ai_provider_attempts WHERE julianday(attempted_at) < julianday('now','-30 day')").run();
 }
 
 function count24h(route: AiRouteKind, outcome?: AiAttemptOutcome): number {
   const row = outcome
     ? db.prepare(`SELECT COUNT(*) n FROM ai_provider_attempts
-        WHERE route=? AND outcome=? AND attempted_at>=datetime('now','-24 hour')`).get(route, outcome)
+        WHERE route=? AND outcome=? AND julianday(attempted_at)>=julianday('now','-24 hour')`).get(route, outcome)
     : db.prepare(`SELECT COUNT(*) n FROM ai_provider_attempts
-        WHERE route=? AND attempted_at>=datetime('now','-24 hour')`).get(route);
+        WHERE route=? AND julianday(attempted_at)>=julianday('now','-24 hour')`).get(route);
   return Number((row as { n: number } | undefined)?.n || 0);
 }
 
