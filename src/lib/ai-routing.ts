@@ -1,0 +1,235 @@
+import Database from "better-sqlite3";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+
+export type AiRouteKind = "primary" | "fallback";
+export type AiAttemptOutcome = "ok" | "retryable_error" | "fatal_error";
+
+export interface AiRoute {
+  kind: AiRouteKind;
+  label: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}
+
+export interface AiRoutingStatus {
+  configured: boolean;
+  configError: string | null;
+  primaryLabel: string;
+  primaryModel: string | null;
+  fallbackConfigured: boolean;
+  fallbackLabel: string | null;
+  fallbackModel: string | null;
+  primaryAttempts24h: number;
+  primaryRetryableFailures24h: number;
+  primaryFatalFailures24h: number;
+  fallbackAttempts24h: number;
+  fallbackSuccesses24h: number;
+  fallbackFailures24h: number;
+  lastFallbackAt: string | null;
+  primaryDegraded: boolean;
+  fallbackCurrentlyHealthy: boolean;
+}
+
+type DB = InstanceType<typeof Database>;
+const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
+mkdirSync(dirname(path), { recursive: true });
+const globalDb = globalThis as typeof globalThis & { __blogGardenAiRoutingDb?: DB };
+const db = globalDb.__blogGardenAiRoutingDb ?? new Database(path);
+if (process.env.NODE_ENV !== "production") globalDb.__blogGardenAiRoutingDb = db;
+db.pragma("journal_mode = WAL");
+db.exec(`
+CREATE TABLE IF NOT EXISTS ai_provider_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempted_at TEXT NOT NULL,
+  route TEXT NOT NULL,
+  label TEXT NOT NULL,
+  model TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  status_code INTEGER,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_provider_attempts_recent
+  ON ai_provider_attempts(route, attempted_at DESC);
+`);
+
+function value(name: string): string | null {
+  const item = process.env[name]?.trim();
+  return item || null;
+}
+
+function required(name: string): string {
+  const item = value(name);
+  if (!item) throw new Error(`${name} is required`);
+  return item;
+}
+
+function cleanLabel(raw: string | null, fallback: string): string {
+  const text = (raw || fallback).replace(/[\r\n\t]/g, " ").replace(/\s+/g, " ").trim();
+  return text.slice(0, 80) || fallback;
+}
+
+function normalizeBase(raw: string): string {
+  const url = new URL(raw);
+  if (url.username || url.password) throw new Error("AI base URL must not contain embedded credentials");
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("AI base URL must use HTTP or HTTPS");
+  return url.toString().replace(/\/$/, "");
+}
+
+function sameOrigin(a: string, b: string): boolean {
+  return new URL(a).origin === new URL(b).origin;
+}
+
+export function resolveAiRoutes(): AiRoute[] {
+  const primaryBase = normalizeBase(value("AI_BASE_URL") || "https://api.openai.com/v1");
+  const primaryModel = required("AI_MODEL");
+  const primaryKey = required("AI_API_KEY");
+  const primary: AiRoute = {
+    kind: "primary",
+    label: cleanLabel(value("AI_PRIMARY_PROVIDER_LABEL"), "primary"),
+    baseUrl: primaryBase,
+    model: primaryModel,
+    apiKey: primaryKey,
+  };
+
+  const fallbackModel = value("AI_FALLBACK_MODEL");
+  if (!fallbackModel) return [primary];
+
+  const fallbackBase = normalizeBase(value("AI_FALLBACK_BASE_URL") || primaryBase);
+  let fallbackKey = value("AI_FALLBACK_API_KEY");
+  if (!fallbackKey) {
+    if (!sameOrigin(primaryBase, fallbackBase)) {
+      throw new Error("AI_FALLBACK_API_KEY is required when fallback uses a different host");
+    }
+    fallbackKey = primaryKey;
+  }
+
+  const fallback: AiRoute = {
+    kind: "fallback",
+    label: cleanLabel(value("AI_FALLBACK_PROVIDER_LABEL"), "fallback"),
+    baseUrl: fallbackBase,
+    model: fallbackModel,
+    apiKey: fallbackKey,
+  };
+
+  if (fallback.baseUrl === primary.baseUrl && fallback.model === primary.model && fallback.apiKey === primary.apiKey) {
+    throw new Error("AI fallback route must differ from the primary route");
+  }
+  return [primary, fallback];
+}
+
+function safeDetail(value: unknown): string {
+  return String(value ?? "")
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]")
+    .replace(/(api[_-]?key|token|password|secret|authorization)(\s*[:=]\s*)[^\s,;]+/gi, "$1$2[redacted]")
+    .replace(/https?:\/\/[^\s]+/gi, (candidate) => {
+      try {
+        const parsed = new URL(candidate);
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return "[url]";
+      }
+    })
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
+export function recordAiProviderAttempt(input: {
+  route: AiRouteKind;
+  label: string;
+  model: string;
+  outcome: AiAttemptOutcome;
+  statusCode?: number | null;
+  detail?: unknown;
+}): void {
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO ai_provider_attempts
+    (attempted_at,route,label,model,outcome,status_code,detail)
+    VALUES (?,?,?,?,?,?,?)`)
+    .run(
+      now,
+      input.route,
+      cleanLabel(input.label, input.route),
+      input.model.slice(0, 160),
+      input.outcome,
+      Number.isFinite(input.statusCode) ? input.statusCode : null,
+      input.detail == null ? null : safeDetail(input.detail),
+    );
+  db.prepare("DELETE FROM ai_provider_attempts WHERE attempted_at < datetime('now','-30 day')").run();
+}
+
+function count24h(route: AiRouteKind, outcome?: AiAttemptOutcome): number {
+  const row = outcome
+    ? db.prepare(`SELECT COUNT(*) n FROM ai_provider_attempts
+        WHERE route=? AND outcome=? AND attempted_at>=datetime('now','-24 hour')`).get(route, outcome)
+    : db.prepare(`SELECT COUNT(*) n FROM ai_provider_attempts
+        WHERE route=? AND attempted_at>=datetime('now','-24 hour')`).get(route);
+  return Number((row as { n: number } | undefined)?.n || 0);
+}
+
+function routingConfigSummary(): {
+  configured: boolean;
+  configError: string | null;
+  primaryLabel: string;
+  primaryModel: string | null;
+  fallbackConfigured: boolean;
+  fallbackLabel: string | null;
+  fallbackModel: string | null;
+} {
+  const primaryLabel = cleanLabel(value("AI_PRIMARY_PROVIDER_LABEL"), "primary");
+  const primaryModel = value("AI_MODEL");
+  const fallbackModel = value("AI_FALLBACK_MODEL");
+  const fallbackLabel = fallbackModel ? cleanLabel(value("AI_FALLBACK_PROVIDER_LABEL"), "fallback") : null;
+  try {
+    resolveAiRoutes();
+    return {
+      configured: true,
+      configError: null,
+      primaryLabel,
+      primaryModel,
+      fallbackConfigured: Boolean(fallbackModel),
+      fallbackLabel,
+      fallbackModel,
+    };
+  } catch (error) {
+    return {
+      configured: false,
+      configError: safeDetail(error instanceof Error ? error.message : error),
+      primaryLabel,
+      primaryModel,
+      fallbackConfigured: Boolean(fallbackModel),
+      fallbackLabel,
+      fallbackModel,
+    };
+  }
+}
+
+export function aiRoutingStatus(): AiRoutingStatus {
+  const config = routingConfigSummary();
+  const recentPrimary = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
+      WHERE route='primary' ORDER BY id DESC LIMIT 3`).all() as Array<{ attempted_at: string; outcome: AiAttemptOutcome }>;
+  const primaryDegraded = recentPrimary.length === 3
+    && recentPrimary.every((row) => row.outcome === "retryable_error")
+    && Date.now() - new Date(recentPrimary[0].attempted_at).getTime() <= 6 * 3600000;
+  const latestFallback = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
+      WHERE route='fallback' ORDER BY id DESC LIMIT 1`).get() as { attempted_at: string; outcome: AiAttemptOutcome } | undefined;
+
+  return {
+    ...config,
+    primaryAttempts24h: count24h("primary"),
+    primaryRetryableFailures24h: count24h("primary", "retryable_error"),
+    primaryFatalFailures24h: count24h("primary", "fatal_error"),
+    fallbackAttempts24h: count24h("fallback"),
+    fallbackSuccesses24h: count24h("fallback", "ok"),
+    fallbackFailures24h: count24h("fallback", "retryable_error") + count24h("fallback", "fatal_error"),
+    lastFallbackAt: latestFallback?.attempted_at ?? null,
+    primaryDegraded,
+    fallbackCurrentlyHealthy: latestFallback?.outcome === "ok",
+  };
+}
+
+export function isRetryableAiStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
