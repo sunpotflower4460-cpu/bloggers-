@@ -19,14 +19,18 @@ function configured(value: string | undefined): boolean {
   return Boolean(value?.trim());
 }
 
+function backupDir(): string {
+  return resolve(process.env.BACKUP_DIR || "./backups");
+}
+
 function backupDiagnostic(): DiagnosticItem {
-  const backupDir = resolve(process.env.BACKUP_DIR || "./backups");
-  if (!existsSync(backupDir)) {
-    return { scope: "system", label: "自動バックアップ", status: "warn", detail: `バックアップディレクトリがまだ見つかりません: ${backupDir}` };
+  const dir = backupDir();
+  if (!existsSync(dir)) {
+    return { scope: "system", label: "自動バックアップ", status: "warn", detail: `バックアップディレクトリがまだ見つかりません: ${dir}` };
   }
-  const files = readdirSync(backupDir)
+  const files = readdirSync(dir)
     .filter((name) => /^blog-garden-\d{8}-\d{6}Z\.sqlite$/.test(name))
-    .map((name) => ({ name, stat: statSync(join(backupDir, name)) }))
+    .map((name) => ({ name, stat: statSync(join(dir, name)) }))
     .filter((entry) => entry.stat.isFile() && entry.stat.size > 0)
     .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
   if (!files.length) {
@@ -40,6 +44,22 @@ function backupDiagnostic(): DiagnosticItem {
     label: "自動バックアップ",
     status,
     detail: `${latest.name} · ${Math.round(ageHours * 10) / 10}時間前 · ${(latest.stat.size / 1024 / 1024).toFixed(1)} MB`,
+  };
+}
+
+function offsiteBackupDiagnostic(): DiagnosticItem | null {
+  if (!configured(process.env.RESTIC_REPOSITORY)) return null;
+  const marker = join(backupDir(), ".offsite-last-success");
+  if (!existsSync(marker)) {
+    return { scope: "system", label: "オフサイトバックアップ", status: "warn", detail: "restic repository設定済み。成功markerはまだありません" };
+  }
+  const stat = statSync(marker);
+  const ageHours = Math.max(0, (Date.now() - stat.mtimeMs) / 3600000);
+  return {
+    scope: "system",
+    label: "オフサイトバックアップ",
+    status: ageHours <= 36 ? "ok" : ageHours <= 72 ? "warn" : "error",
+    detail: `restic最終成功 ${Math.round(ageHours * 10) / 10}時間前`,
   };
 }
 
@@ -98,8 +118,10 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
 
   try {
     items.push(backupDiagnostic());
+    const offsite = offsiteBackupDiagnostic();
+    if (offsite) items.push(offsite);
   } catch (error) {
-    items.push({ scope: "system", label: "自動バックアップ", status: "error", detail: error instanceof Error ? error.message : String(error) });
+    items.push({ scope: "system", label: "バックアップ", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
   try {
     items.push(monitorDiagnostic());
