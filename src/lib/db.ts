@@ -115,6 +115,14 @@ function rowToBlog(row: any): Blog {
   };
 }
 
+function localDayKey(value: Date, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(value);
+  }
+}
+
 export function listBlogs(): Blog[] {
   return db.prepare("SELECT * FROM blogs ORDER BY created_at ASC").all().map(rowToBlog);
 }
@@ -169,9 +177,11 @@ export function setLastRun(blogId: string, at = new Date().toISOString()): void 
   db.prepare("UPDATE blogs SET last_run_at = ? WHERE id = ?").run(at, blogId);
 }
 
-export function countTodayPublications(blogId: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM publications WHERE blog_id = ? AND date(created_at) = date('now')`).get(blogId) as { n: number };
-  return row.n;
+export function countTodayPublications(blogId: string, timezone: string): number {
+  const since = new Date(Date.now() - 36 * 3600000).toISOString();
+  const rows = db.prepare("SELECT created_at FROM publications WHERE blog_id = ? AND created_at >= ?").all(blogId, since) as Array<{ created_at: string }>;
+  const today = localDayKey(new Date(), timezone);
+  return rows.filter((row) => localDayKey(new Date(row.created_at), timezone) === today).length;
 }
 
 export function rememberSources(blogId: string, items: SourceCandidate[]): void {
