@@ -17,6 +17,41 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run typecheck
+      - name: Smoke test backup and restore
+        shell: bash
+        run: |
+          mkdir -p .ci/data .ci/backups
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/data/smoke.sqlite');
+          db.exec("CREATE TABLE smoke (value TEXT NOT NULL); INSERT INTO smoke VALUES ('before');");
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/data/smoke.sqlite BACKUP_DIR=.ci/backups BACKUP_RETENTION_DAYS=1 npm run backup
+          BACKUP_FILE="$(ls -1t .ci/backups/blog-garden-*.sqlite | head -n 1)"
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/data/smoke.sqlite');
+          db.prepare('UPDATE smoke SET value = ?').run('mutated');
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/data/smoke.sqlite BACKUP_DIR=.ci/backups BACKUP_FILE="$BACKUP_FILE" CONFIRM_RESTORE=RESTORE npm run restore
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/data/smoke.sqlite', { readonly: true });
+          const row = db.prepare('SELECT value FROM smoke').get();
+          db.close();
+          if (!row || row.value !== 'before') {
+            console.error('restore verification failed', row);
+            process.exit(1);
+          }
+          NODE
+      - name: Validate Docker Compose production configuration
+        shell: bash
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null
+          rm .env
       - run: npm run build
         env:
           APP_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
