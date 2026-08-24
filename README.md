@@ -9,13 +9,14 @@
 1. キーワードごとにトレンド / RSS / ニュースを収集
 2. 重複を除き、鮮度・テーマ一致・ソース分散を加味して候補を整える
 3. GA4・Search Console・コメント反応を回収
-4. 検索表示は多いのにCTRが弱い既存記事があれば、安全条件の範囲でタイトル改善を優先
-5. 改善候補がなければ、過去実績と編集実験を見て新記事の題材と小さな仮説を1つ選定
-6. 媒体とブログ人格に合わせて記事を生成
-7. WordPress / Ghost / Blogger に下書きまたは公開
-8. 結果を次回判断・次の実験・既存記事改善へフィードバック
+4. 過去のタイトル改善が観測期間を満たしたら、CTR改善が本当に起きたかを保守的に評価
+5. 検索表示は多いのにCTRが弱い既存記事があれば、安全条件の範囲でタイトル改善を優先
+6. 改善候補がなければ、過去実績・編集実験・評価済み改善履歴を見て新記事の題材と小さな仮説を1つ選定
+7. 媒体とブログ人格に合わせて記事を生成
+8. WordPress / Ghost / Blogger に下書きまたは公開
+9. 結果を次回判断・次の実験・既存記事改善へフィードバック
 
-統合HPでは、各ブログの稼働状態、最新投稿、7日PV、前週比、エンゲージメント、コメント、検索表示回数・クリック・CTR・平均順位・強い検索語、現在の編集実験、最近の自動改善をまとめて確認できます。
+統合HPでは、各ブログの稼働状態、最新投稿、7日PV、前週比、エンゲージメント、コメント、検索表示回数・クリック・CTR・平均順位・強い検索語、現在の編集実験、最近の自動改善とその評価をまとめて確認できます。
 
 ## 初期対応プラットフォーム
 
@@ -61,7 +62,56 @@ Docker Compose では Web と Worker が同じ SQLite volume を共有します�
 docker compose up -d --build
 ```
 
-Web側にはhealthcheckがあり、workerはWebがhealthyになってから開始します。公開 `/api/health` はブログ名や件数などを返さず、最低限のlivenessだけ返します。
+Web側にはhealthcheckがあり、workerとbackup serviceはWebがhealthyになってから開始します。公開 `/api/health` はブログ名や件数などを返さず、最低限のlivenessだけ返します。
+
+## 自動バックアップと復旧
+
+Docker Composeでは既定で24時間ごとにSQLiteのオンラインバックアップを作成します。単純なファイルコピーではなくSQLiteのbackup APIを使い、作成直後に `PRAGMA integrity_check` が `ok` であることまで確認します。壊れたバックアップは残しません。
+
+既定値:
+
+- ホスト側保存先: `./backups`
+- 間隔: 86400秒（24時間）
+- 保持: 30日
+
+`.env` で変更できます。
+
+```env
+BLOG_GARDEN_BACKUP_DIR=/mnt/separate-disk/blog-garden-backups
+BACKUP_INTERVAL_SECONDS=86400
+BACKUP_RETENTION_DAYS=30
+```
+
+primaryのDocker named volumeとは別のホストパスへ出すのが前提です。さらに重要な運用では、このディレクトリ自体を別マシン・NAS・暗号化クラウドストレージ等へ複製してください。
+
+手動で1回だけ取得する場合:
+
+```bash
+npm run backup
+```
+
+### 復旧
+
+DBにはブログ資格情報が暗号化された状態で入っています。**元と同じ `APP_ENCRYPTION_KEY` がなければ復旧後に資格情報を復号できません。** このキーはDBバックアップとは別のsecret manager等にも保管してください。
+
+復旧は稼働中には行いません。まずサービスを止めます。
+
+```bash
+docker compose stop web worker backup
+```
+
+次に対象バックアップ名を指定し、明示確認文字列 `RESTORE` を渡した時だけ復旧します。復旧コマンドは対象バックアップを再度integrity checkし、現在のDBも `pre-restore-*.sqlite` として退避してから置換します。
+
+```bash
+docker compose run --rm --no-deps \
+  -e CONFIRM_RESTORE=RESTORE \
+  -e BACKUP_FILE=/backups/blog-garden-YYYYMMDD-HHMMSSZ.sqlite \
+  backup ./node_modules/.bin/tsx src/cli/restore.ts
+
+docker compose up -d
+```
+
+`docker compose down -v` はデータvolume自体を削除するため、復旧手順では使いません。
 
 ## 庭の健康診断
 
@@ -92,6 +142,9 @@ Web側にはhealthcheckがあり、workerはWebがhealthyになってから開�
   - Search Console: service accountメールを対象propertyのユーザーへ追加
   - Blog Gardenが要求するscopeは `analytics.readonly` と `webmasters.readonly` のみ
 - `DATABASE_PATH`: 省略時 `./data/blog-garden.sqlite`
+- `BLOG_GARDEN_BACKUP_DIR`: Dockerホスト側のバックアップ保存先
+- `BACKUP_INTERVAL_SECONDS`: 自動バックアップ間隔。既定86400
+- `BACKUP_RETENTION_DAYS`: 保持日数。既定30
 
 ## 反応学習
 
@@ -139,6 +192,18 @@ Search Console APIは全検索行の完全取得を保証しないため、こ�
 検索queryはユーザー生成の非信頼入力としてAIへ渡し、query内の命令には従いません。AIには既存記事が裏付けていない数字・成果・煽り文句をタイトルへ追加させず、検索意図との整合と明確さだけを改善させます。
 
 WordPressは既存post IDを更新、Ghostは最新postを取得して`updated_at`を添えて衝突検知付きで更新、BloggerはPATCH semanticsで変更フィールドだけを更新します。変更前タイトル・変更後タイトル・仮説・理由・日時はDBに残り、統合ダッシュボードにも直近の自動改善が表示されます。
+
+### 改善結果の評価
+
+タイトル変更から14日経つと、Search Consoleの確定7日窓が変更後だけで構成されるのを待ってから事後評価します。
+
+- post-refresh impressionsが30未満 → `inconclusive`
+- 平均順位が5位より大きく動いた → CTR変化に順位要因が混ざるため `inconclusive`
+- それ以外でCTRが「最低0.5 percentage point、かつ元CTRの20%」の大きい方以上改善 → `win`
+- 同じ幅以上悪化 → `loss`
+- 変化が小さい → `inconclusive`
+
+この判定は統合HPへ表示され、評価済みの改善履歴は次のタイトル改善・新記事企画へ戻されます。AI自身に成功判定をさせず、DB上の数値ルールで判定します。
 
 ## 自動公開の安全設計
 
