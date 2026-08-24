@@ -66,6 +66,7 @@ export interface DashboardBlog extends Blog {
   engagedSessions7d: number;
   momentumPercent: number | null;
   engagementRate: number | null;
+  nativeComments: number;
   recentRuns: number;
   failedRuns: number;
 }
