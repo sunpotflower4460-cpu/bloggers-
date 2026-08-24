@@ -5,6 +5,7 @@ import { aiRoutingStatus } from "./ai-routing";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
+import { externalHeartbeatStatus, type ExternalHeartbeatKind } from "./external-heartbeat";
 import { monitorStatus } from "./ops-monitor";
 import { platformAdapter } from "./platforms";
 
@@ -76,6 +77,35 @@ function monitorDiagnostic(): DiagnosticItem {
     label: "独立monitor",
     status: ageHours <= 2 ? "ok" : ageHours <= 4 ? "warn" : "error",
     detail: `${Math.round(ageHours * 10) / 10}時間前に確認 · open incidents ${status.openIncidents}`,
+  };
+}
+
+function externalHeartbeatDiagnostic(kind: ExternalHeartbeatKind): DiagnosticItem | null {
+  const heartbeat = externalHeartbeatStatus(kind);
+  if (!heartbeat.configured) return null;
+  const label = kind === "worker" ? "外部dead-man: worker" : "外部dead-man: backup";
+  if (!heartbeat.lastSuccessAt) {
+    return {
+      scope: "system",
+      label,
+      status: "warn",
+      detail: heartbeat.lastFailureDetail
+        ? `設定済み。成功pingなし · 最新失敗: ${heartbeat.lastFailureDetail}`
+        : "設定済み。成功pingはまだありません",
+    };
+  }
+  const ageHours = Math.max(0, (Date.now() - new Date(heartbeat.lastSuccessAt).getTime()) / 3600000);
+  const threshold = kind === "worker" ? 3 : 36;
+  const staleStatus: DiagnosticStatus = ageHours <= threshold ? "ok" : ageHours <= threshold * 2 ? "warn" : "error";
+  const failedAfterSuccess = heartbeat.lastFailureAt
+    && new Date(heartbeat.lastFailureAt).getTime() > new Date(heartbeat.lastSuccessAt).getTime();
+  const status: DiagnosticStatus = failedAfterSuccess && staleStatus === "ok" ? "warn" : staleStatus;
+  const latestFailure = failedAfterSuccess && heartbeat.lastFailureDetail ? ` · 最新ping失敗: ${heartbeat.lastFailureDetail}` : "";
+  return {
+    scope: "system",
+    label,
+    status,
+    detail: `最終成功 ${Math.round(ageHours * 10) / 10}時間前${latestFailure}`,
   };
 }
 
@@ -183,6 +213,14 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
     items.push(monitorDiagnostic());
   } catch (error) {
     items.push({ scope: "system", label: "独立monitor", status: "error", detail: error instanceof Error ? error.message : String(error) });
+  }
+  for (const kind of ["worker", "backup"] as const) {
+    try {
+      const item = externalHeartbeatDiagnostic(kind);
+      if (item) items.push(item);
+    } catch (error) {
+      items.push({ scope: "system", label: `外部dead-man: ${kind}`, status: "error", detail: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   const needsGoogle = blogs.some((blog) => blog.ga4PropertyId || blog.searchConsoleSiteUrl);
