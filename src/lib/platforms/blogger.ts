@@ -1,7 +1,18 @@
+import { createHash } from "node:crypto";
 import type { BloggerCredentials } from "../credentials";
 import type { BlogPlatformAdapter } from "./base";
 
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function cacheKey(c: BloggerCredentials): string {
+  return createHash("sha256").update(`${c.clientId}\0${c.refreshToken}`).digest("hex");
+}
+
 async function accessToken(c: BloggerCredentials): Promise<string> {
+  const key = cacheKey(c);
+  const cached = tokenCache.get(key);
+  if (cached && cached.expiresAt > Date.now() + 60000) return cached.token;
+
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -13,7 +24,12 @@ async function accessToken(c: BloggerCredentials): Promise<string> {
     }),
   });
   if (!response.ok) throw new Error(`Google token refresh failed ${response.status}: ${await response.text()}`);
-  return (await response.json()).access_token;
+  const payload = await response.json();
+  const token = String(payload.access_token || "");
+  if (!token) throw new Error("Google token refresh did not return access_token");
+  const expiresIn = Math.max(120, Number(payload.expires_in || 3600));
+  tokenCache.set(key, { token, expiresAt: Date.now() + expiresIn * 1000 });
+  return token;
 }
 
 function postEndpoint(credentials: BloggerCredentials, postId: string): string {
