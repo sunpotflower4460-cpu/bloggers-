@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
+import { monitorStatus } from "./ops-monitor";
 import { platformAdapter } from "./platforms";
 
 export type DiagnosticStatus = "ok" | "warn" | "error";
@@ -42,6 +43,20 @@ function backupDiagnostic(): DiagnosticItem {
   };
 }
 
+function monitorDiagnostic(): DiagnosticItem {
+  const status = monitorStatus();
+  if (!status.lastSeen) {
+    return { scope: "system", label: "独立monitor", status: "warn", detail: `heartbeat未確認 · open incidents ${status.openIncidents}` };
+  }
+  const ageHours = Math.max(0, (Date.now() - new Date(status.lastSeen).getTime()) / 3600000);
+  return {
+    scope: "system",
+    label: "独立monitor",
+    status: ageHours <= 2 ? "ok" : ageHours <= 4 ? "warn" : "error",
+    detail: `${Math.round(ageHours * 10) / 10}時間前に確認 · open incidents ${status.openIncidents}`,
+  };
+}
+
 export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   const items: DiagnosticItem[] = [];
   const encryptionKey = process.env.APP_ENCRYPTION_KEY || "";
@@ -56,6 +71,12 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
     label: "AI設定",
     status: configured(process.env.AI_API_KEY) && configured(process.env.AI_MODEL) ? "ok" : "error",
     detail: configured(process.env.AI_API_KEY) && configured(process.env.AI_MODEL) ? `model=${process.env.AI_MODEL}` : "AI_API_KEY / AI_MODEL を設定してください",
+  });
+  items.push({
+    scope: "system",
+    label: "障害通知Webhook",
+    status: configured(process.env.ALERT_WEBHOOK_URL) ? "ok" : "warn",
+    detail: configured(process.env.ALERT_WEBHOOK_URL) ? `設定済み (${process.env.ALERT_WEBHOOK_KIND || "auto"})` : "未設定。incidentはDBに残りますが外部通知は送られません",
   });
   if (process.env.NODE_ENV === "production") {
     items.push({
@@ -79,6 +100,11 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
     items.push(backupDiagnostic());
   } catch (error) {
     items.push({ scope: "system", label: "自動バックアップ", status: "error", detail: error instanceof Error ? error.message : String(error) });
+  }
+  try {
+    items.push(monitorDiagnostic());
+  } catch (error) {
+    items.push({ scope: "system", label: "独立monitor", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
 
   const needsGoogle = blogs.some((blog) => blog.ga4PropertyId || blog.searchConsoleSiteUrl);
