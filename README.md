@@ -27,12 +27,12 @@
 
 ```bash
 cp .env.example .env
-# APP_ENCRYPTION_KEY と AI_* を設定
+# ADMIN_PASSWORD / APP_ENCRYPTION_KEY / AI_* を設定
 npm install
 npm run dev
 ```
 
-`http://localhost:3000/setup` で最初のブログを登録します。
+`http://localhost:3000/setup` で最初のブログを登録します。開発環境ではADMIN_*未設定でも起動できますが、productionでは未設定だと管理画面は503で閉じます。
 
 ## 常時運用
 
@@ -44,6 +44,7 @@ docker compose up -d --build
 
 ## 必須環境変数
 
+- `ADMIN_USERNAME` / `ADMIN_PASSWORD`: 統合HP/APIのBasic認証
 - `APP_ENCRYPTION_KEY`: 64桁hex。ブログ資格情報のAES-256-GCM暗号化に使用
 - `AI_API_KEY`: Responses API互換AIのキー
 - `AI_MODEL`: 使用するモデル名
@@ -61,7 +62,7 @@ docker compose up -d --build
 - `review`: 外部ブログに下書きとして送る
 - `auto`: 自動公開する
 
-資格情報はDBへ平文保存せず、`APP_ENCRYPTION_KEY` で暗号化します。AIには資格情報を渡しません。
+資格情報はDBへ平文保存せず、`APP_ENCRYPTION_KEY` で暗号化します。AIには資格情報を渡しません。外部RSS/ニュースの文面はAIにとって信頼できない入力として区切り、そこに含まれる命令を無視するよう編集プロンプト側でも固定しています。
 
 ## 現在のフェーズについて
 

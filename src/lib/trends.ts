@@ -16,6 +16,11 @@ function toCandidate(item: any, source: string): SourceCandidate | null {
   };
 }
 
+function sourceName(url: string): string {
+  try { return new URL(url).hostname; }
+  catch { return "custom RSS"; }
+}
+
 async function parseFeed(url: string, source: string): Promise<SourceCandidate[]> {
   try {
     const feed = await parser.parseURL(url);
@@ -31,7 +36,7 @@ export async function collectTrends(blog: Blog): Promise<SourceCandidate[]> {
   const googleNews = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ja&gl=JP&ceid=JP:ja`;
   const groups = await Promise.all([
     parseFeed(googleNews, "Google News"),
-    ...blog.feeds.map((url) => parseFeed(url, new URL(url).hostname)),
+    ...blog.feeds.map((url) => parseFeed(url, sourceName(url))),
   ]);
   const map = new Map<string, SourceCandidate>();
   for (const item of groups.flat()) if (!map.has(item.url)) map.set(item.url, item);

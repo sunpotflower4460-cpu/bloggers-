@@ -47,7 +47,7 @@ export async function collectGa4(blog: Blog): Promise<number> {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({
-      dateRanges: [{ startDate: "7daysAgo", endDate: "yesterday" }],
+      dateRanges: [{ startDate: "yesterday", endDate: "yesterday" }],
       dimensions: [{ name: "pagePath" }],
       metrics: [{ name: "screenPageViews" }, { name: "sessions" }, { name: "engagedSessions" }],
       limit: 10000,
