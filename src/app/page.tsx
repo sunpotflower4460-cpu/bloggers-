@@ -50,11 +50,11 @@ export default function Home() {
                 <div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div>
                 <div><span>前週比</span><strong>{momentum(blog.momentumPercent)}</strong></div>
                 <div><span>engaged</span><strong>{blog.engagementRate === null ? "—" : `${blog.engagementRate}%`}</strong></div>
-                <div><span>errors</span><strong>{blog.failedRuns}</strong></div>
+                <div><span>comments</span><strong>{blog.nativeComments}</strong></div>
               </div>
               <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
               <div className="cardFoot">
-                <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs</span>
+                <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs · {blog.failedRuns} errors</span>
                 <div className="actions">
                   <Link className="button secondary" href={`/blogs/${blog.id}/settings`}>設定</Link>
                   <BlogToggleButton blogId={blog.id} active={blog.active} />
