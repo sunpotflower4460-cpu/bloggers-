@@ -1,11 +1,31 @@
 {
-  "name": "gpt-guardrail-template",
+  "name": "blog-garden",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "daily": "tsx src/cli/daily.ts",
     "status": "node scripts/guard/status.mjs",
     "guard": "node scripts/guard/index.mjs",
     "guard:selftest": "node scripts/guard/selftest.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "next": "16.3.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "rss-parser": "3.13.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
   }
 }

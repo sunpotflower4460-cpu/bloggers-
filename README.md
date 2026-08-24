@@ -1,44 +1,68 @@
-# gpt-guardrail-template
+# Blog Garden
 
-## 目的
+複数の外部ブログを、AI編集部がそれぞれ独立して育て続ける統合運用HPです。
 
-ChatGPTのGitHub連携でリポジトリを直接編集させる際に起きがちな、出典のない制約の捏造・未承認の機能追加・コンセプトの軸の無視・チープなUIという4つの逸脱を、構造的に検出可能にするテンプレート。
-GPTを賢くする仕組みではなく、逸脱を発見しやすくして最終レビュー（Claude）のコストを下げるための装置である。
-`AGENTS.md` を憲法として運用し、`docs/` 配下の台帳で判断の根拠を追跡する。
+## 目指す状態
 
-## Template repositoryとしての設定手順
+初期設定でブログごとのテーマ・媒体・投稿頻度・情報源・公開方針を登録すると、以後は次のループを自動で回します。
 
-1. GitHubでこのリポジトリの Settings を開く
-2. General タブの「Template repository」にチェックを入れる
-3. 新規プロジェクトは「Use this template」から作成する
-4. **（必須）** 新規プロジェクト側の Settings > Branches でデフォルトブランチに保護ルールを設定する:
-   - Require a pull request before merging
-   - Require approvals: 1 以上
-   - Require status checks to pass before merging → `guard` と `require-human-approval` を選択
-   - この設定なしでは、PR作成者（GPT自身を含む）が誰の承認もなくマージできてしまい、`FEATURES.md` の「承認」記載がGPTの自己申告のまま通ってしまう
+1. トレンド / RSS / ニュースを収集
+2. 過去記事と実績を見て、今書く価値が高い題材を選定
+3. 媒体とブログ人格に合わせて記事を生成
+4. WordPress / Ghost / Blogger に下書きまたは公開
+5. GA4の実反応を回収
+6. 伸びたテーマ・角度・タイトルを次回判断へフィードバック
 
-## 新規プロジェクト開始時の流れ
+統合HPでは、各ブログの稼働状態、最新投稿、PV、実行履歴をまとめて確認できます。
 
-1. `PHASE.md` を `P0` にする
-2. GPTに「AGENTS.mdを読んで」と伝える（GPTは `npm run status` で現状を把握してから動く）
-3. 既存資材があれば棚卸し（`INVENTORY.md`）、なければ質問（`QUESTIONS.md`）
-4. ユーザーが承認する
-5. 承認済みの範囲のみ実装する
-6. `npm run guard` で機械チェック（`.github/workflows/guard.yml` によりPRでも自動実行される）
-7. 人間がPRの内容を読んでから承認する（`require-human-approval` はレビューの存在だけを確認し、中身の妥当性までは見ない）
+## 初期対応プラットフォーム
 
-## 適用の目安
+- WordPress REST API（Application Password）
+- Ghost Admin API（Custom Integration）
+- Blogger API v3（Google OAuth refresh token）
 
-数十分で終わる修正や検証目的の使い捨てコードにまでフルセットを適用すると、儀式のコストが効果を上回る。目安として、複数PRにまたがって残る成果物（公開するアプリ・長期運用するリポジトリ）には全体を、その場限りの検証には `AGENTS.md` の6条ルールと `npm run guard` だけを使い、`craft/` や `DESIGN_BRIEF.md` は省略してよい。
+内部は `BlogPlatformAdapter` で分離しているため、将来ほかの媒体を追加できます。
 
-## 効果の限界
+## ローカル起動
 
-このテンプレートは設計判断の質そのものを上げるものではない。逸脱が起きたときに、それを検出できる可能性が上がるだけである。最終判断は常に人間（Claudeによるレビューを含む）が行う。
+```bash
+cp .env.example .env
+# APP_ENCRYPTION_KEY と AI_* を設定
+npm install
+npm run dev
+```
 
-以下は現時点で解消できていない、構造的な限界である:
+`http://localhost:3000/setup` で最初のブログを登録します。
 
-- **guardは体裁を見るが意味は見ない。** 台帳同士の整合性・見出しの有無・色のハードコードなどは検出できるが、実装や「なぜ」欄の記述が実質的に正しいかどうかは判定できない。人間・Claudeによる意味的なレビューは省略できない
-- **意図的な回避への耐性は限定的。** ディレクトリ名やファイル名の慣習に依存する検出（`entrance-count` 等）は、命名を変えるだけで回避できる余地が残る。正直な失敗を拾う設計であり、悪意ある回避を防ぐ設計ではない
-- **ブランチ保護を設定して初めて意味を持つ仕組みがある。** 上記「必須」の設定を怠ると、`require-human-approval` は存在するだけで何も強制しない
-- **実際のChatGPT/GPTセッションでの効果は未検証。** guardスクリプトの機械的な正しさは合成fixtureで検証済みだが、実際のGPTエージェントがこのテンプレート通りに振る舞うかどうかは別問題である
-- **`phase-not-bundled` / `no-new-deps` は「自分自身との比較」を避けるが、複数コミットの push までは追い切れない。** `main` に直接乗った状態（`guard.yml` の `push: branches: [main]` トリガーを含む）では、デフォルトブランチとのマージベースが HEAD 自身に収束するため直前コミット（`HEAD~1`）との比較にフォールバックする。1コミットの直接pushなら検出できるが、複数コミットをまとめてpushした場合、最後のコミットより前の変更は比較範囲に入らない
+## 常時運用
+
+Docker Compose では Web と Worker が同じ SQLite volume を共有します。Worker は1時間ごとに起動し、各ブログの `cadenceHours` と `dailyLimit` を見て必要なブログだけを処理します。
+
+```bash
+docker compose up -d --build
+```
+
+## 必須環境変数
+
+- `APP_ENCRYPTION_KEY`: 64桁hex。ブログ資格情報のAES-256-GCM暗号化に使用
+- `AI_API_KEY`: Responses API互換AIのキー
+- `AI_MODEL`: 使用するモデル名
+- `AI_BASE_URL`: 省略時 `https://api.openai.com/v1`
+
+任意:
+
+- `GOOGLE_SERVICE_ACCOUNT_JSON`: GA4 Data API用Service Account JSON。対象GA4 propertyにViewer権限を付与
+- `DATABASE_PATH`: 省略時 `./data/blog-garden.sqlite`
+
+## 自動公開の安全設計
+
+ブログごとに `publishMode` を持ちます。
+
+- `review`: 外部ブログに下書きとして送る
+- `auto`: 自動公開する
+
+資格情報はDBへ平文保存せず、`APP_ENCRYPTION_KEY` で暗号化します。AIには資格情報を渡しません。
+
+## 現在のフェーズについて
+
+このリポジトリはGPT guardrail templateから開始しています。実装は `feat/autonomous-blog-garden` ブランチで進め、`PHASE.md` はテンプレート規約どおり変更していません。マージ前に人間が差分とフェーズを確認してください。
