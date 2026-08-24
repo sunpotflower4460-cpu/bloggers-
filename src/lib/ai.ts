@@ -41,6 +41,7 @@ function safeProviderError(value: string): string {
 export async function aiJson<T>(system: string, user: string): Promise<T> {
   const base = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
   const model = env("AI_MODEL");
+  const apiKey = env("AI_API_KEY");
   reserveAiCall(model);
 
   const requestBody: Record<string, unknown> = {
@@ -57,7 +58,7 @@ export async function aiJson<T>(system: string, user: string): Promise<T> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${env("AI_API_KEY")}`,
+      authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(requestBody),
     signal: AbortSignal.timeout(180_000),
