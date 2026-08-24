@@ -20,10 +20,7 @@ export const wordpressAdapter: BlogPlatformAdapter = {
     const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/posts`;
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: auth(credentials),
-      },
+      headers: { "content-type": "application/json", authorization: auth(credentials) },
       body: JSON.stringify({
         title: article.title,
         content: article.html,
@@ -39,5 +36,16 @@ export const wordpressAdapter: BlogPlatformAdapter = {
       status: blog.publishMode === "auto" ? "published" : "draft",
       publishedAt: payload.date_gmt ? new Date(`${payload.date_gmt}Z`).toISOString() : null,
     };
+  },
+  async collectReactions(blog, raw, publication) {
+    const credentials = raw as WordPressCredentials;
+    const endpoint = new URL(`${blog.siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/comments`);
+    endpoint.searchParams.set("post", publication.platformPostId);
+    endpoint.searchParams.set("status", "approve");
+    endpoint.searchParams.set("per_page", "1");
+    endpoint.searchParams.set("_fields", "id");
+    const response = await fetch(endpoint, { headers: { authorization: auth(credentials) } });
+    if (!response.ok) throw new Error(`WordPress comments failed ${response.status}`);
+    return { comments: Number(response.headers.get("x-wp-total") || 0) };
   },
 };
