@@ -1,4 +1,4 @@
-import type { Blog, GeneratedArticle } from "../types";
+import type { Blog, GeneratedArticle, Publication } from "../types";
 
 export interface PublishResult {
   platformPostId: string;
@@ -12,7 +12,12 @@ export interface ValidationResult {
   detail?: string;
 }
 
+export interface NativeReactionResult {
+  comments: number;
+}
+
 export interface BlogPlatformAdapter {
   validate(siteUrl: string, credentials: unknown): Promise<ValidationResult>;
   publish(blog: Blog, credentials: unknown, article: GeneratedArticle): Promise<PublishResult>;
+  collectReactions?(blog: Blog, credentials: unknown, publication: Publication): Promise<NativeReactionResult>;
 }
