@@ -48,4 +48,14 @@ export const bloggerAdapter: BlogPlatformAdapter = {
       publishedAt: post.published || null,
     };
   },
+  async collectReactions(_blog, raw, publication) {
+    const credentials = raw as BloggerCredentials;
+    const token = await accessToken(credentials);
+    const response = await fetch(`https://www.googleapis.com/blogger/v3/blogs/${encodeURIComponent(credentials.blogId)}/posts/${encodeURIComponent(publication.platformPostId)}?maxComments=0`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Blogger reactions failed ${response.status}`);
+    const post = await response.json();
+    return { comments: Number(post.replies?.totalItems || 0) };
+  },
 };
