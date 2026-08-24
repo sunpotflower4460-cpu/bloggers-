@@ -15,6 +15,7 @@ monitorは既定1時間ごとに次を確認します。
 - 各ブログの投稿API資格情報が現在も使えるか（6時間ごとにlive validation）
 - 検証済みSQLiteバックアップが古くなっていないか
 - offsite backupを有効化している場合、その成功markerが古くなっていないか
+- AI日次予算が上限へ到達していないか
 
 障害は `operational_incidents` に保存します。Webhook未設定でも履歴は失われません。
 
@@ -46,7 +47,31 @@ MONITOR_INTERVAL_SECONDS=3600
 
 productionではWebhookはHTTPSのみ許可します。Webhook URL自体、ブログ資格情報、Google資格情報、AI API keyは通知本文へ出しません。エラー本文もtoken/password/secret等の典型パターンをredactして800文字までに制限します。
 
-## 3. VPS全停止を外から検知する GitHub Actions monitor
+## 3. AI日次予算ガード
+
+放置運用でAI APIの再試行やブログ数増加による予期しない利用量増加を防ぐため、AIリクエスト前にSQLite-backedの日次予算を予約します。workerと手動実行が同時に動いても同じ日次カウンタを共有します。
+
+既定値:
+
+```env
+AI_DAILY_CALL_LIMIT=100
+AI_DAILY_TOKEN_LIMIT=2000000
+AI_BUDGET_TIMEZONE=Asia/Tokyo
+AI_MAX_OUTPUT_TOKENS=
+```
+
+- call上限はproviderがusage情報を返さなくても必ず機能します
+- providerがResponses互換の`usage.input_tokens / output_tokens / total_tokens`を返す場合はtoken数も加算します
+- APIへ送信を開始したrequestは、providerエラーや再試行になってもcallとして数えます
+- `AI_API_KEY` / `AI_MODEL` 自体が未設定の場合はrequest予約前に失敗するためcallを消費しません
+- callまたはtoken上限到達後は次のAI requestを発行しません
+- `/diagnostics` は80%以上でwarning、上限到達でerrorを表示します
+- 上限到達は `ai-budget-exhausted` critical incidentになり、Webhook設定済みなら通知されます
+- 日付が切り替わって予算が復旧するとincidentは自動closeされ、RECOVERYを1回送ります
+
+token上限はproviderがusageを返さない場合は観測できないため、call上限を無効化しないでください。`AI_MAX_OUTPUT_TOKENS` は使用中のResponses互換providerが対応している場合だけ設定します。
+
+## 4. VPS全停止を外から検知する GitHub Actions monitor
 
 同じDocker host自体が停止した場合、内部monitorも同時に停止するため自分自身から通知できません。
 
@@ -95,7 +120,7 @@ GitHubのscheduled workflowは**default branchにworkflowファイルが存在�
 
 public repositoryでは、repository activityが60日間ない場合にscheduled workflowが自動無効化されることがあります。Blog Gardenを事業クリティカルに使う場合は、GitHub Actionsだけを唯一の外部監視にせず、別のmanaged HTTP uptime serviceも同じ `/api/health` へ向けて二重化してください。
 
-## 4. ローカルSQLiteバックアップ
+## 5. ローカルSQLiteバックアップ
 
 `backup` serviceは既定24時間ごとにSQLite online backupを作成し、`PRAGMA integrity_check`成功後だけ残します。
 
@@ -107,7 +132,7 @@ BACKUP_RETENTION_DAYS=30
 
 primary named volumeと同じ物理ディスクだけに置くとhost故障には耐えないため、次のoffsite層を推奨します。
 
-## 5. resticオフサイト暗号化バックアップ
+## 6. resticオフサイト暗号化バックアップ
 
 任意overlay `docker-compose.offsite.yml` は公式 `restic/restic:0.19.1` を使い、ローカルでintegrity check済みのSQLite snapshotディレクトリを別拠点へ暗号化保存します。
 
@@ -136,7 +161,7 @@ docker compose \
 
 `RESTIC_PASSWORD` は `APP_ENCRYPTION_KEY` と別の秘密値にしてください。両方をVPSだけに置くとVPS消失時に復旧不能になるため、secret manager等の別拠点に保管します。
 
-## 6. 復旧優先順位
+## 7. 復旧優先順位
 
 VPS障害時は次の順で復旧します。
 
@@ -146,16 +171,17 @@ VPS障害時は次の順で復旧します。
 4. 新VPSへBlog Gardenを配置
 5. ローカル `backups/` へSQLite snapshotを置く
 6. web / worker / backup / monitorを停止した状態で `CONFIRM_RESTORE=RESTORE` を使ってrestore
-7. `/diagnostics` でDB、投稿先、Google、monitor、backupを確認
+7. `/diagnostics` でDB、投稿先、Google、monitor、backup、AI予算を確認
 8. `review` モードのブログから手動実行して投稿接続を確認
 9. 問題なければ通常自動運転へ戻す
 10. GitHub external uptime monitorが復旧を確認し、incident Issueを自動closeしたことを確認
 
-## 7. 日常確認
+## 8. 日常確認
 
 通常は統合HP `/diagnostics` で以下だけ見れば十分です。
 
 - SQLite: ok
+- AI日次予算: ok
 - 自動バックアップ: 36時間以内
 - offsite backupを使う場合: 最新成功markerが36時間以内
 - 独立monitor: 2時間以内
@@ -166,4 +192,4 @@ VPS障害時は次の順で復旧します。
 
 さらにGitHub側で `external-uptime` workflowが定期実行され、OPENの `[Blog Garden] External uptime incident` が存在しないことを確認します。
 
-異常時は記事を増やす前に認証・バックアップ・worker heartbeat・VPS到達性を先に直します。
+異常時は記事を増やす前に認証・AI予算・バックアップ・worker heartbeat・VPS到達性を先に直します。
