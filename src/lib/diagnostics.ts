@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { aiBudgetStatus } from "./ai-budget";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
@@ -77,6 +78,17 @@ function monitorDiagnostic(): DiagnosticItem {
   };
 }
 
+function aiBudgetDiagnostic(): DiagnosticItem {
+  const budget = aiBudgetStatus();
+  const status: DiagnosticStatus = budget.exhausted ? "error" : budget.utilization >= 0.8 ? "warn" : "ok";
+  return {
+    scope: "system",
+    label: "AI日次予算",
+    status,
+    detail: `${budget.dayKey} (${budget.timezone}) · calls ${budget.calls}/${budget.callLimit} · tokens ${budget.totalTokens.toLocaleString()}/${budget.tokenLimit.toLocaleString()}`,
+  };
+}
+
 export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   const items: DiagnosticItem[] = [];
   const encryptionKey = process.env.APP_ENCRYPTION_KEY || "";
@@ -92,6 +104,11 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
     status: configured(process.env.AI_API_KEY) && configured(process.env.AI_MODEL) ? "ok" : "error",
     detail: configured(process.env.AI_API_KEY) && configured(process.env.AI_MODEL) ? `model=${process.env.AI_MODEL}` : "AI_API_KEY / AI_MODEL を設定してください",
   });
+  try {
+    items.push(aiBudgetDiagnostic());
+  } catch (error) {
+    items.push({ scope: "system", label: "AI日次予算", status: "error", detail: error instanceof Error ? error.message : String(error) });
+  }
   items.push({
     scope: "system",
     label: "障害通知Webhook",
