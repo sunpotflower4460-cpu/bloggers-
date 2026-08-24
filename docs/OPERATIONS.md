@@ -16,6 +16,7 @@ monitorは既定1時間ごとに次を確認します。
 - 検証済みSQLiteバックアップが古くなっていないか
 - offsite backupを有効化している場合、その成功markerが古くなっていないか
 - AI日次予算が上限へ到達していないか
+- AI routing設定が壊れていないか、primaryが連続一時障害になっていないか
 
 障害は `operational_incidents` に保存します。Webhook未設定でも履歴は失われません。
 
@@ -70,6 +71,34 @@ AI_MAX_OUTPUT_TOKENS=
 - 日付が切り替わって予算が復旧するとincidentは自動closeされ、RECOVERYを1回送ります
 
 token上限はproviderがusageを返さない場合は観測できないため、call上限を無効化しないでください。`AI_MAX_OUTPUT_TOKENS` は使用中のResponses互換providerが対応している場合だけ設定します。
+
+### AI provider / model failover と circuit breaker
+
+primaryの一時障害で全ブログが止まらないよう、Responses互換endpointを1段だけfallbackできます。
+
+```env
+AI_PRIMARY_PROVIDER_LABEL=primary
+AI_FALLBACK_MODEL=
+AI_FALLBACK_BASE_URL=
+AI_FALLBACK_API_KEY=
+AI_FALLBACK_PROVIDER_LABEL=fallback
+AI_PRIMARY_CIRCUIT_MINUTES=30
+```
+
+ルールは意図的に保守的です。
+
+- 1論理requestにつき `primary 1回 + fallback 1回` が最大です。無限retryはしません
+- fallback対象はnetwork/timeout、HTTP `408 / 425 / 429 / 5xx` の一時障害だけです
+- `400 / 401 / 403` 等の設定・認証系エラーはfallbackで隠しません
+- HTTP 200でも壊れたJSONや期待形でないモデル出力は別providerへ再生成しません
+- primary/fallbackの**実際に送信した各request**が同じAI日次call予算を1つずつ消費します
+- 同じAPI hostで別modelへfallbackする場合はprimary keyを再利用できます
+- 別hostへfallbackする場合は `AI_FALLBACK_API_KEY` が必須で、`AI_API_KEY` と同じ値も拒否します
+- fallback base/keyだけ入れてmodelを忘れた半端な設定はエラーになります
+
+primaryが6時間以内に3回連続で一時障害になると `ai-primary-degraded` incidentをOPENします。fallback成功中ならwarning、fallbackがない/失敗中ならcriticalです。
+
+fallback設定済みの場合は同時にcircuit breakerが開きます。既定30分はprimaryを迂回してfallbackへ直接送るため、毎回「失敗primary + fallback」の2callを消費しません。時間切れ後の最初のrequestでprimaryを再probeし、成功すれば通常経路へ自動復帰してincidentもCLOSED/RECOVERYになります。`/diagnostics` にはCIRCUIT OPENと解除予定時刻、24時間のprimary/fallback試行数を表示します。
 
 ## 4. VPS全停止を外から検知する GitHub Actions monitor
 
@@ -171,7 +200,7 @@ VPS障害時は次の順で復旧します。
 4. 新VPSへBlog Gardenを配置
 5. ローカル `backups/` へSQLite snapshotを置く
 6. web / worker / backup / monitorを停止した状態で `CONFIRM_RESTORE=RESTORE` を使ってrestore
-7. `/diagnostics` でDB、投稿先、Google、monitor、backup、AI予算を確認
+7. `/diagnostics` でDB、投稿先、Google、monitor、backup、AI予算・AI failoverを確認
 8. `review` モードのブログから手動実行して投稿接続を確認
 9. 問題なければ通常自動運転へ戻す
 10. GitHub external uptime monitorが復旧を確認し、incident Issueを自動closeしたことを確認
@@ -182,6 +211,7 @@ VPS障害時は次の順で復旧します。
 
 - SQLite: ok
 - AI日次予算: ok
+- AI failover: primary正常、または意図したfallback/circuit状態
 - 自動バックアップ: 36時間以内
 - offsite backupを使う場合: 最新成功markerが36時間以内
 - 独立monitor: 2時間以内
@@ -192,4 +222,4 @@ VPS障害時は次の順で復旧します。
 
 さらにGitHub側で `external-uptime` workflowが定期実行され、OPENの `[Blog Garden] External uptime incident` が存在しないことを確認します。
 
-異常時は記事を増やす前に認証・AI予算・バックアップ・worker heartbeat・VPS到達性を先に直します。
+異常時は記事を増やす前に認証・AI予算/AI routing・バックアップ・worker heartbeat・VPS到達性を先に直します。
