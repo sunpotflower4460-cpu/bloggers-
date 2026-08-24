@@ -112,11 +112,14 @@ function aiRoutingDiagnostic(): DiagnosticItem {
     ? routing.fallbackCurrentlyHealthy ? "warn" : "error"
     : "ok";
   const lastFallback = routing.lastFallbackAt ? ` · last fallback ${routing.lastFallbackAt}` : "";
+  const circuit = routing.circuitOpen
+    ? ` · CIRCUIT OPEN → primaryを迂回中（${routing.circuitUntil}まで、最大${routing.circuitMinutes}分）`
+    : ` · circuit closed（${routing.circuitMinutes}分）`;
   return {
     scope: "system",
     label: "AI failover",
     status,
-    detail: `${routing.primaryLabel}/${routing.primaryModel} → ${routing.fallbackLabel}/${routing.fallbackModel} · primary retryable ${routing.primaryRetryableFailures24h}/${routing.primaryAttempts24h} · fallback success ${routing.fallbackSuccesses24h}/${routing.fallbackAttempts24h}${lastFallback}`,
+    detail: `${routing.primaryLabel}/${routing.primaryModel} → ${routing.fallbackLabel}/${routing.fallbackModel} · primary retryable ${routing.primaryRetryableFailures24h}/${routing.primaryAttempts24h} · fallback success ${routing.fallbackSuccesses24h}/${routing.fallbackAttempts24h}${lastFallback}${circuit}`,
   };
 }
 
