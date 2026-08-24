@@ -1,10 +1,5 @@
 import { recordAiUsage, reserveAiCall } from "./ai-budget";
-
-function env(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
+import { isRetryableAiStatus, recordAiProviderAttempt, resolveAiRoutes, type AiRoute } from "./ai-routing";
 
 function extractText(payload: any): string {
   if (typeof payload.output_text === "string") return payload.output_text;
@@ -29,45 +24,143 @@ function parseJson<T>(text: string): T {
   }
 }
 
-function safeProviderError(value: string): string {
-  return value
+function safeProviderError(value: unknown): string {
+  return String(value ?? "")
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]")
     .replace(/(api[_-]?key|token|password|secret|authorization)(\s*[:=]\s*)[^\s,;]+/gi, "$1$2[redacted]")
+    .replace(/https?:\/\/[^\s]+/gi, (candidate) => {
+      try {
+        const parsed = new URL(candidate);
+        return `${parsed.origin}${parsed.pathname}`;
+      } catch {
+        return "[url]";
+      }
+    })
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 500);
 }
 
-export async function aiJson<T>(system: string, user: string): Promise<T> {
-  const base = (process.env.AI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
-  const model = env("AI_MODEL");
-  const apiKey = env("AI_API_KEY");
-  reserveAiCall(model);
+class AiRouteFailure extends Error {
+  constructor(
+    message: string,
+    readonly route: AiRoute,
+    readonly retryable: boolean,
+    readonly statusCode: number | null,
+  ) {
+    super(message);
+    this.name = "AiRouteFailure";
+  }
+}
 
-  const requestBody: Record<string, unknown> = {
-    model,
+function requestBody(route: AiRoute, system: string, user: string): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: route.model,
     input: [
       { role: "system", content: system },
       { role: "user", content: `${user}\n\nReturn one valid JSON object only. No markdown fences.` },
     ],
   };
   const maxOutput = Number.parseInt(process.env.AI_MAX_OUTPUT_TOKENS || "", 10);
-  if (Number.isFinite(maxOutput) && maxOutput > 0) requestBody.max_output_tokens = Math.min(maxOutput, 100_000);
+  if (Number.isFinite(maxOutput) && maxOutput > 0) body.max_output_tokens = Math.min(maxOutput, 100_000);
+  return body;
+}
 
-  const response = await fetch(`${base}/responses`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-    signal: AbortSignal.timeout(180_000),
-  });
+async function callRoute(route: AiRoute, system: string, user: string): Promise<any> {
+  // Every actual outbound request consumes one slot from the shared daily budget.
+  // A failover therefore cannot bypass or reset the primary provider's ceiling.
+  reserveAiCall(`${route.label}:${route.model}`);
+
+  let response: Response;
+  try {
+    response = await fetch(`${route.baseUrl}/responses`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${route.apiKey}`,
+      },
+      body: JSON.stringify(requestBody(route, system, user)),
+      signal: AbortSignal.timeout(180_000),
+    });
+  } catch (error) {
+    const detail = safeProviderError(error instanceof Error ? error.message : error) || "network request failed";
+    recordAiProviderAttempt({
+      route: route.kind,
+      label: route.label,
+      model: route.model,
+      outcome: "retryable_error",
+      detail,
+    });
+    throw new AiRouteFailure(`AI ${route.kind} route network failure: ${detail}`, route, true, null);
+  }
+
   if (!response.ok) {
     const detail = safeProviderError(await response.text().catch(() => ""));
-    throw new Error(`AI request failed ${response.status}${detail ? `: ${detail}` : ""}`);
+    const retryable = isRetryableAiStatus(response.status);
+    recordAiProviderAttempt({
+      route: route.kind,
+      label: route.label,
+      model: route.model,
+      outcome: retryable ? "retryable_error" : "fatal_error",
+      statusCode: response.status,
+      detail,
+    });
+    throw new AiRouteFailure(
+      `AI ${route.kind} route failed ${response.status}${detail ? `: ${detail}` : ""}`,
+      route,
+      retryable,
+      response.status,
+    );
   }
-  const payload = await response.json();
-  recordAiUsage(payload?.usage, model);
+
+  let payload: any;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    const detail = safeProviderError(error instanceof Error ? error.message : error) || "invalid JSON response";
+    recordAiProviderAttempt({
+      route: route.kind,
+      label: route.label,
+      model: route.model,
+      outcome: "fatal_error",
+      statusCode: response.status,
+      detail,
+    });
+    throw new AiRouteFailure(`AI ${route.kind} route returned invalid protocol JSON: ${detail}`, route, false, response.status);
+  }
+
+  recordAiUsage(payload?.usage, `${route.label}:${route.model}`);
+  recordAiProviderAttempt({
+    route: route.kind,
+    label: route.label,
+    model: route.model,
+    outcome: "ok",
+    statusCode: response.status,
+  });
+  return payload;
+}
+
+export async function aiJson<T>(system: string, user: string): Promise<T> {
+  const routes = resolveAiRoutes();
+  const primary = routes[0];
+  const fallback = routes[1];
+
+  let payload: any;
+  try {
+    payload = await callRoute(primary, system, user);
+  } catch (error) {
+    if (!(error instanceof AiRouteFailure) || !error.retryable || !fallback) throw error;
+    try {
+      payload = await callRoute(fallback, system, user);
+    } catch (fallbackError) {
+      const primaryDetail = safeProviderError(error.message);
+      const fallbackDetail = safeProviderError(fallbackError instanceof Error ? fallbackError.message : fallbackError);
+      throw new Error(`AI primary route unavailable and bounded fallback failed. primary=${primaryDetail}; fallback=${fallbackDetail}`);
+    }
+  }
+
+  // Output-shape errors are deliberately not retried on another provider. They are
+  // editorial/model-quality failures, not transport availability failures, and a
+  // second generation would spend extra budget while hiding the real defect.
   return parseJson<T>(extractText(payload));
 }
