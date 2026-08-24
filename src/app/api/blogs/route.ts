@@ -18,6 +18,15 @@ function publishModeFrom(value: FormDataEntryValue | null): PublishMode | null {
   return ["review", "auto"].includes(mode) ? mode as PublishMode : null;
 }
 
+function searchConsoleSiteFrom(value: FormDataEntryValue | null): string | null {
+  const site = String(value || "").trim();
+  if (!site) return null;
+  if (site.startsWith("sc-domain:") && site.length > "sc-domain:".length) return site;
+  const url = new URL(site);
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Search Console property が正しくありません");
+  return site;
+}
+
 export async function GET() {
   return NextResponse.json(listBlogs().map(({ credentialsCipher, ...blog }) => blog));
 }
@@ -40,6 +49,10 @@ export async function POST(request: Request) {
   try { credentials = credentialsFromForm(form, platform); }
   catch (error) { return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 }); }
 
+  let searchConsoleSiteUrl: string | null;
+  try { searchConsoleSiteUrl = searchConsoleSiteFrom(form.get("searchConsoleSiteUrl")); }
+  catch (error) { return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 }); }
+
   createBlog({
     name,
     niche,
@@ -54,6 +67,7 @@ export async function POST(request: Request) {
     language: "ja",
     timezone: "Asia/Tokyo",
     ga4PropertyId: String(form.get("ga4PropertyId") || "").trim() || null,
+    searchConsoleSiteUrl,
     active: true,
   });
   return NextResponse.redirect(new URL("/", request.url), 303);
