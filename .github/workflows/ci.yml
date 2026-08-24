@@ -19,6 +19,29 @@ jobs:
       - run: npm run typecheck
       - name: Smoke test generated article safety gate
         run: ./node_modules/.bin/tsx scripts/ci/article-safety-smoke.ts
+      - name: Smoke test AI daily budget and incident recovery
+        shell: bash
+        run: |
+          mkdir -p .ci
+          DATABASE_PATH=.ci/ai-budget-calls.sqlite AI_DAILY_CALL_LIMIT=2 AI_DAILY_TOKEN_LIMIT=999999 TEST_AI_BUDGET_MODE=calls ./node_modules/.bin/tsx scripts/ci/ai-budget-smoke.ts
+          DATABASE_PATH=.ci/ai-budget-alert.sqlite AI_DAILY_CALL_LIMIT=10 AI_DAILY_TOKEN_LIMIT=200 TEST_AI_BUDGET_MODE=tokens ./node_modules/.bin/tsx scripts/ci/ai-budget-smoke.ts
+          DATABASE_PATH=.ci/ai-budget-alert.sqlite AI_DAILY_CALL_LIMIT=10 AI_DAILY_TOKEN_LIMIT=200 BACKUP_DIR=.ci/ai-budget-backups npm run monitor >/dev/null
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/ai-budget-alert.sqlite');
+          const incident = db.prepare("SELECT status FROM operational_incidents WHERE code='ai-budget-exhausted' AND scope='system'").get();
+          if (!incident || incident.status !== 'open') throw new Error('AI budget exhaustion incident was not opened');
+          db.prepare('UPDATE ai_usage_daily SET calls=0,total_tokens=0,input_tokens=0,output_tokens=0').run();
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/ai-budget-alert.sqlite AI_DAILY_CALL_LIMIT=10 AI_DAILY_TOKEN_LIMIT=200 BACKUP_DIR=.ci/ai-budget-backups npm run monitor >/dev/null
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/ai-budget-alert.sqlite', { readonly: true });
+          const incident = db.prepare("SELECT status,resolved_at FROM operational_incidents WHERE code='ai-budget-exhausted' AND scope='system'").get();
+          db.close();
+          if (!incident || incident.status !== 'closed' || !incident.resolved_at) throw new Error('AI budget incident did not recover');
+          NODE
       - name: Smoke test backup and restore
         shell: bash
         run: |
