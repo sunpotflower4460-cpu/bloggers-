@@ -38,6 +38,7 @@ function RotationFields({ platform }: { platform: BlogPlatform }) {
 export function BlogSettingsForm({ blog }: { blog: SafeBlog }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [test, setTest] = useState<TestState>({ kind: "idle" });
+  const [searchTest, setSearchTest] = useState<TestState>({ kind: "idle" });
 
   async function testConnection() {
     if (!formRef.current) return;
@@ -52,8 +53,21 @@ export function BlogSettingsForm({ blog }: { blog: SafeBlog }) {
     }
   }
 
+  async function testSearch() {
+    if (!formRef.current) return;
+    setSearchTest({ kind: "testing", message: "Search Consoleを確認しています…" });
+    try {
+      const response = await fetch("/api/search-console/test", { method: "POST", body: new FormData(formRef.current) });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Search Consoleを確認できませんでした");
+      setSearchTest({ kind: "ok", message: payload.detail ? `${payload.label} — ${payload.detail}` : payload.label });
+    } catch (error) {
+      setSearchTest({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   return (
-    <form ref={formRef} className="setupForm" action={`/api/blogs/${encodeURIComponent(blog.id)}`} method="post" onChange={() => test.kind !== "idle" && setTest({ kind: "idle" })}>
+    <form ref={formRef} className="setupForm" action={`/api/blogs/${encodeURIComponent(blog.id)}`} method="post" onChange={() => { if (test.kind !== "idle") setTest({ kind: "idle" }); if (searchTest.kind !== "idle") setSearchTest({ kind: "idle" }); }}>
       <div className="formNotice"><strong>{blog.platform}</strong><span>媒体そのものは変更しません。別媒体へ移す場合は新しいブログとして登録します。</span></div>
       <label>ブログ名<input name="name" required defaultValue={blog.name} /></label>
       <label>テーマ / 誰に何を届けるか<textarea name="niche" required defaultValue={blog.niche} /></label>
@@ -64,6 +78,10 @@ export function BlogSettingsForm({ blog }: { blog: SafeBlog }) {
       <label>公開方針<select name="publishMode" defaultValue={blog.publishMode}><option value="review">まず下書きへ送る</option><option value="auto">自動公開する</option></select></label>
       <label>GA4 Property ID<input name="ga4PropertyId" inputMode="numeric" defaultValue={blog.ga4PropertyId || ""} /><small>空欄にするとGA4反応学習を無効にします。</small></label>
       <label>Search Console Property<input name="searchConsoleSiteUrl" defaultValue={blog.searchConsoleSiteUrl || ""} placeholder="https://example.com/ または sc-domain:example.com" /><small>空欄にすると検索反応学習を無効にします。service accountメールには対象propertyの閲覧権限が必要です。</small></label>
+      <div className="connectionRow">
+        <button className="button secondary" type="button" onClick={testSearch} disabled={searchTest.kind === "testing"}>{searchTest.kind === "testing" ? "確認中…" : "Search Console接続テスト"}</button>
+        {searchTest.message ? <p className={`connectionMessage ${searchTest.kind}`}>{searchTest.message}</p> : <p className="connectionMessage">保存前に現在のproperty権限を確認できます。</p>}
+      </div>
 
       <RotationFields platform={blog.platform} />
 
