@@ -97,6 +97,53 @@ jobs:
           DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
           test "$(wc -l < .ci/webhook.log)" -eq "$((FIRST_COUNT + 1))"
           tail -n 1 .ci/webhook.log | grep -q 'recovery'
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+      - name: Smoke test external uptime issue lifecycle
+        shell: bash
+        run: |
+          node scripts/ci/external-uptime-mock.mjs >.ci/external-uptime-mock.log 2>&1 &
+          MOCK_PID=$!
+          trap 'kill "$MOCK_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          export BLOG_GARDEN_HEALTH_URL=http://127.0.0.1:47891/api/health
+          export BLOG_GARDEN_UPTIME_WEBHOOK_URL=http://127.0.0.1:47891/webhook
+          export BLOG_GARDEN_UPTIME_WEBHOOK_KIND=generic
+          export GITHUB_API_URL=http://127.0.0.1:47891
+          export GITHUB_REPOSITORY=test/repo
+          export GITHUB_TOKEN=ci-token
+          export EXTERNAL_MONITOR_REQUIRE_HTTPS=false
+
+          set +e
+          npm run external-uptime >/dev/null 2>&1
+          FIRST_EXIT=$?
+          set -e
+          test "$FIRST_EXIT" -eq 1
+          curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
+          node <<'NODE'
+          const state = require('./.ci/external-state.json');
+          if (state.issues.length !== 1 || state.issues[0].state !== 'open') process.exit(1);
+          if (state.notifications.length !== 1 || state.notifications[0].severity !== 'critical') process.exit(1);
+          NODE
+
+          npm run external-uptime >/dev/null
+          curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
+          node <<'NODE'
+          const state = require('./.ci/external-state.json');
+          if (state.issues.length !== 1 || state.notifications.length !== 1) process.exit(1);
+          NODE
+
+          curl -fsS -X POST http://127.0.0.1:47891/control/healthy >/dev/null
+          npm run external-uptime >/dev/null
+          curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
+          node <<'NODE'
+          const state = require('./.ci/external-state.json');
+          if (state.issues[0].state !== 'closed') process.exit(1);
+          if (state.comments.length !== 1) process.exit(1);
+          if (state.notifications.length !== 2 || state.notifications[1].severity !== 'recovery') process.exit(1);
+          NODE
+          kill "$MOCK_PID" 2>/dev/null || true
+          trap - EXIT
       - name: Validate Docker Compose production and offsite configurations
         shell: bash
         run: |
