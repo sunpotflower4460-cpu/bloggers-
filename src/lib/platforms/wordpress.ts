@@ -37,6 +37,38 @@ export const wordpressAdapter: BlogPlatformAdapter = {
       publishedAt: payload.date_gmt ? new Date(`${payload.date_gmt}Z`).toISOString() : null,
     };
   },
+  async readPost(blog, raw, publication) {
+    const credentials = raw as WordPressCredentials;
+    const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/posts/${encodeURIComponent(publication.platformPostId)}?context=edit`;
+    const response = await fetch(endpoint, { headers: { authorization: auth(credentials) } });
+    if (!response.ok) throw new Error(`WordPress post read failed ${response.status}: ${await response.text()}`);
+    const post = await response.json();
+    return {
+      title: String(post.title?.raw || post.title?.rendered || publication.title),
+      html: String(post.content?.raw || post.content?.rendered || ""),
+      excerpt: String(post.excerpt?.raw || post.excerpt?.rendered || ""),
+      updatedAt: post.modified_gmt ? new Date(`${post.modified_gmt}Z`).toISOString() : null,
+    };
+  },
+  async updatePost(blog, raw, publication, update) {
+    const credentials = raw as WordPressCredentials;
+    const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/posts/${encodeURIComponent(publication.platformPostId)}`;
+    const body: Record<string, string> = {};
+    if (update.title !== undefined) body.title = update.title;
+    if (update.html !== undefined) body.content = update.html;
+    if (update.excerpt !== undefined) body.excerpt = update.excerpt;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: auth(credentials) },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`WordPress update failed ${response.status}: ${await response.text()}`);
+    const post = await response.json();
+    return {
+      url: post.link || publication.url,
+      updatedAt: post.modified_gmt ? new Date(`${post.modified_gmt}Z`).toISOString() : null,
+    };
+  },
   async collectReactions(blog, raw, publication) {
     const credentials = raw as WordPressCredentials;
     const endpoint = new URL(`${blog.siteUrl.replace(/\/$/, "")}/wp-json/wp/v2/comments`);
