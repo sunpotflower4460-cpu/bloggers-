@@ -28,7 +28,7 @@ export default function Home() {
           <h1>Blog Garden</h1>
           <p className="lead">複数のAI編集部が、それぞれの土で育つ。今日は庭全体だけ見ればいい。</p>
         </div>
-        <div className="actions"><RunButton /><Link className="button secondary" href="/setup">ブログを植える</Link></div>
+        <div className="actions"><RunButton /><Link className="button secondary" href="/diagnostics">健康診断</Link><Link className="button secondary" href="/setup">ブログを植える</Link></div>
       </header>
 
       <section className="stats" aria-label="全体状況">
