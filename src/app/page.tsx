@@ -22,6 +22,13 @@ function latestExperiment(blogId: string): string | null {
   return memory.split("\n")[0]?.replace(/^1\.\s*/, "") || null;
 }
 
+function refreshResult(outcome: string | null) {
+  if (outcome === "win") return "改善あり";
+  if (outcome === "loss") return "悪化";
+  if (outcome === "inconclusive") return "判定保留";
+  return "観測中";
+}
+
 export default function Home() {
   const blogs = dashboard();
   const active = blogs.filter((b) => b.active).length;
@@ -71,9 +78,13 @@ export default function Home() {
                 <div className="latest"><span>学習中の実験</span><p>{experiment || "最初の記事から実験記憶を開始します"}</p></div>
                 {refresh ? (
                   <div className="latest">
-                    <span>最近の自動改善</span>
+                    <span>最近の自動改善 · {refreshResult(refresh.outcome)}</span>
                     <p>{refresh.beforeTitle} → {refresh.afterTitle}</p>
-                    <small>{date(refresh.createdAt)} · 仮説: {refresh.hypothesis}</small>
+                    {refresh.evaluation ? (
+                      <small>CTR {(refresh.evaluation.beforeCtr * 100).toFixed(1)}% → {(refresh.evaluation.afterCtr * 100).toFixed(1)}% · 平均順位 {refresh.evaluation.beforePosition.toFixed(1)} → {refresh.evaluation.afterPosition.toFixed(1)} · {refresh.evaluation.reason}</small>
+                    ) : (
+                      <small>{date(refresh.createdAt)} · 仮説: {refresh.hypothesis} · 14日後から評価</small>
+                    )}
                   </div>
                 ) : null}
                 <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
