@@ -1,3 +1,5 @@
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
@@ -14,6 +16,30 @@ export interface DiagnosticItem {
 
 function configured(value: string | undefined): boolean {
   return Boolean(value?.trim());
+}
+
+function backupDiagnostic(): DiagnosticItem {
+  const backupDir = resolve(process.env.BACKUP_DIR || "./backups");
+  if (!existsSync(backupDir)) {
+    return { scope: "system", label: "自動バックアップ", status: "warn", detail: `バックアップディレクトリがまだ見つかりません: ${backupDir}` };
+  }
+  const files = readdirSync(backupDir)
+    .filter((name) => /^blog-garden-\d{8}-\d{6}Z\.sqlite$/.test(name))
+    .map((name) => ({ name, stat: statSync(join(backupDir, name)) }))
+    .filter((entry) => entry.stat.isFile() && entry.stat.size > 0)
+    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+  if (!files.length) {
+    return { scope: "system", label: "自動バックアップ", status: "warn", detail: "検証済みバックアップがまだありません" };
+  }
+  const latest = files[0];
+  const ageHours = (Date.now() - latest.stat.mtimeMs) / 3600000;
+  const status: DiagnosticStatus = ageHours <= 36 ? "ok" : ageHours <= 72 ? "warn" : "error";
+  return {
+    scope: "system",
+    label: "自動バックアップ",
+    status,
+    detail: `${latest.name} · ${Math.round(ageHours * 10) / 10}時間前 · ${(latest.stat.size / 1024 / 1024).toFixed(1)} MB`,
+  };
 }
 
 export async function runDiagnostics(): Promise<DiagnosticItem[]> {
@@ -47,6 +73,12 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   } catch (error) {
     items.push({ scope: "system", label: "SQLite", status: "error", detail: error instanceof Error ? error.message : String(error) });
     return items;
+  }
+
+  try {
+    items.push(backupDiagnostic());
+  } catch (error) {
+    items.push({ scope: "system", label: "自動バックアップ", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
 
   const needsGoogle = blogs.some((blog) => blog.ga4PropertyId || blog.searchConsoleSiteUrl);
