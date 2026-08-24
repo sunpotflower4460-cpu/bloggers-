@@ -7,6 +7,12 @@ export interface PublishResult {
   publishedAt: string | null;
 }
 
+export interface ValidationResult {
+  label: string;
+  detail?: string;
+}
+
 export interface BlogPlatformAdapter {
+  validate(siteUrl: string, credentials: unknown): Promise<ValidationResult>;
   publish(blog: Blog, credentials: unknown, article: GeneratedArticle): Promise<PublishResult>;
 }
