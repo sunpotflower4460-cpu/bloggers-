@@ -1,4 +1,5 @@
 import type { BlogPlatform } from "../types";
+import { secureGeneratedArticle } from "../article-safety";
 import type { BlogPlatformAdapter } from "./base";
 import { bloggerAdapter } from "./blogger";
 import { ghostAdapter } from "./ghost";
@@ -11,5 +12,9 @@ const adapters: Record<BlogPlatform, BlogPlatformAdapter> = {
 };
 
 export function platformAdapter(platform: BlogPlatform): BlogPlatformAdapter {
-  return adapters[platform];
+  const adapter = adapters[platform];
+  return {
+    ...adapter,
+    publish: (blog, credentials, article) => adapter.publish(blog, credentials, secureGeneratedArticle(article)),
+  };
 }
