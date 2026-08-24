@@ -41,7 +41,7 @@ function score(item: SourceCandidate, blog: Blog): number {
   const published = item.publishedAt ? new Date(item.publishedAt).getTime() : 0;
   const ageHours = published > 0 ? Math.max(0, (Date.now() - published) / 3600000) : 9999;
   const freshness = ageHours <= 24 ? 12 : ageHours <= 72 ? 8 : ageHours <= 168 ? 5 : ageHours <= 720 ? 2 : 0;
-  const trustedFeedBonus = item.source === "Google News" ? 0 : 2;
+  const trustedFeedBonus = item.source.startsWith("Google News") ? 0 : 2;
   return keywordHits * 4 + freshness + trustedFeedBonus;
 }
 
@@ -72,7 +72,7 @@ function diversify(items: SourceCandidate[], blog: Blog): SourceCandidate[] {
 export async function collectTrends(blog: Blog): Promise<SourceCandidate[]> {
   const queries = (blog.keywords.length ? blog.keywords : [blog.niche]).slice(0, 8);
   const newsFeeds = queries.map((query) =>
-    parseFeed(`https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ja&gl=JP&ceid=JP:ja`, "Google News"),
+    parseFeed(`https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=ja&gl=JP&ceid=JP:ja`, `Google News · ${query}`),
   );
   const groups = await Promise.all([
     ...newsFeeds,
