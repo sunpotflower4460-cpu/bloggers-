@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { credentialsFromForm } from "@/lib/credentials";
 import { encryptJson } from "@/lib/crypto";
 import { createBlog, listBlogs, setBlogActive } from "@/lib/db";
 import type { BlogPlatform, PublishMode } from "@/lib/types";
@@ -7,25 +8,44 @@ function csv(value: FormDataEntryValue | null): string[] {
   return String(value || "").split(",").map((x) => x.trim()).filter(Boolean);
 }
 
+function platformFrom(value: FormDataEntryValue | null): BlogPlatform | null {
+  const platform = String(value || "");
+  return ["wordpress", "ghost", "blogger"].includes(platform) ? platform as BlogPlatform : null;
+}
+
+function publishModeFrom(value: FormDataEntryValue | null): PublishMode | null {
+  const mode = String(value || "");
+  return ["review", "auto"].includes(mode) ? mode as PublishMode : null;
+}
+
 export async function GET() {
   return NextResponse.json(listBlogs().map(({ credentialsCipher, ...blog }) => blog));
 }
 
 export async function POST(request: Request) {
   const form = await request.formData();
-  const platform = String(form.get("platform")) as BlogPlatform;
-  if (!["wordpress", "ghost", "blogger"].includes(platform)) return new NextResponse("Unsupported platform", { status: 400 });
-  const publishMode = String(form.get("publishMode")) as PublishMode;
-  if (!["review", "auto"].includes(publishMode)) return new NextResponse("Invalid publishMode", { status: 400 });
+  const platform = platformFrom(form.get("platform"));
+  if (!platform) return new NextResponse("Unsupported platform", { status: 400 });
+  const publishMode = publishModeFrom(form.get("publishMode"));
+  if (!publishMode) return new NextResponse("Invalid publishMode", { status: 400 });
+
+  const name = String(form.get("name") || "").trim();
+  const niche = String(form.get("niche") || "").trim();
+  const siteUrl = String(form.get("siteUrl") || "").trim().replace(/\/$/, "");
+  const keywords = csv(form.get("keywords"));
+  if (!name || !niche || !siteUrl || !keywords.length) return new NextResponse("必須項目が不足しています", { status: 400 });
+  try { new URL(siteUrl); } catch { return new NextResponse("ブログURLが正しくありません", { status: 400 }); }
+
   let credentials: unknown;
-  try { credentials = JSON.parse(String(form.get("credentialsJson") || "{}")); }
-  catch { return new NextResponse("credentialsJson must be valid JSON", { status: 400 }); }
-  const blog = createBlog({
-    name: String(form.get("name") || "").trim(),
-    niche: String(form.get("niche") || "").trim(),
+  try { credentials = credentialsFromForm(form, platform); }
+  catch (error) { return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 }); }
+
+  createBlog({
+    name,
+    niche,
     platform,
-    siteUrl: String(form.get("siteUrl") || "").replace(/\/$/, ""),
-    keywords: csv(form.get("keywords")),
+    siteUrl,
+    keywords,
     feeds: csv(form.get("feeds")),
     credentialsCipher: encryptJson(credentials),
     publishMode,
