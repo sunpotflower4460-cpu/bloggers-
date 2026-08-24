@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { dashboard } from "@/lib/db";
+import { BlogToggleButton } from "@/components/blog-toggle-button";
 import { RunButton } from "@/components/run-button";
 
 export const dynamic = "force-dynamic";
@@ -42,7 +43,13 @@ export default function Home() {
               <h3>{blog.name}</h3><p className="muted">{blog.niche}</p>
               <div className="miniStats"><div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div><div><span>runs</span><strong>{blog.recentRuns}</strong></div><div><span>errors</span><strong>{blog.failedRuns}</strong></div></div>
               <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
-              <div className="cardFoot"><span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h cadence</span><RunButton blogId={blog.id} /></div>
+              <div className="cardFoot">
+                <span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h cadence</span>
+                <div className="actions">
+                  <BlogToggleButton blogId={blog.id} active={blog.active} />
+                  <RunButton blogId={blog.id} />
+                </div>
+              </div>
             </article>
           ))}
         </section>
