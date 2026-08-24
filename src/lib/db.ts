@@ -127,6 +127,11 @@ export function createBlog(input: Omit<Blog, "id" | "lastRunAt" | "createdAt">):
   return getBlog(id)!;
 }
 
+export function setBlogActive(blogId: string, active: boolean): Blog | null {
+  db.prepare("UPDATE blogs SET active = ? WHERE id = ?").run(active ? 1 : 0, blogId);
+  return getBlog(blogId);
+}
+
 export function setLastRun(blogId: string, at = new Date().toISOString()): void {
   db.prepare("UPDATE blogs SET last_run_at = ? WHERE id = ?").run(at, blogId);
 }
