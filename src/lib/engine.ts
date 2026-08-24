@@ -59,7 +59,7 @@ async function runOne(blog: Blog, force = false): Promise<{ blog: string; status
   try {
     if (!blog.active) return { blog: blog.name, status: "inactive" };
     if (!force && !due(blog)) return { blog: blog.name, status: "not-due" };
-    if (!force && countTodayPublications(blog.id) >= blog.dailyLimit) return { blog: blog.name, status: "daily-limit" };
+    if (!force && countTodayPublications(blog.id, blog.timezone) >= blog.dailyLimit) return { blog: blog.name, status: "daily-limit" };
 
     try {
       const matched = await collectGa4(blog);
