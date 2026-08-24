@@ -12,6 +12,7 @@
     "backup": "tsx src/cli/backup.ts",
     "restore": "tsx src/cli/restore.ts",
     "monitor": "tsx src/cli/monitor.ts",
+    "external-uptime": "node scripts/external-uptime-check.mjs",
     "status": "node scripts/guard/status.mjs",
     "guard": "node scripts/guard/index.mjs",
     "guard:selftest": "node scripts/guard/selftest.mjs"
