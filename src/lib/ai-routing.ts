@@ -94,15 +94,26 @@ export function resolveAiRoutes(): AiRoute[] {
   };
 
   const fallbackModel = value("AI_FALLBACK_MODEL");
-  if (!fallbackModel) return [primary];
+  const fallbackBaseRaw = value("AI_FALLBACK_BASE_URL");
+  const fallbackKeyRaw = value("AI_FALLBACK_API_KEY");
+  if (!fallbackModel) {
+    if (fallbackBaseRaw || fallbackKeyRaw) {
+      throw new Error("AI_FALLBACK_MODEL is required when fallback base URL or API key is configured");
+    }
+    return [primary];
+  }
 
-  const fallbackBase = normalizeBase(value("AI_FALLBACK_BASE_URL") || primaryBase);
-  let fallbackKey = value("AI_FALLBACK_API_KEY");
+  const fallbackBase = normalizeBase(fallbackBaseRaw || primaryBase);
+  const crossHost = !sameOrigin(primaryBase, fallbackBase);
+  let fallbackKey = fallbackKeyRaw;
   if (!fallbackKey) {
-    if (!sameOrigin(primaryBase, fallbackBase)) {
+    if (crossHost) {
       throw new Error("AI_FALLBACK_API_KEY is required when fallback uses a different host");
     }
     fallbackKey = primaryKey;
+  }
+  if (crossHost && fallbackKey === primaryKey) {
+    throw new Error("Cross-host AI fallback must use a credential different from AI_API_KEY");
   }
 
   const fallback: AiRoute = {
@@ -212,7 +223,7 @@ export function aiRoutingStatus(): AiRoutingStatus {
       WHERE route='primary' ORDER BY id DESC LIMIT 3`).all() as Array<{ attempted_at: string; outcome: AiAttemptOutcome }>;
   const primaryDegraded = recentPrimary.length === 3
     && recentPrimary.every((row) => row.outcome === "retryable_error")
-    && Date.now() - new Date(recentPrimary[0].attempted_at).getTime() <= 6 * 3600000;
+    && Date.now() - new Date(recentPrimary[2].attempted_at).getTime() <= 6 * 3600000;
   const latestFallback = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
       WHERE route='fallback' ORDER BY id DESC LIMIT 1`).get() as { attempted_at: string; outcome: AiAttemptOutcome } | undefined;
 
