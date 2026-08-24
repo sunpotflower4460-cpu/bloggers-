@@ -98,7 +98,12 @@ try {
 
   process.env.DATABASE_PATH = dbPath;
   process.env.NODE_ENV = "development";
+  delete process.env.ALERT_WEBHOOK_URL;
+  process.env.EXTERNAL_WORKER_HEARTBEAT_URL = workerUrl;
+  process.env.EXTERNAL_BACKUP_HEARTBEAT_URL = backupUrl;
   const { externalHeartbeatStatus, pingExternalHeartbeat } = await import("../../src/lib/external-heartbeat");
+  const { reconcileExternalHeartbeatIncidents } = await import("../../src/lib/external-heartbeat-alert");
+  const Database = (await import("better-sqlite3")).default;
 
   const workerStatus = externalHeartbeatStatus("worker");
   const backupStatus = externalHeartbeatStatus("backup");
@@ -111,6 +116,25 @@ try {
   if (redirect.delivered || hits.redirectedTarget !== 0) throw new Error("heartbeat followed a redirect");
   if ((redirect.detail || "").includes("redirect-super-secret")) throw new Error("redirect heartbeat secret leaked to error detail");
 
+  const opened = await reconcileExternalHeartbeatIncidents();
+  if (opened.open < 1) throw new Error("failed external heartbeat did not open an incident");
+  let incidentDb = new Database(dbPath, { readonly: true });
+  let incident = incidentDb.prepare("SELECT status,severity,detail FROM operational_incidents WHERE code='external-worker-heartbeat' AND scope='system'").get() as { status: string; severity: string; detail: string } | undefined;
+  incidentDb.close();
+  if (!incident || incident.status !== "open" || incident.severity !== "warning") {
+    throw new Error(`worker heartbeat incident was not opened: ${JSON.stringify(incident)}`);
+  }
+  if (incident.detail.includes("redirect-super-secret")) throw new Error("incident detail leaked heartbeat secret");
+
+  process.env.EXTERNAL_WORKER_HEARTBEAT_URL = workerUrl;
+  const recoveredPing = await pingExternalHeartbeat("worker");
+  if (!recoveredPing.delivered) throw new Error("worker heartbeat did not recover");
+  await reconcileExternalHeartbeatIncidents();
+  incidentDb = new Database(dbPath, { readonly: true });
+  incident = incidentDb.prepare("SELECT status,severity,detail FROM operational_incidents WHERE code='external-worker-heartbeat' AND scope='system'").get() as { status: string; severity: string; detail: string } | undefined;
+  incidentDb.close();
+  if (!incident || incident.status !== "closed") throw new Error("recovered external heartbeat incident did not close");
+
   process.env.NODE_ENV = "production";
   process.env.EXTERNAL_BACKUP_HEARTBEAT_URL = `http://127.0.0.1:${port}/backup?token=production-super-secret`;
   const insecure = await pingExternalHeartbeat("backup");
@@ -121,7 +145,7 @@ try {
     throw new Error("production heartbeat error leaked URL/token");
   }
 
-  console.log(JSON.stringify({ ok: true, hits, workerStatus, backupStatus }));
+  console.log(JSON.stringify({ ok: true, hits, workerStatus, backupStatus, opened }));
 } finally {
   server.close();
 }
