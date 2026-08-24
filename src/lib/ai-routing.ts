@@ -13,6 +13,12 @@ export interface AiRoute {
   apiKey: string;
 }
 
+export interface AiRoutePlan {
+  primary: AiRoute | null;
+  fallback: AiRoute | null;
+  bypassedPrimary: boolean;
+}
+
 export interface AiRoutingStatus {
   configured: boolean;
   configError: string | null;
@@ -30,6 +36,9 @@ export interface AiRoutingStatus {
   lastFallbackAt: string | null;
   primaryDegraded: boolean;
   fallbackCurrentlyHealthy: boolean;
+  circuitOpen: boolean;
+  circuitMinutes: number;
+  circuitUntil: string | null;
 }
 
 type DB = InstanceType<typeof Database>;
@@ -63,6 +72,16 @@ function required(name: string): string {
   const item = value(name);
   if (!item) throw new Error(`${name} is required`);
   return item;
+}
+
+function positiveInt(raw: string | null, fallback: number, max: number): number {
+  const parsed = Number.parseInt(raw || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
+
+function circuitMinutes(): number {
+  return positiveInt(value("AI_PRIMARY_CIRCUIT_MINUTES"), 30, 240);
 }
 
 function cleanLabel(raw: string | null, fallback: string): string {
@@ -180,6 +199,30 @@ function count24h(route: AiRouteKind, outcome?: AiAttemptOutcome): number {
   return Number((row as { n: number } | undefined)?.n || 0);
 }
 
+function recentPrimaryAttempts(): Array<{ attempted_at: string; outcome: AiAttemptOutcome }> {
+  return db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
+    WHERE route='primary' ORDER BY id DESC LIMIT 3`).all() as Array<{ attempted_at: string; outcome: AiAttemptOutcome }>;
+}
+
+function isPrimaryDegraded(rows: Array<{ attempted_at: string; outcome: AiAttemptOutcome }>): boolean {
+  return rows.length === 3
+    && rows.every((row) => row.outcome === "retryable_error")
+    && Date.now() - new Date(rows[2].attempted_at).getTime() <= 6 * 3600000;
+}
+
+function circuitState(rows: Array<{ attempted_at: string; outcome: AiAttemptOutcome }>, fallbackConfigured: boolean): {
+  open: boolean;
+  minutes: number;
+  until: string | null;
+} {
+  const minutes = circuitMinutes();
+  if (!fallbackConfigured || !isPrimaryDegraded(rows)) return { open: false, minutes, until: null };
+  const latestAt = new Date(rows[0].attempted_at).getTime();
+  const untilMs = latestAt + minutes * 60000;
+  if (!Number.isFinite(latestAt) || Date.now() >= untilMs) return { open: false, minutes, until: null };
+  return { open: true, minutes, until: new Date(untilMs).toISOString() };
+}
+
 function routingConfigSummary(): {
   configured: boolean;
   configError: string | null;
@@ -219,11 +262,9 @@ function routingConfigSummary(): {
 
 export function aiRoutingStatus(): AiRoutingStatus {
   const config = routingConfigSummary();
-  const recentPrimary = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
-      WHERE route='primary' ORDER BY id DESC LIMIT 3`).all() as Array<{ attempted_at: string; outcome: AiAttemptOutcome }>;
-  const primaryDegraded = recentPrimary.length === 3
-    && recentPrimary.every((row) => row.outcome === "retryable_error")
-    && Date.now() - new Date(recentPrimary[2].attempted_at).getTime() <= 6 * 3600000;
+  const recentPrimary = recentPrimaryAttempts();
+  const primaryDegraded = isPrimaryDegraded(recentPrimary);
+  const circuit = circuitState(recentPrimary, config.fallbackConfigured);
   const latestFallback = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
       WHERE route='fallback' ORDER BY id DESC LIMIT 1`).get() as { attempted_at: string; outcome: AiAttemptOutcome } | undefined;
 
@@ -238,7 +279,20 @@ export function aiRoutingStatus(): AiRoutingStatus {
     lastFallbackAt: latestFallback?.attempted_at ?? null,
     primaryDegraded,
     fallbackCurrentlyHealthy: latestFallback?.outcome === "ok",
+    circuitOpen: circuit.open,
+    circuitMinutes: circuit.minutes,
+    circuitUntil: circuit.until,
   };
+}
+
+export function resolveAiRoutePlan(): AiRoutePlan {
+  const routes = resolveAiRoutes();
+  const primary = routes[0];
+  const fallback = routes[1] ?? null;
+  if (!fallback) return { primary, fallback: null, bypassedPrimary: false };
+  const circuit = circuitState(recentPrimaryAttempts(), true);
+  if (circuit.open) return { primary: null, fallback, bypassedPrimary: true };
+  return { primary, fallback, bypassedPrimary: false };
 }
 
 export function isRetryableAiStatus(status: number): boolean {
