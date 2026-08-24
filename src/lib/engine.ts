@@ -6,6 +6,7 @@ import {
   countTodayPublications,
   listBlogs,
   performanceContext,
+  recentPublications,
   recentTitles,
   recordPublication,
   recordRun,
@@ -35,6 +36,31 @@ function similarity(a: string, b: string): number {
   for (const pair of aa) if (bb.has(pair)) common += 1;
   const union = aa.size + bb.size - common;
   return union ? common / union : 0;
+}
+
+function normalizeLeadUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|fbclid$|gclid$|mc_)/i.test(key)) url.searchParams.delete(key);
+    }
+    url.hash = "";
+    return `${url.origin}${url.pathname.replace(/\/$/, "")}${url.search}`;
+  } catch {
+    return value;
+  }
+}
+
+function preferUnusedLeads(blogId: string, items: SourceCandidate[]): SourceCandidate[] {
+  const used = new Set(
+    recentPublications(blogId, 50)
+      .flatMap((publication) => publication.sourceUrls)
+      .map(normalizeLeadUrl),
+  );
+  const fresh = items.filter((item) => !used.has(normalizeLeadUrl(item.url)));
+  if (fresh.length >= 8) return fresh;
+  const freshUrls = new Set(fresh.map((item) => item.url));
+  return [...fresh, ...items.filter((item) => !freshUrls.has(item.url))];
 }
 
 async function choosePlan(blog: Blog, items: SourceCandidate[]): Promise<ArticlePlan> {
@@ -75,9 +101,10 @@ async function runOne(blog: Blog, force = false): Promise<{ blog: string; status
       recordRun(blog.id, "native-reactions", "error", String(error), {}, started);
     }
 
-    const items = await collectTrends(blog);
-    if (!items.length) throw new Error("No trend/source items were collected");
-    rememberSources(blog.id, items);
+    const collected = await collectTrends(blog);
+    if (!collected.length) throw new Error("No trend/source items were collected");
+    rememberSources(blog.id, collected);
+    const items = preferUnusedLeads(blog.id, collected);
     const plan = await choosePlan(blog, items);
     if (!items.some((item) => item.url === plan.sourceUrl)) throw new Error("AI selected a source outside the collected evidence set");
     const article = await writeArticle(blog, plan, items);
