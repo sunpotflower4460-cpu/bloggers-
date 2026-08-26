@@ -38,6 +38,31 @@ fallbackによってdraftへ降格された記事は統合HPの`fallback生成 �
 - `quality-ok`: このdraftは人間レビュー上、品質面で問題なし
 - `needs-improvement`: 自動公開に任せるには改善が必要
 
+## `quality-ok`後の明示公開
+
+`quality-ok`を付けただけでは記事は公開されません。品質OKになったfallback draftは統合HPの`品質OK · 公開待ち`へ移動します。
+
+公開には、さらに人間が**「公開する」**を押し、確認ダイアログへ同意する必要があります。APIも`confirmPublish=true`を要求します。
+
+公開サービスはUIの表示状態を信用せず、実行直前にSQLiteから次を再検証します。
+
+1. 元の記事がfallback強制review由来である
+2. 人間レビュー結果が`quality-ok`である
+3. Blog Garden上でもまだ`draft`である
+4. 対象ブログのexecution leaseを取得できる
+
+この4条件のどれかが外れれば外部ブログへのmutationは行いません。
+
+platformごとの公開も本文再送を避けた最小mutationにします。
+
+- **WordPress**: live statusを再取得し、draftなら`status=publish`だけを更新します。レビュー中にWordPress側で直したtitle/bodyを上書きしません。
+- **Ghost**: live draftと最新`updated_at`を再取得し、`updated_at + status=published`だけを送ります。Ghostのcollision detectionを維持します。
+- **Blogger**: ADMIN viewでlive statusを再確認し、draftなら専用`posts.publish` endpointを呼びます。記事本文は再送しません。
+
+外部側ですでに人間が公開していた場合、adapterは本文を触らずpublished状態として扱い、Blog Gardenのlocal publicationを追従させます。
+
+公開成功後だけlocal publicationのstatus/url/published_atを同期し、`fallback-draft-publish` run logへ`explicitHumanAction=true`を記録します。
+
 ## provider/model別の人間品質シグナル
 
 品質評価はprovider/model単位で集計します。
