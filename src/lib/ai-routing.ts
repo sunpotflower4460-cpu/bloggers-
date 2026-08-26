@@ -2,8 +2,9 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-export type AiRouteKind = "primary" | "fallback";
+export type AiRouteKind = "primary" | "fallback" | "economy";
 export type AiAttemptOutcome = "ok" | "retryable_error" | "fatal_error";
+export type AiInternalRoutePolicy = "primary" | "economy";
 
 export interface AiRoute {
   kind: AiRouteKind;
@@ -19,6 +20,13 @@ export interface AiRoutePlan {
   bypassedPrimary: boolean;
 }
 
+export interface AiInternalRoutePlan {
+  policy: AiInternalRoutePolicy;
+  preferred: AiRoute;
+  recovery: AiRoute | null;
+  bypassedPrimary: boolean;
+}
+
 export interface AiRoutingStatus {
   configured: boolean;
   configError: string | null;
@@ -27,6 +35,10 @@ export interface AiRoutingStatus {
   fallbackConfigured: boolean;
   fallbackLabel: string | null;
   fallbackModel: string | null;
+  internalPolicy: AiInternalRoutePolicy | "invalid";
+  economyConfigured: boolean;
+  economyLabel: string | null;
+  economyModel: string | null;
   primaryAttempts24h: number;
   primaryRetryableFailures24h: number;
   primaryFatalFailures24h: number;
@@ -34,6 +46,11 @@ export interface AiRoutingStatus {
   fallbackSuccesses24h: number;
   fallbackFailures24h: number;
   lastFallbackAt: string | null;
+  economyAttempts24h: number;
+  economySuccesses24h: number;
+  economyFailures24h: number;
+  lastEconomyAt: string | null;
+  economyCurrentlyHealthy: boolean;
   primaryDegraded: boolean;
   fallbackCurrentlyHealthy: boolean;
   circuitOpen: boolean;
@@ -100,6 +117,12 @@ function sameOrigin(a: string, b: string): boolean {
   return new URL(a).origin === new URL(b).origin;
 }
 
+export function internalRoutePolicy(): AiInternalRoutePolicy {
+  const raw = (value("AI_INTERNAL_ROUTE_POLICY") || "primary").toLowerCase();
+  if (raw === "primary" || raw === "economy") return raw;
+  throw new Error("AI_INTERNAL_ROUTE_POLICY must be 'primary' or 'economy'");
+}
+
 export function resolveAiRoutes(): AiRoute[] {
   const primaryBase = normalizeBase(value("AI_BASE_URL") || "https://api.openai.com/v1");
   const primaryModel = required("AI_MODEL");
@@ -147,6 +170,44 @@ export function resolveAiRoutes(): AiRoute[] {
     throw new Error("AI fallback route must differ from the primary route");
   }
   return [primary, fallback];
+}
+
+export function resolveEconomyRoute(primaryInput?: AiRoute): AiRoute | null {
+  const policy = internalRoutePolicy();
+  const economyModel = value("AI_ECONOMY_MODEL");
+  const economyBaseRaw = value("AI_ECONOMY_BASE_URL");
+  const economyKeyRaw = value("AI_ECONOMY_API_KEY");
+  if (!economyModel) {
+    if (economyBaseRaw || economyKeyRaw) {
+      throw new Error("AI_ECONOMY_MODEL is required when economy base URL or API key is configured");
+    }
+    if (policy === "economy") throw new Error("AI_ECONOMY_MODEL is required when AI_INTERNAL_ROUTE_POLICY=economy");
+    return null;
+  }
+
+  const primary = primaryInput ?? resolveAiRoutes()[0];
+  const economyBase = normalizeBase(economyBaseRaw || primary.baseUrl);
+  const crossHost = !sameOrigin(primary.baseUrl, economyBase);
+  let economyKey = economyKeyRaw;
+  if (!economyKey) {
+    if (crossHost) throw new Error("AI_ECONOMY_API_KEY is required when economy uses a different host");
+    economyKey = primary.apiKey;
+  }
+  if (crossHost && economyKey === primary.apiKey) {
+    throw new Error("Cross-host AI economy route must use a credential different from AI_API_KEY");
+  }
+
+  const economy: AiRoute = {
+    kind: "economy",
+    label: cleanLabel(value("AI_ECONOMY_PROVIDER_LABEL"), "economy"),
+    baseUrl: economyBase,
+    model: economyModel,
+    apiKey: economyKey,
+  };
+  if (economy.baseUrl === primary.baseUrl && economy.model === primary.model && economy.apiKey === primary.apiKey) {
+    throw new Error("AI economy route must differ from the primary route");
+  }
+  return economy;
 }
 
 function safeDetail(value: unknown): string {
@@ -231,13 +292,22 @@ function routingConfigSummary(): {
   fallbackConfigured: boolean;
   fallbackLabel: string | null;
   fallbackModel: string | null;
+  internalPolicy: AiInternalRoutePolicy | "invalid";
+  economyConfigured: boolean;
+  economyLabel: string | null;
+  economyModel: string | null;
 } {
   const primaryLabel = cleanLabel(value("AI_PRIMARY_PROVIDER_LABEL"), "primary");
   const primaryModel = value("AI_MODEL");
   const fallbackModel = value("AI_FALLBACK_MODEL");
   const fallbackLabel = fallbackModel ? cleanLabel(value("AI_FALLBACK_PROVIDER_LABEL"), "fallback") : null;
+  const economyModel = value("AI_ECONOMY_MODEL");
+  const economyLabel = economyModel ? cleanLabel(value("AI_ECONOMY_PROVIDER_LABEL"), "economy") : null;
+  let policy: AiInternalRoutePolicy | "invalid" = "invalid";
   try {
-    resolveAiRoutes();
+    policy = internalRoutePolicy();
+    const routes = resolveAiRoutes();
+    resolveEconomyRoute(routes[0]);
     return {
       configured: true,
       configError: null,
@@ -246,6 +316,10 @@ function routingConfigSummary(): {
       fallbackConfigured: Boolean(fallbackModel),
       fallbackLabel,
       fallbackModel,
+      internalPolicy: policy,
+      economyConfigured: Boolean(economyModel),
+      economyLabel,
+      economyModel,
     };
   } catch (error) {
     return {
@@ -256,6 +330,10 @@ function routingConfigSummary(): {
       fallbackConfigured: Boolean(fallbackModel),
       fallbackLabel,
       fallbackModel,
+      internalPolicy: policy,
+      economyConfigured: Boolean(economyModel),
+      economyLabel,
+      economyModel,
     };
   }
 }
@@ -267,6 +345,8 @@ export function aiRoutingStatus(): AiRoutingStatus {
   const circuit = circuitState(recentPrimary, config.fallbackConfigured);
   const latestFallback = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
       WHERE route='fallback' ORDER BY id DESC LIMIT 1`).get() as { attempted_at: string; outcome: AiAttemptOutcome } | undefined;
+  const latestEconomy = db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
+      WHERE route='economy' ORDER BY id DESC LIMIT 1`).get() as { attempted_at: string; outcome: AiAttemptOutcome } | undefined;
 
   return {
     ...config,
@@ -277,6 +357,11 @@ export function aiRoutingStatus(): AiRoutingStatus {
     fallbackSuccesses24h: count24h("fallback", "ok"),
     fallbackFailures24h: count24h("fallback", "retryable_error") + count24h("fallback", "fatal_error"),
     lastFallbackAt: latestFallback?.attempted_at ?? null,
+    economyAttempts24h: count24h("economy"),
+    economySuccesses24h: count24h("economy", "ok"),
+    economyFailures24h: count24h("economy", "retryable_error") + count24h("economy", "fatal_error"),
+    lastEconomyAt: latestEconomy?.attempted_at ?? null,
+    economyCurrentlyHealthy: latestEconomy?.outcome === "ok",
     primaryDegraded,
     fallbackCurrentlyHealthy: latestFallback?.outcome === "ok",
     circuitOpen: circuit.open,
@@ -293,6 +378,34 @@ export function resolveAiRoutePlan(): AiRoutePlan {
   const circuit = circuitState(recentPrimaryAttempts(), true);
   if (circuit.open) return { primary: null, fallback, bypassedPrimary: true };
   return { primary, fallback, bypassedPrimary: false };
+}
+
+export function resolveAiInternalRoutePlan(): AiInternalRoutePlan {
+  const policy = internalRoutePolicy();
+  const normal = resolveAiRoutePlan();
+  if (policy === "primary") {
+    const preferred = normal.primary ?? normal.fallback;
+    if (!preferred) throw new Error("No AI route is available for internal work");
+    return {
+      policy,
+      preferred,
+      recovery: normal.primary ? normal.fallback : null,
+      bypassedPrimary: normal.bypassedPrimary,
+    };
+  }
+
+  const primary = resolveAiRoutes()[0];
+  const economy = resolveEconomyRoute(primary);
+  if (!economy) throw new Error("AI economy route is unavailable");
+  const recovery = normal.bypassedPrimary ? normal.fallback : normal.primary;
+  return {
+    policy,
+    preferred: economy,
+    recovery: recovery && !(recovery.baseUrl === economy.baseUrl && recovery.model === economy.model && recovery.apiKey === economy.apiKey)
+      ? recovery
+      : null,
+    bypassedPrimary: normal.bypassedPrimary,
+  };
 }
 
 export function isRetryableAiStatus(status: number): boolean {
