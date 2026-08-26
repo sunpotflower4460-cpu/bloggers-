@@ -105,6 +105,22 @@ if (!fallbackSummary || fallbackSummary.priceConfigured || fallbackSummary.estim
   throw new Error(`unpriced model summary was hidden: ${JSON.stringify(fallbackSummary)}`);
 }
 
+// Provider usage is untrusted external data. Non-finite/negative counters must
+// not reach SQLite as numbers, and absurd finite counters are bounded.
+reserveAiCall("primary:invalid-usage");
+recordAiUsage({ input_tokens: "Infinity", output_tokens: -5, total_tokens: Number.POSITIVE_INFINITY }, "primary:invalid-usage");
+reserveAiCall("primary:huge-usage");
+recordAiUsage({ input_tokens: 1e30, output_tokens: 0, total_tokens: 1e30 }, "primary:huge-usage");
+const hardenedUsage = aiUsageByModel(7);
+const invalidUsage = hardenedUsage.find((row) => row.modelKey === "primary:invalid-usage");
+const hugeUsage = hardenedUsage.find((row) => row.modelKey === "primary:huge-usage");
+if (!invalidUsage || invalidUsage.calls !== 1 || invalidUsage.meteredCalls !== 0 || invalidUsage.totalTokens !== 0) {
+  throw new Error(`non-finite usage was not rejected conservatively: ${JSON.stringify(invalidUsage)}`);
+}
+if (!hugeUsage || hugeUsage.calls !== 1 || hugeUsage.meteredCalls !== 1 || hugeUsage.inputTokens !== 1_000_000_000 || hugeUsage.totalTokens !== 1_000_000_000) {
+  throw new Error(`extreme finite usage was not bounded safely: ${JSON.stringify(hugeUsage)}`);
+}
+
 // Configuration validation must fail closed instead of silently ignoring a bad
 // operator price table.
 process.env.AI_PRICE_CURRENCY = "US";
