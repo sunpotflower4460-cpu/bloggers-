@@ -20,6 +20,7 @@ process.env.AI_DAILY_TOKEN_LIMIT = "100000";
 process.env.AI_BUDGET_TIMEZONE = "UTC";
 delete process.env.AI_FALLBACK_API_KEY;
 delete process.env.AI_ECONOMY_API_KEY;
+delete process.env.ALERT_WEBHOOK_URL;
 
 let economyMode: "healthy" | "retryable" | "fatal" | "malformed" = "healthy";
 let primaryRequests = 0;
@@ -81,6 +82,8 @@ try {
   const { aiJson, aiJsonWithMeta } = await import("../../src/lib/ai");
   const { aiBudgetStatus } = await import("../../src/lib/ai-budget");
   const { aiRoutingStatus, resolveEconomyRoute } = await import("../../src/lib/ai-routing");
+  const { reconcileAiRoutingIncidents } = await import("../../src/lib/ai-routing-alert");
+  const Database = (await import("better-sqlite3")).default;
 
   const internal = await aiJson<{ route: string }>("system", "internal planning");
   if (internal.route !== "economy") throw new Error(`internal task did not prefer economy: ${JSON.stringify(internal)}`);
@@ -132,6 +135,60 @@ try {
   }
   if (routing.primaryAttempts24h !== 3) throw new Error(`unexpected primary attempt count: ${routing.primaryAttempts24h}`);
   if (aiBudgetStatus().calls !== 7) throw new Error(`economy + recovery calls did not share daily budget: ${aiBudgetStatus().calls}`);
+
+  // F-033: three consecutive economy transport/config failures should open a
+  // warning incident even though primary recovery keeps the garden working.
+  const created = new Date(Date.now() - 86400000).toISOString();
+  {
+    const db = new Database(dbPath);
+    db.prepare(`INSERT INTO blogs
+      (id,name,niche,platform,site_url,keywords_json,feeds_json,credentials_cipher,publish_mode,cadence_hours,daily_limit,language,timezone,active,last_run_at,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        "ci-economy-blog", "CI Economy Blog", "test", "wordpress", "https://example.invalid", "[]", "[]", "unused", "auto", 24, 1, "ja", "Asia/Tokyo", 1, null, created,
+      );
+    db.close();
+  }
+
+  economyMode = "retryable";
+  for (let index = 0; index < 3; index += 1) {
+    const recovered = await aiJson<{ route: string }>("system", `persistent economy failure ${index}`);
+    if (recovered.route !== "primary") throw new Error("persistent economy failure did not recover through primary");
+  }
+  if (economyRequests !== 7 || primaryRequests !== 6 || fallbackRequests !== 0) {
+    throw new Error(`persistent economy recovery counts are wrong: economy=${economyRequests} primary=${primaryRequests} fallback=${fallbackRequests}`);
+  }
+
+  await reconcileAiRoutingIncidents();
+  let incidentDb = new Database(dbPath, { readonly: true });
+  let incident = incidentDb.prepare("SELECT status,severity,resolved_at FROM operational_incidents WHERE code='ai-economy-degraded' AND scope='system'").get() as
+    | { status: string; severity: string; resolved_at: string | null }
+    | undefined;
+  const duplicateCount = Number((incidentDb.prepare("SELECT COUNT(*) n FROM operational_incidents WHERE code='ai-economy-degraded' AND scope='system'").get() as { n: number }).n);
+  incidentDb.close();
+  if (!incident || incident.status !== "open" || incident.severity !== "warning" || duplicateCount !== 1) {
+    throw new Error(`economy degradation incident was not opened once as warning: ${JSON.stringify({ incident, duplicateCount })}`);
+  }
+
+  // Reconciliation while the condition remains true must update the same row,
+  // not create a new incident.
+  await reconcileAiRoutingIncidents();
+  incidentDb = new Database(dbPath, { readonly: true });
+  const stillOne = Number((incidentDb.prepare("SELECT COUNT(*) n FROM operational_incidents WHERE code='ai-economy-degraded' AND scope='system'").get() as { n: number }).n);
+  incidentDb.close();
+  if (stillOne !== 1) throw new Error("economy degradation incident duplicated while still active");
+
+  economyMode = "healthy";
+  const economyRecovered = await aiJson<{ route: string }>("system", "economy recovered");
+  if (economyRecovered.route !== "economy") throw new Error("economy did not return to its configured route after recovery");
+  await reconcileAiRoutingIncidents();
+  incidentDb = new Database(dbPath, { readonly: true });
+  incident = incidentDb.prepare("SELECT status,severity,resolved_at FROM operational_incidents WHERE code='ai-economy-degraded' AND scope='system'").get() as
+    | { status: string; severity: string; resolved_at: string | null }
+    | undefined;
+  incidentDb.close();
+  if (!incident || incident.status !== "closed" || !incident.resolved_at) {
+    throw new Error(`economy recovery did not close incident: ${JSON.stringify(incident)}`);
+  }
 
   const safeBase = process.env.AI_ECONOMY_BASE_URL;
   const safeModel = process.env.AI_ECONOMY_MODEL;
@@ -187,7 +244,7 @@ try {
     fallbackRequests,
     economyRequests,
     calls: aiBudgetStatus().calls,
-    routing,
+    routing: aiRoutingStatus(),
   }));
 } finally {
   server.close();
