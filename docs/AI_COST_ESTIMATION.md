@@ -48,6 +48,8 @@ Blog Gardenはproviderの現在価格を自動取得しません。価格改定�
 
 既存DBへ`metered_calls`を追加するmigrationでは、過去行を「全部usage取得済み」と推測して埋めません。分からない履歴は不明のまま残す方針です。
 
+providerが返すusageは外部入力として扱います。非有限値・負数は記録せず、異常に大きい有限値は1フィールド10億tokenで上限をかけてからSQLiteへ保存します。
+
 ## `/diagnostics` の表示
 
 `AI_PRICE_TABLE_JSON`を設定すると、健康診断に次を表示します。
@@ -84,9 +86,38 @@ Blog Gardenはproviderの現在価格を自動取得しません。価格改定�
 
 そのため、まだ1日しか運用していない場合は1日分を30倍した粗い参考値です。長期契約額やprovider請求額を保証する値ではありません。
 
+## F-034: 推定コストwarning閾値
+
+F-034では、運用者が任意で「ここを超えたら気づきたい」という参考warning閾値を設定できます。
+
+```env
+AI_ESTIMATED_DAILY_COST_WARN=5
+AI_ESTIMATED_30D_COST_WARN=100
+```
+
+単位は`AI_PRICE_CURRENCY`です。どちらか片方だけでも設定できます。未設定なら閾値監視は無効です。
+
+この閾値は**請求上限でもhard stopでもありません**。超過すると`ai-estimated-cost-threshold` warning incidentをOPENし、既存Webhook通知の対象になりますが、Blog GardenはAI call停止・provider変更・economy切替・公開方針変更を自動では行いません。
+
+### 保守的な判定
+
+coverageが不完全でも、価格を付けられた観測済み部分だけで閾値以上なら確実なwarningとして通知します。
+
+一方、観測済み推定額が閾値未満でもcoverage不足なら「実コストも閾値未満」とは判断できません。そのため:
+
+- incidentがまだ無い場合: `/diagnostics`ではwarning表示し、安全とは宣言しない
+- すでに閾値超過incidentがOPENの場合: coverageが不完全なまま推定額だけ下がっても**CLOSEDにしない**
+- 全model価格・usage coverageが完全になり、その状態で閾値未満になった時だけ復旧としてCLOSED
+
+これにより、providerがusageを返さなくなっただけで「コストが下がった」と誤認する事故を防ぎます。
+
+### 閾値の無効化
+
+運用者が両方の閾値を削除した場合は監視を明示的に無効化したものとして、既存の閾値incidentをCLOSEDにします。この場合のdetailには「コスト低下を確認したわけではない」ことを残します。
+
 ## 安全境界
 
-F-032は可視化機能です。推定コストが高い・低いことを理由に、Blog Gardenが自動で次を変更することはありません。
+F-032/F-034は可視化・警告機能です。推定コストが高い・低いことを理由に、Blog Gardenが自動で次を変更することはありません。
 
 - primary / fallback provider
 - `AI_INTERNAL_ROUTE_POLICY`
