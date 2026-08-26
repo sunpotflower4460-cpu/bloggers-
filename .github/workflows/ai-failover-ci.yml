@@ -22,6 +22,8 @@ jobs:
         run: ./node_modules/.bin/tsx scripts/ci/ai-economy-smoke.ts
       - name: Smoke test operator AI cost estimation
         run: ./node_modules/.bin/tsx scripts/ci/ai-cost-smoke.ts
+      - name: Smoke test estimated AI cost threshold alerts
+        run: ./node_modules/.bin/tsx scripts/ci/ai-cost-alert-smoke.ts
       - name: Smoke test fallback content publication policy
         run: ./node_modules/.bin/tsx scripts/ci/fallback-content-policy-smoke.ts
       - name: Smoke test fallback review queue
