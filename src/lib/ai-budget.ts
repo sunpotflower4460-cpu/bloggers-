@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 type DB = InstanceType<typeof Database>;
+const MAX_USAGE_TOKEN_FIELD = 1_000_000_000;
 
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
@@ -71,6 +72,12 @@ function positiveInt(value: string | undefined, fallback: number, max: number): 
   const parsed = Number.parseInt(value || "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(Math.floor(parsed), max);
+}
+
+function usageToken(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(Math.floor(parsed), MAX_USAGE_TOKEN_FIELD);
 }
 
 function timezone(): string {
@@ -206,9 +213,10 @@ export function reserveAiCall(model: string): AiBudgetStatus {
 export function recordAiUsage(usage: unknown, model: string): void {
   if (!usage || typeof usage !== "object") return;
   const raw = usage as Record<string, unknown>;
-  const input = Math.max(0, Number(raw.input_tokens) || 0);
-  const output = Math.max(0, Number(raw.output_tokens) || 0);
-  const total = Math.max(0, Number(raw.total_tokens) || input + output);
+  const input = usageToken(raw.input_tokens);
+  const output = usageToken(raw.output_tokens);
+  const reportedTotal = usageToken(raw.total_tokens);
+  const total = Math.max(reportedTotal, input + output);
   if (!input && !output && !total) return;
   const zone = timezone();
   const day = dayKey(new Date(), zone);
@@ -224,7 +232,7 @@ export function recordAiUsage(usage: unknown, model: string): void {
         total_tokens=ai_usage_daily.total_tokens+excluded.total_tokens,
         last_model=excluded.last_model,
         updated_at=excluded.updated_at`)
-      .run(day, Math.floor(input), Math.floor(output), Math.floor(total), modelKey.slice(0, 160), now);
+      .run(day, input, output, total, modelKey.slice(0, 160), now);
     db.prepare(`INSERT INTO ai_usage_model_daily
       (day_key,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens,updated_at)
       VALUES (?,?,0,1,?,?,?,?)
@@ -234,7 +242,7 @@ export function recordAiUsage(usage: unknown, model: string): void {
         output_tokens=ai_usage_model_daily.output_tokens+excluded.output_tokens,
         total_tokens=ai_usage_model_daily.total_tokens+excluded.total_tokens,
         updated_at=excluded.updated_at`)
-      .run(day, modelKey, Math.floor(input), Math.floor(output), Math.floor(total), now);
+      .run(day, modelKey, input, output, total, now);
     pruneModelUsage();
   });
   record.immediate();
