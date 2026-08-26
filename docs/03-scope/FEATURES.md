@@ -49,3 +49,4 @@
 | F-043 | AI予算上限時の保護preflight skip | 承認 | 上限到達中のworker/手動実行を通常障害として何度も失敗計上せず、分析データ収集後・AI工程直前で期待された保護停止としてskipし、実call直前のatomic budget guardは最終防衛線として維持する | 2026-08-26 | 有: `/api/run` |
 | F-044 | AI予算保護skipログの遷移dedupe | 承認 | 同じブログが同じbudget day・同じ理由で保護停止し続ける間のexecutionログ増殖を抑えつつ、正常復帰後の再到達・理由変更・日付変更という新しい遷移は必ず記録する | 2026-08-26 | 無 |
 | F-045 | global AI予算保護のホーム即時表示 | 承認 | global call/token hard capで庭全体のAI工程が保護停止している時、monitorやdiagnosticsを待たず統合HP最上部で現在のhard-cap状態・使用量・budget dayを把握できるようにする | 2026-08-26 | 有: `/` |
+| F-046 | global AI予算80%事前warning | 承認 | hard cap到達後ではなく既存diagnosticsと同じ80%利用率でpersistent WARNINGを出し、放置運用でも庭全体が止まる前に予算調整・原因確認の時間を確保する。100%到達時は既存CRITICALへ引き継ぎ、warning側から誤ったRECOVERYを送らない | 2026-08-26 | 有: `/diagnostics` |
