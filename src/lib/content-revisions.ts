@@ -36,6 +36,12 @@ export interface ContentRevision {
   rolledBackAt: string | null;
 }
 
+export interface ContentRevisionOperationalSummary {
+  stalePrepared: number;
+  failedRecent: number;
+  oldestStalePreparedAt: string | null;
+}
+
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
 const globalDb = globalThis as typeof globalThis & { __blogGardenContentRevisionDb?: DB };
@@ -180,9 +186,13 @@ export function markContentRevisionApplied(revisionId: number, result: { updated
   return revision;
 }
 
-export function markContentRevisionFailed(revisionId: number, error: unknown): void {
-  db.prepare(`UPDATE content_revisions SET status='failed',error=? WHERE id=? AND status='prepared'`)
+export function markContentRevisionFailed(revisionId: number, error: unknown): ContentRevision {
+  const info = db.prepare(`UPDATE content_revisions SET status='failed',error=? WHERE id=? AND status='prepared'`)
     .run(safeError(error), revisionId);
+  if (info.changes !== 1) throw new Error("revision snapshot is not in prepared state");
+  const revision = getContentRevision(revisionId);
+  if (!revision) throw new Error("failed revision snapshot could not be reloaded");
+  return revision;
 }
 
 export function markContentRevisionRolledBack(revisionId: number, updatedAt: string | null): ContentRevision {
@@ -210,6 +220,54 @@ export function rollbackRevisionQueue(limit = 12): ContentRevision[] {
   return rows.map(mapRow);
 }
 
+export function stalePreparedRevisions(staleMinutes = 15, limit = 50): ContentRevision[] {
+  const minutes = Math.max(1, Math.min(1440, Math.trunc(staleMinutes || 15)));
+  const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit || 50)));
+  const threshold = new Date(Date.now() - minutes * 60000).toISOString();
+  const rows = db.prepare(`${joinedSelect}
+    WHERE r.status='prepared' AND r.created_at <= ?
+    ORDER BY r.created_at ASC, r.id ASC LIMIT ?`).all(threshold, safeLimit) as any[];
+  return rows.map(mapRow);
+}
+
+export function revisionAttentionQueue(limit = 12, staleMinutes = 15): ContentRevision[] {
+  const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit || 12)));
+  const threshold = new Date(Date.now() - Math.max(1, staleMinutes) * 60000).toISOString();
+  const failedSince = new Date(Date.now() - 7 * 86400000).toISOString();
+  const rows = db.prepare(`${joinedSelect}
+    WHERE (r.status='prepared' AND r.created_at <= ?)
+       OR (r.status='failed' AND r.created_at >= ?)
+    ORDER BY CASE WHEN r.status='prepared' THEN 0 ELSE 1 END, r.created_at DESC, r.id DESC
+    LIMIT ?`).all(threshold, failedSince, safeLimit) as any[];
+  return rows.map(mapRow);
+}
+
+export function contentRevisionOperationalSummary(staleMinutes = 15): ContentRevisionOperationalSummary {
+  const threshold = new Date(Date.now() - Math.max(1, staleMinutes) * 60000).toISOString();
+  const failedSince = new Date(Date.now() - 24 * 3600000).toISOString();
+  const stale = db.prepare(`SELECT COUNT(*) n, MIN(created_at) oldest
+    FROM content_revisions WHERE status='prepared' AND created_at <= ?`).get(threshold) as { n: number; oldest: string | null };
+  const failed = db.prepare(`SELECT COUNT(*) n FROM content_revisions
+    WHERE status='failed' AND created_at >= ?`).get(failedSince) as { n: number };
+  return {
+    stalePrepared: Number(stale.n || 0),
+    failedRecent: Number(failed.n || 0),
+    oldestStalePreparedAt: stale.oldest || null,
+  };
+}
+
+export function revisionMatchesSnapshot(
+  revision: ContentRevision,
+  current: ExistingPost,
+  target: "before" | "after",
+): boolean {
+  const snapshot = target === "before" ? revision.before : revision.after;
+  if (revision.axes.includes("headline") && current.title !== snapshot.title) return false;
+  if (revision.axes.includes("html") && current.html !== snapshot.html) return false;
+  if (revision.axes.includes("excerpt") && current.excerpt !== snapshot.excerpt) return false;
+  return true;
+}
+
 export function revisionRollbackUpdate(revision: ContentRevision): PostUpdate {
   const update: PostUpdate = {};
   if (revision.axes.includes("headline")) update.title = revision.before.title;
@@ -220,14 +278,8 @@ export function revisionRollbackUpdate(revision: ContentRevision): PostUpdate {
 
 export function assertRevisionStillMatchesAppliedState(revision: ContentRevision, current: ExistingPost): void {
   if (revision.status !== "applied") throw new Error("revision is not eligible for rollback");
-  if (revision.axes.includes("headline") && current.title !== revision.after.title) {
-    throw new Error("Rollback blocked: the current headline no longer matches the Blog Garden revision; a human or another process changed it after automation.");
-  }
-  if (revision.axes.includes("html") && current.html !== revision.after.html) {
-    throw new Error("Rollback blocked: the current article body no longer matches the Blog Garden revision.");
-  }
-  if (revision.axes.includes("excerpt") && current.excerpt !== revision.after.excerpt) {
-    throw new Error("Rollback blocked: the current excerpt no longer matches the Blog Garden revision.");
+  if (!revisionMatchesSnapshot(revision, current, "after")) {
+    throw new Error("Rollback blocked: the current remote content no longer matches the Blog Garden revision; a human or another process changed a recorded axis after automation.");
   }
 }
 
