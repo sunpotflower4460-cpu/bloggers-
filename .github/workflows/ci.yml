@@ -56,6 +56,8 @@ jobs:
         run: ./node_modules/.bin/tsx scripts/ci/ai-budget-preflight-smoke.ts
       - name: Smoke test per-blog AI budget incident lifecycle
         run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-alert-smoke.ts
+      - name: Smoke test reversible autonomous content revisions
+        run: ./node_modules/.bin/tsx scripts/ci/content-revision-rollback-smoke.ts
       - name: Smoke test backup and restore
         shell: bash
         run: |
