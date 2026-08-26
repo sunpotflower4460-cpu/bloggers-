@@ -1,4 +1,5 @@
 import { reconcileAiBudgetIncident } from "../lib/ai-budget-alert";
+import { reconcileAiCostThresholdIncident } from "../lib/ai-cost-alert";
 import { reconcileAiRoutingIncidents } from "../lib/ai-routing-alert";
 import { reconcileExternalHeartbeatIncidents } from "../lib/external-heartbeat-alert";
 import { runOperationalMonitor } from "../lib/ops-monitor";
@@ -6,12 +7,14 @@ import { runOperationalMonitor } from "../lib/ops-monitor";
 try {
   const result = await runOperationalMonitor();
   const aiBudget = await reconcileAiBudgetIncident();
+  const aiCost = await reconcileAiCostThresholdIncident();
   const aiRouting = await reconcileAiRoutingIncidents();
   const externalHeartbeat = await reconcileExternalHeartbeatIncidents();
-  console.log(JSON.stringify({ at: new Date().toISOString(), ...result, aiBudget, aiRouting, externalHeartbeat }, null, 2));
+  console.log(JSON.stringify({ at: new Date().toISOString(), ...result, aiBudget, aiCost, aiRouting, externalHeartbeat }, null, 2));
   if (
     result.notificationFailures > 0
     || aiBudget.notificationFailure
+    || aiCost.notificationFailure
     || aiRouting.notificationFailures > 0
     || externalHeartbeat.notificationFailures > 0
   ) process.exitCode = 2;
