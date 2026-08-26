@@ -1,4 +1,5 @@
 import { aiJson, aiJsonWithMeta, type AiJsonRouteMeta } from "./ai";
+import { aiBudgetPreflightForBlog } from "./ai-budget-preflight";
 import { fallbackContentPolicy } from "./ai-content-policy";
 import { blogAiUsageScope, withAiUsageScope } from "./ai-usage-context";
 import { collectGa4 } from "./analytics/ga4";
@@ -210,6 +211,23 @@ async function runOne(blog: Blog, force = false): Promise<{ blog: string; status
       recordRun(blog.id, "native-reactions", "ok", `Native reactions matched ${matched} publications`, { matched }, started);
     } catch (error) {
       recordRun(blog.id, "native-reactions", "error", String(error), {}, started);
+    }
+
+    // Keep analytics/reaction collection alive while a budget is exhausted, but
+    // stop before any workflow that can invoke AI or collect fresh editorial leads.
+    // reserveAiCall remains the final atomic authority in case another process
+    // consumes the last slot after this advisory preflight.
+    const budgetPreflight = aiBudgetPreflightForBlog(blog.id, blog.name);
+    if (budgetPreflight.blocked) {
+      recordRun(
+        blog.id,
+        "execution",
+        "ok",
+        `Protected AI editorial skip: ${budgetPreflight.detail}`,
+        { force, aiBudgetPreflight: budgetPreflight },
+        started,
+      );
+      return { blog: blog.name, status: "budget-blocked" };
     }
 
     // Only fully autonomous blogs edit already-published content. Review-mode gardens
