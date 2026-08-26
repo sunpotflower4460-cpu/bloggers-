@@ -1,5 +1,5 @@
 import http from "node:http";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 
 const dbPath = ".ci/content-revision-rollback.sqlite";
 rmSync(dbPath, { force: true });
@@ -178,6 +178,31 @@ try {
     throw new Error("conflicted revision must remain applied and reviewable");
   }
 
+  // Structural safety regression: the real engine must create the snapshot before
+  // calling the CMS, the public route must demand explicit confirmation, and the
+  // home must surface the rollback queue rather than hiding applied revisions.
+  const engineSource = readFileSync("src/lib/engine.ts", "utf8");
+  const prepareIndex = engineSource.indexOf("const revision = prepareContentRevision({");
+  const remoteMutationIndex = engineSource.indexOf("result = await adapter.updatePost", prepareIndex);
+  if (prepareIndex < 0 || remoteMutationIndex < 0 || prepareIndex >= remoteMutationIndex) {
+    throw new Error("engine no longer prepares a revision snapshot before the autonomous CMS mutation");
+  }
+  if (!engineSource.includes("markContentRevisionFailed(revision.id, error)")) {
+    throw new Error("engine no longer records failed remote mutations against the prepared revision");
+  }
+  if (!engineSource.includes("revisionId: revision.id")) {
+    throw new Error("headline refresh no longer links its revision id into local history");
+  }
+
+  const routeSource = readFileSync("src/app/api/revisions/rollback/route.ts", "utf8");
+  if (!routeSource.includes("body.confirmRollback !== true") || !routeSource.includes("confirmRollback=true is required")) {
+    throw new Error("rollback API no longer requires explicit external-mutation confirmation");
+  }
+  const homeSource = readFileSync("src/app/page.tsx", "utf8");
+  for (const required of ["rollbackRevisionQueue(12)", "自動改善 · 戻せる変更", "<ContentRollbackButton revisionId={revision.id} />"]) {
+    if (!homeSource.includes(required)) throw new Error(`home rollback queue wiring missing: ${required}`);
+  }
+
   console.log(JSON.stringify({
     ok: true,
     snapshotPreparedBeforeMutation: true,
@@ -185,6 +210,9 @@ try {
     localRefreshMarkedRolledBack: true,
     humanEditCollisionBlocked: true,
     conflictedRevisionRemainsReviewable: true,
+    engineOrderingVerified: true,
+    explicitApiConfirmationVerified: true,
+    homeRollbackQueueVerified: true,
   }));
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
