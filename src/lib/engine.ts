@@ -1,5 +1,9 @@
 import { aiJson, aiJsonWithMeta, type AiJsonRouteMeta } from "./ai";
-import { aiBudgetPreflightForBlog } from "./ai-budget-preflight";
+import {
+  aiBudgetPreflightForBlog,
+  claimAiBudgetProtectedSkipTransition,
+  clearAiBudgetProtectedSkipTransition,
+} from "./ai-budget-preflight";
 import { fallbackContentPolicy } from "./ai-content-policy";
 import { blogAiUsageScope, withAiUsageScope } from "./ai-usage-context";
 import { collectGa4 } from "./analytics/ga4";
@@ -219,16 +223,19 @@ async function runOne(blog: Blog, force = false): Promise<{ blog: string; status
     // consumes the last slot after this advisory preflight.
     const budgetPreflight = aiBudgetPreflightForBlog(blog.id, blog.name);
     if (budgetPreflight.blocked) {
-      recordRun(
-        blog.id,
-        "execution",
-        "ok",
-        `Protected AI editorial skip: ${budgetPreflight.detail}`,
-        { force, aiBudgetPreflight: budgetPreflight },
-        started,
-      );
+      if (claimAiBudgetProtectedSkipTransition(blog.id, budgetPreflight)) {
+        recordRun(
+          blog.id,
+          "execution",
+          "ok",
+          `Protected AI editorial skip: ${budgetPreflight.detail}`,
+          { force, aiBudgetPreflight: budgetPreflight },
+          started,
+        );
+      }
       return { blog: blog.name, status: "budget-blocked" };
     }
+    clearAiBudgetProtectedSkipTransition(blog.id);
 
     // Only fully autonomous blogs edit already-published content. Review-mode gardens
     // keep existing posts untouched unless the human later opts into auto publishing.
