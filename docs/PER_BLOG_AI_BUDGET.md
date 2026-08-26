@@ -140,8 +140,8 @@ Webhook通知を使わない運用でも、F-039で保護停止しているブ�
 - CLOSED incidentはホームへ表示しません
 - unrelated incidentが多数あっても、直近N件の汎用一覧に依存せず対象codeを全件取得するため、停止ブログが押し出されません
 - 表示のためにブログの`active`値を変更しません
-- ホームはpersistent incidentを表示する層です。monitorがまだF-039 reconcileを実行していない瞬間状態を独自に推測してincident扱いにはしません
-- 上限解消後にmonitorがincidentをCLOSEDへ更新すると、次のホーム表示から通常状態へ戻ります
+- ホームはpersistent incidentを表示する層で、独自の別判定ロジックを持ちません
+- F-039がincidentをCLOSEDへ更新すると、次のホーム表示から通常状態へ戻ります
 
 ## F-041: per-blog override
 
@@ -169,7 +169,33 @@ per-blog cap disabled for that blog
 - diagnosticsとF-039 incidentは同じ実効上限を使います
 - incident detailには上限が`個別override`か`共通上限`かを残します
 
-設定画面で個別値を変えただけではブログの`active`、公開方針、AI routeは変更しません。すでに当日のcallsが新しい実効上限以上なら、次のmonitor reconcileでF-039 incidentがOPEN/再OPENします。逆に実効上限を引き上げて現在callsが下回ればRECOVERY対象になります。
+設定画面で個別値を変えてもブログの`active`、公開方針、AI routeは変更しません。
+
+## F-042: settings-save immediate incident reconciliation
+
+F-041の実効上限はAI call時点では即時に効きますが、F-039 incidentだけ次回monitorまで待つと、設定直後にホーム表示やWebhookが古いまま残る時間が生まれます。F-042はこのずれをなくします。
+
+ブログ設定保存時の順序:
+
+1. 個別overrideを永続化する
+2. 同じF-039 `reconcileAiPerBlogBudgetIncidents()` をその場で実行する
+3. 新しい実効上限でWARNING / RECOVERY / reopenを即時反映する
+4. ホームはF-040の同じpersistent incidentを読むため、次の表示から同期した状態になる
+
+例:
+
+- すでに2 calls使ったブログへoverride `2`を保存 → その保存処理内でWARNINGをOPEN
+- override `3`へ引き上げ → その場でRECOVERY
+- override `1`へ下げる → 同じincident行をその場で再OPEN
+- overrideを空欄へ戻し共通値`5`を継承 → その場でRECOVERY
+
+安全境界:
+
+- 即時reconcileは新しい判定方式ではなく、monitorと同じF-039関数を再利用します
+- monitorが直後に走ってもincident/通知は重複しません
+- Webhook送信失敗はSQLite incidentを失わせません
+- overrideの永続化に成功した後、予期しないreconcile障害が起きても安全設定そのものは巻き戻しません。monitorが後続の再評価を引き継ぎます
+- malformed共有設定などで完全なbudget snapshotを作れない場合は、既存OPEN incidentを誤ってRECOVERYにしません
 
 ## Why there is no per-blog token hard cap yet
 
