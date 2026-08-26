@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { aiBudgetStatus } from "./ai-budget";
+import { fallbackContentPolicy } from "./ai-content-policy";
 import { aiRoutingStatus } from "./ai-routing";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
@@ -153,6 +154,33 @@ function aiRoutingDiagnostic(): DiagnosticItem {
   };
 }
 
+function fallbackContentPolicyDiagnostic(): DiagnosticItem {
+  try {
+    const policy = fallbackContentPolicy();
+    if (policy === "review") {
+      return {
+        scope: "system",
+        label: "fallbackコンテンツ公開ポリシー",
+        status: "ok",
+        detail: "review · fallback生成の最終記事はdraftへ降格し、公開済み記事のfallback更新案は自動適用しません",
+      };
+    }
+    return {
+      scope: "system",
+      label: "fallbackコンテンツ公開ポリシー",
+      status: "warn",
+      detail: "allow-auto · fallback品質を検証済みの場合のみ推奨。fallback生成内容もauto公開・既存記事更新を許可します",
+    };
+  } catch (error) {
+    return {
+      scope: "system",
+      label: "fallbackコンテンツ公開ポリシー",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   const items: DiagnosticItem[] = [];
   const encryptionKey = process.env.APP_ENCRYPTION_KEY || "";
@@ -178,6 +206,7 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   } catch (error) {
     items.push({ scope: "system", label: "AI failover", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
+  items.push(fallbackContentPolicyDiagnostic());
   items.push({
     scope: "system",
     label: "障害通知Webhook",
