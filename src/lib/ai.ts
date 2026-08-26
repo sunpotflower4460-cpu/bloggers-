@@ -228,5 +228,5 @@ export async function aiJsonInternal<T>(system: string, user: string): Promise<T
 }
 
 export async function aiJson<T>(system: string, user: string): Promise<T> {
-  return (await aiJsonWithMeta<T>(system, user)).value;
+  return aiJsonInternal<T>(system, user);
 }
