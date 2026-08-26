@@ -5,7 +5,7 @@ import type { ExistingPost, PostUpdate } from "./platforms/base";
 import type { Publication } from "./types";
 
 type DB = InstanceType<typeof Database>;
-export type ContentRevisionStatus = "prepared" | "applied" | "failed" | "rolled-back";
+export type ContentRevisionStatus = "prepared" | "applied" | "failed" | "rolled-back" | "resolved-external";
 export type ContentRevisionAxis = "headline" | "html" | "excerpt";
 
 export interface RevisionSnapshot {
@@ -30,6 +30,9 @@ export interface ContentRevision {
   status: ContentRevisionStatus;
   appliedUpdatedAt: string | null;
   rolledBackUpdatedAt: string | null;
+  operatorResolutionSnapshot: RevisionSnapshot | null;
+  operatorResolutionReason: string | null;
+  operatorResolvedAt: string | null;
   error: string | null;
   createdAt: string;
   appliedAt: string | null;
@@ -60,6 +63,9 @@ CREATE TABLE IF NOT EXISTS content_revisions (
   status TEXT NOT NULL,
   applied_updated_at TEXT,
   rolled_back_updated_at TEXT,
+  operator_resolution_snapshot_json TEXT,
+  operator_resolution_reason TEXT,
+  operator_resolved_at TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
   applied_at TEXT,
@@ -72,6 +78,9 @@ CREATE INDEX IF NOT EXISTS idx_content_revisions_status_created
 `);
 const revisionColumns = new Set((db.prepare("PRAGMA table_info(content_revisions)").all() as Array<{ name: string }>).map((row) => row.name));
 if (!revisionColumns.has("rolled_back_updated_at")) db.exec("ALTER TABLE content_revisions ADD COLUMN rolled_back_updated_at TEXT");
+if (!revisionColumns.has("operator_resolution_snapshot_json")) db.exec("ALTER TABLE content_revisions ADD COLUMN operator_resolution_snapshot_json TEXT");
+if (!revisionColumns.has("operator_resolution_reason")) db.exec("ALTER TABLE content_revisions ADD COLUMN operator_resolution_reason TEXT");
+if (!revisionColumns.has("operator_resolved_at")) db.exec("ALTER TABLE content_revisions ADD COLUMN operator_resolved_at TEXT");
 
 function cleanSnapshot(value: ExistingPost): RevisionSnapshot {
   return {
@@ -91,12 +100,12 @@ function intendedAfter(before: RevisionSnapshot, update: PostUpdate): RevisionSn
   };
 }
 
-function safeError(value: unknown): string {
+function safeText(value: unknown, max = 800): string {
   return String(value instanceof Error ? value.message : value)
     .replace(/[\r\n\t]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 800);
+    .slice(0, max);
 }
 
 function parseSnapshot(raw: string): RevisionSnapshot {
@@ -107,6 +116,11 @@ function parseSnapshot(raw: string): RevisionSnapshot {
     excerpt: String(value.excerpt || ""),
     updatedAt: value.updatedAt ? String(value.updatedAt) : null,
   };
+}
+
+function optionalSnapshot(raw: unknown): RevisionSnapshot | null {
+  if (!raw) return null;
+  try { return parseSnapshot(String(raw)); } catch { return null; }
 }
 
 function parseAxes(raw: string): ContentRevisionAxis[] {
@@ -134,6 +148,9 @@ function mapRow(row: any): ContentRevision {
     status: String(row.status) as ContentRevisionStatus,
     appliedUpdatedAt: row.applied_updated_at ? String(row.applied_updated_at) : null,
     rolledBackUpdatedAt: row.rolled_back_updated_at ? String(row.rolled_back_updated_at) : null,
+    operatorResolutionSnapshot: optionalSnapshot(row.operator_resolution_snapshot_json),
+    operatorResolutionReason: row.operator_resolution_reason ? String(row.operator_resolution_reason) : null,
+    operatorResolvedAt: row.operator_resolved_at ? String(row.operator_resolved_at) : null,
     error: row.error ? String(row.error) : null,
     createdAt: String(row.created_at),
     appliedAt: row.applied_at ? String(row.applied_at) : null,
@@ -188,10 +205,27 @@ export function markContentRevisionApplied(revisionId: number, result: { updated
 
 export function markContentRevisionFailed(revisionId: number, error: unknown): ContentRevision {
   const info = db.prepare(`UPDATE content_revisions SET status='failed',error=? WHERE id=? AND status='prepared'`)
-    .run(safeError(error), revisionId);
+    .run(safeText(error), revisionId);
   if (info.changes !== 1) throw new Error("revision snapshot is not in prepared state");
   const revision = getContentRevision(revisionId);
   if (!revision) throw new Error("failed revision snapshot could not be reloaded");
+  return revision;
+}
+
+export function markContentRevisionResolvedExternal(
+  revisionId: number,
+  current: ExistingPost,
+  reason: string,
+): ContentRevision {
+  const cleanReason = safeText(reason, 500);
+  if (cleanReason.length < 4) throw new Error("operator resolution reason must be at least 4 characters");
+  const now = new Date().toISOString();
+  const info = db.prepare(`UPDATE content_revisions
+    SET status='resolved-external',operator_resolution_snapshot_json=?,operator_resolution_reason=?,operator_resolved_at=?,error=NULL
+    WHERE id=? AND status='prepared'`).run(JSON.stringify(cleanSnapshot(current)), cleanReason, now, revisionId);
+  if (info.changes !== 1) throw new Error("revision is no longer eligible for local-only resolution");
+  const revision = getContentRevision(revisionId);
+  if (!revision) throw new Error("resolved revision could not be reloaded");
   return revision;
 }
 
