@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { aiRoutingStatus } from "./ai-routing";
+import { aiRoutingStatus, type AiAttemptOutcome } from "./ai-routing";
 import { listBlogs } from "./db";
 
 type DB = InstanceType<typeof Database>;
@@ -156,6 +156,18 @@ async function reconcileOne(input: {
   return { open: false, notified, notificationFailure };
 }
 
+function recentEconomyAttempts(): Array<{ attempted_at: string; outcome: AiAttemptOutcome }> {
+  return db.prepare(`SELECT attempted_at,outcome FROM ai_provider_attempts
+    WHERE route='economy' ORDER BY id DESC LIMIT 3`).all() as Array<{ attempted_at: string; outcome: AiAttemptOutcome }>;
+}
+
+function economyDegraded(): boolean {
+  const rows = recentEconomyAttempts();
+  return rows.length === 3
+    && rows.every((row) => row.outcome === "retryable_error" || row.outcome === "fatal_error")
+    && Date.now() - new Date(rows[2].attempted_at).getTime() <= 6 * 3600000;
+}
+
 export async function reconcileAiRoutingIncidents(): Promise<{
   open: number;
   notified: number;
@@ -186,7 +198,20 @@ export async function reconcileAiRoutingIncidents(): Promise<{
     detail: degradedDetail,
   });
 
-  const results = [configResult, degradedResult];
+  const economyIsDegraded = routing.internalPolicy === "economy" && economyDegraded();
+  const economyDetail = [
+    `economy ${routing.economyLabel || "economy"}/${routing.economyModel || "unknown"} has 3 consecutive failed attempts within 6h`,
+    `24h economy successes=${routing.economySuccesses24h}, failures=${routing.economyFailures24h}`,
+    "internal work is recovering through the normal route, so repeated failures can add one extra AI call per logical request",
+  ].join("; ");
+  const economyResult = await reconcileOne({
+    code: "ai-economy-degraded",
+    active: hasActiveBlogs && routing.configured && economyIsDegraded,
+    severity: "warning",
+    detail: economyDetail,
+  });
+
+  const results = [configResult, degradedResult, economyResult];
   return {
     open: results.filter((item) => item.open).length,
     notified: results.filter((item) => item.notified).length,
