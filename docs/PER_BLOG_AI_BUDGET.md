@@ -121,6 +121,25 @@ If `AI_PER_BLOG_DAILY_CALL_LIMIT` becomes malformed while an incident is OPEN, F
 
 The incident uses `blog:<id>` rather than the display name as its primary scope. This avoids collisions when two blogs share the same name or a blog is renamed. Human-readable blog labels remain in the incident detail.
 
+## F-040: home dashboard visibility
+
+Webhook通知を使わない運用でも、F-039で保護停止しているブログを見失わないよう、ホーム画面は`ai-per-blog-budget-exhausted`の**OPEN incidentだけ**を専用queryで読み取ります。
+
+表示:
+
+- 全体statsに現在の`AI上限停止`件数
+- 対象ブログカードの状態を`自動運転`ではなく`AI上限で保護停止`と表示
+- incident detailと最終更新時刻
+- `/diagnostics`への確認導線
+
+重要な境界:
+
+- CLOSED incidentはホームへ表示しません
+- unrelated incidentが多数あっても、直近N件の汎用一覧に依存せず対象codeを全件取得するため、停止ブログが押し出されません
+- 表示のためにブログの`active`値を変更しません
+- ホームはpersistent incidentを表示する層です。monitorがまだF-039 reconcileを実行していない瞬間状態を独自に推測してincident扱いにはしません
+- 上限解消後にmonitorがincidentをCLOSEDへ更新すると、次のホーム表示から通常状態へ戻ります
+
 ## Why there is no per-blog token hard cap yet
 
 A reliable token amount is normally known only after the provider returns the response. Pre-reserving an unknown per-blog token quantity would either under-protect or reject legitimate work using an arbitrary guess.
