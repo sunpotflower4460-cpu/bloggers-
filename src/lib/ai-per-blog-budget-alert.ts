@@ -7,13 +7,16 @@ type DB = InstanceType<typeof Database>;
 type NotificationKind = "warning" | "recovery";
 
 interface IncidentRow {
+  code: string;
   scope: string;
   status: "open" | "closed";
   detail: string;
   last_notified_at: string | null;
 }
 
-const code = "ai-per-blog-budget-exhausted";
+const exhaustedCode = "ai-per-blog-budget-exhausted";
+const nearLimitCode = "ai-per-blog-budget-near-limit";
+const warningUtilization = 0.8;
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
 const globalDb = globalThis as typeof globalThis & { __blogGardenAiPerBlogBudgetAlertDb?: DB };
@@ -62,7 +65,7 @@ function webhookKind(url: URL): "slack" | "discord" | "generic" {
   return "generic";
 }
 
-async function send(kind: NotificationKind, scope: string, detail: string): Promise<boolean> {
+async function send(kind: NotificationKind, code: string, scope: string, detail: string): Promise<boolean> {
   const raw = process.env.ALERT_WEBHOOK_URL?.trim();
   if (!raw) return false;
   const url = new URL(raw);
@@ -87,36 +90,94 @@ async function send(kind: NotificationKind, scope: string, detail: string): Prom
   return true;
 }
 
-function incidentRows(): IncidentRow[] {
-  return db.prepare("SELECT scope,status,detail,last_notified_at FROM operational_incidents WHERE code=?")
+function incidentRows(code: string): IncidentRow[] {
+  return db.prepare("SELECT code,scope,status,detail,last_notified_at FROM operational_incidents WHERE code=?")
     .all(code) as IncidentRow[];
 }
 
-function detailFor(row: AiPerBlogBudgetScopeStatus, dayKey: string, timezone: string): string {
-  const source = row.limitSource === "override" ? "個別override" : "共通上限";
-  return `${row.scopeLabel} がブログ別AI日次call上限に到達: ${row.calls}/${row.limit} calls (${source}), day=${dayKey} (${timezone})。このブログの次のAI outbound callは上限が解消するまで送信されません。`;
+function sourceLabel(row: AiPerBlogBudgetScopeStatus): string {
+  return row.limitSource === "override" ? "個別override" : "共通上限";
+}
+
+function exhaustedDetail(row: AiPerBlogBudgetScopeStatus, dayKey: string, timezone: string): string {
+  return `${row.scopeLabel} がブログ別AI日次call上限に到達: ${row.calls}/${row.limit} calls (${sourceLabel(row)}), day=${dayKey} (${timezone})。このブログの次のAI outbound callは上限が解消するまで送信されません。`;
+}
+
+function nearLimitDetail(row: AiPerBlogBudgetScopeStatus, dayKey: string, timezone: string): string {
+  return `${row.scopeLabel} のブログ別AI日次call上限が80%以上: ${(row.utilization * 100).toFixed(1)}%, ${row.calls}/${row.limit} calls (${sourceLabel(row)}), day=${dayKey} (${timezone})。まだ保護停止ではありませんが、次のAI処理で上限へ到達する可能性があります。`;
+}
+
+function openIncident(code: string, scope: string, detail: string, timestamp: string, existing: IncidentRow | undefined): void {
+  if (!existing) {
+    db.prepare(`INSERT INTO operational_incidents
+      (code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at)
+      VALUES (?,?,'open','warning',?,?,?,NULL,NULL)`)
+      .run(code, scope, detail, timestamp, timestamp);
+    return;
+  }
+  db.prepare(`UPDATE operational_incidents SET status='open',severity='warning',detail=?,updated_at=?,resolved_at=NULL WHERE code=? AND scope=?`)
+    .run(detail, timestamp, code, scope);
+}
+
+function closeSilently(code: string, scope: string, detail: string, timestamp: string): void {
+  db.prepare(`UPDATE operational_incidents SET status='closed',detail=?,updated_at=?,resolved_at=?
+    WHERE code=? AND scope=? AND status='open'`).run(detail, timestamp, timestamp, code, scope);
+}
+
+async function notify(
+  kind: NotificationKind,
+  code: string,
+  scope: string,
+  detail: string,
+): Promise<{ sent: boolean; failed: boolean }> {
+  try {
+    const sent = await send(kind, code, scope, detail);
+    if (sent) {
+      db.prepare("UPDATE operational_incidents SET last_notified_at=? WHERE code=? AND scope=?")
+        .run(now(), code, scope);
+    }
+    return { sent, failed: false };
+  } catch (error) {
+    console.error(`[ai-per-blog-budget-alert] notification failed: ${safe(error instanceof Error ? error.message : error)}`);
+    return { sent: false, failed: true };
+  }
+}
+
+async function recoverIncident(
+  incident: IncidentRow,
+  detail: string,
+  timestamp: string,
+): Promise<{ sent: boolean; failed: boolean }> {
+  db.prepare(`UPDATE operational_incidents SET status='closed',detail=?,updated_at=?,resolved_at=? WHERE code=? AND scope=?`)
+    .run(detail, timestamp, timestamp, incident.code, incident.scope);
+  return notify("recovery", incident.code, incident.scope, detail);
 }
 
 export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
   configured: boolean;
   exhaustedScopes: number;
+  warningScopes: number;
   notifications: number;
   notificationFailures: number;
   configError: string | null;
 }> {
   let budget;
-  const allExisting = incidentRows();
-  const existingByScope = new Map(allExisting.map((row) => [row.scope, row]));
-  const existingOpen = new Map(allExisting.filter((row) => row.status === "open").map((row) => [row.scope, row]));
+  const exhaustedExisting = incidentRows(exhaustedCode);
+  const nearExisting = incidentRows(nearLimitCode);
+  const exhaustedByScope = new Map(exhaustedExisting.map((row) => [row.scope, row]));
+  const nearByScope = new Map(nearExisting.map((row) => [row.scope, row]));
+  const exhaustedOpen = exhaustedExisting.filter((row) => row.status === "open");
+  const nearOpen = nearExisting.filter((row) => row.status === "open");
 
   try {
     budget = aiPerBlogBudgetStatus();
   } catch (error) {
-    // A malformed optional cap or persisted override must not take down unrelated
-    // operational checks. Preserve OPEN incidents rather than claiming recovery.
+    // Invalid optional cap/override is not a recovery signal. Preserve both
+    // near-limit and exhausted OPEN incidents until a valid snapshot exists.
     return {
       configured: true,
-      exhaustedScopes: existingOpen.size,
+      exhaustedScopes: exhaustedOpen.length,
+      warningScopes: nearOpen.length,
       notifications: 0,
       notificationFailures: 0,
       configError: safe(error instanceof Error ? error.message : error),
@@ -128,78 +189,96 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
   let notificationFailures = 0;
 
   if (!budget.configured) {
-    for (const incident of existingOpen.values()) {
+    for (const incident of [...exhaustedOpen, ...nearOpen]) {
       const detail = `ブログ別AI日次call上限の監視が運用者により無効化されました。これはAI使用量が減少したことを確認した復旧ではありません。直前の状態: ${safe(incident.detail)}`;
-      db.prepare(`UPDATE operational_incidents SET status='closed',detail=?,updated_at=?,resolved_at=? WHERE code=? AND scope=?`)
-        .run(detail, timestamp, timestamp, code, incident.scope);
-      try {
-        if (await send("recovery", incident.scope, detail)) {
-          notifications += 1;
-          db.prepare("UPDATE operational_incidents SET last_notified_at=? WHERE code=? AND scope=?")
-            .run(now(), code, incident.scope);
-        }
-      } catch (error) {
-        notificationFailures += 1;
-        console.error(`[ai-per-blog-budget-alert] disable recovery notification failed: ${safe(error instanceof Error ? error.message : error)}`);
-      }
+      const result = await recoverIncident(incident, detail, timestamp);
+      if (result.sent) notifications += 1;
+      if (result.failed) notificationFailures += 1;
     }
-    return { configured: false, exhaustedScopes: 0, notifications, notificationFailures, configError: null };
+    return {
+      configured: false,
+      exhaustedScopes: 0,
+      warningScopes: 0,
+      notifications,
+      notificationFailures,
+      configError: null,
+    };
   }
 
   const current = new Map(budget.scopes.map((row) => [row.scopeKey, row]));
   const exhausted = budget.scopes.filter((row) => row.exhausted);
+  const nearLimit = budget.scopes.filter((row) => !row.exhausted && row.utilization >= warningUtilization);
+  const exhaustedScopes = new Set(exhausted.map((row) => row.scopeKey));
+  const nearScopes = new Set(nearLimit.map((row) => row.scopeKey));
 
   for (const row of exhausted) {
-    const detail = detailFor(row, budget.dayKey, budget.timezone);
-    const existing = existingByScope.get(row.scopeKey);
-    if (!existing) {
-      db.prepare(`INSERT INTO operational_incidents
-        (code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at)
-        VALUES (?,?,'open','warning',?,?,?,NULL,NULL)`)
-        .run(code, row.scopeKey, detail, timestamp, timestamp);
-    } else {
-      db.prepare(`UPDATE operational_incidents SET status='open',severity='warning',detail=?,updated_at=?,resolved_at=NULL WHERE code=? AND scope=?`)
-        .run(detail, timestamp, code, row.scopeKey);
-    }
+    // This is an escalation, not a recovery. Close the advisory near-limit row
+    // silently before opening/reopening the existing F-039 protection incident.
+    closeSilently(
+      nearLimitCode,
+      row.scopeKey,
+      `${row.scopeLabel} のnear-limit warningを終了: 100%に到達したため${exhaustedCode}へ引き継ぎました`,
+      timestamp,
+    );
 
+    const detail = exhaustedDetail(row, budget.dayKey, budget.timezone);
+    const existing = exhaustedByScope.get(row.scopeKey);
+    openIncident(exhaustedCode, row.scopeKey, detail, timestamp, existing);
     const shouldNotify = !existing || existing.status === "closed" || hoursSince(existing.last_notified_at) >= 48;
     if (shouldNotify) {
-      try {
-        if (await send("warning", row.scopeKey, detail)) {
-          notifications += 1;
-          db.prepare("UPDATE operational_incidents SET last_notified_at=? WHERE code=? AND scope=?")
-            .run(now(), code, row.scopeKey);
-        }
-      } catch (error) {
-        notificationFailures += 1;
-        console.error(`[ai-per-blog-budget-alert] warning notification failed: ${safe(error instanceof Error ? error.message : error)}`);
-      }
+      const result = await notify("warning", exhaustedCode, row.scopeKey, detail);
+      if (result.sent) notifications += 1;
+      if (result.failed) notificationFailures += 1;
     }
   }
 
-  for (const incident of existingOpen.values()) {
-    const row = current.get(incident.scope);
-    if (row?.exhausted) continue;
-    const reason = row
-      ? `${row.scopeLabel} のブログ別AI call上限状態が解消: ${row.calls}/${row.limit} calls (${row.limitSource === "override" ? "個別override" : "共通上限"}), day=${budget.dayKey} (${budget.timezone})。日付切替・実効上限変更・override解除の可能性があります。`
-      : `ブログ別AI call上限状態が解消しました。現在のbudget day=${budget.dayKey} (${budget.timezone})では、このscopeに有効な上限到達状態がありません。共通上限または個別overrideの変更・解除の可能性があります。`;
-    db.prepare(`UPDATE operational_incidents SET status='closed',detail=?,updated_at=?,resolved_at=? WHERE code=? AND scope=?`)
-      .run(reason, timestamp, timestamp, code, incident.scope);
-    try {
-      if (await send("recovery", incident.scope, reason)) {
-        notifications += 1;
-        db.prepare("UPDATE operational_incidents SET last_notified_at=? WHERE code=? AND scope=?")
-          .run(now(), code, incident.scope);
-      }
-    } catch (error) {
-      notificationFailures += 1;
-      console.error(`[ai-per-blog-budget-alert] recovery notification failed: ${safe(error instanceof Error ? error.message : error)}`);
+  for (const row of nearLimit) {
+    // If a limit was raised from exhausted to 80-99%, this is a downgrade to an
+    // advisory warning, not a full recovery. Do not emit a false RECOVERY.
+    closeSilently(
+      exhaustedCode,
+      row.scopeKey,
+      `${row.scopeLabel} のhard-cap保護停止は解除されましたが利用率が80%以上のため${nearLimitCode}へ移行しました`,
+      timestamp,
+    );
+
+    const detail = nearLimitDetail(row, budget.dayKey, budget.timezone);
+    const existing = nearByScope.get(row.scopeKey);
+    openIncident(nearLimitCode, row.scopeKey, detail, timestamp, existing);
+    const shouldNotify = !existing || existing.status === "closed" || hoursSince(existing.last_notified_at) >= 48;
+    if (shouldNotify) {
+      const result = await notify("warning", nearLimitCode, row.scopeKey, detail);
+      if (result.sent) notifications += 1;
+      if (result.failed) notificationFailures += 1;
     }
+  }
+
+  for (const incident of exhaustedOpen) {
+    if (exhaustedScopes.has(incident.scope) || nearScopes.has(incident.scope)) continue;
+    const row = current.get(incident.scope);
+    const detail = row
+      ? `${row.scopeLabel} のブログ別AI call上限状態が解消: ${row.calls}/${row.limit} calls (${sourceLabel(row)}), day=${budget.dayKey} (${budget.timezone})。利用率は80%未満です。`
+      : `ブログ別AI call上限状態が解消しました。現在のbudget day=${budget.dayKey} (${budget.timezone})では、このscopeに有効な上限状態がありません。共通上限または個別overrideの変更・解除の可能性があります。`;
+    const result = await recoverIncident(incident, detail, timestamp);
+    if (result.sent) notifications += 1;
+    if (result.failed) notificationFailures += 1;
+  }
+
+  for (const incident of nearOpen) {
+    if (exhaustedScopes.has(incident.scope) || nearScopes.has(incident.scope)) continue;
+    const row = current.get(incident.scope);
+    const detail = row
+      ? `${row.scopeLabel} のブログ別AI call上限warningが復旧: ${row.calls}/${row.limit} calls (${sourceLabel(row)}), utilization ${(row.utilization * 100).toFixed(1)}%, day=${budget.dayKey} (${budget.timezone})。`
+      : `ブログ別AI call上限warningが復旧しました。現在のbudget day=${budget.dayKey} (${budget.timezone})では、このscopeに有効な上限状態がありません。`;
+    const result = await recoverIncident(incident, detail, timestamp);
+    if (result.sent) notifications += 1;
+    if (result.failed) notificationFailures += 1;
   }
 
   return {
     configured: true,
     exhaustedScopes: exhausted.length,
+    warningScopes: nearLimit.length,
     notifications,
     notificationFailures,
     configError: null,
