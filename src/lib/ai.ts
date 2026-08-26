@@ -1,5 +1,11 @@
 import { recordAiUsage, reserveAiCall } from "./ai-budget";
-import { isRetryableAiStatus, recordAiProviderAttempt, resolveAiRoutePlan, type AiRoute } from "./ai-routing";
+import {
+  isRetryableAiStatus,
+  recordAiProviderAttempt,
+  resolveAiInternalRoutePlan,
+  resolveAiRoutePlan,
+  type AiRoute,
+} from "./ai-routing";
 
 export interface AiJsonRouteMeta {
   route: "primary" | "fallback";
@@ -80,7 +86,7 @@ function requestBody(route: AiRoute, system: string, user: string): Record<strin
 
 async function callRoute(route: AiRoute, system: string, user: string): Promise<any> {
   // Every actual outbound request consumes one slot from the shared daily budget.
-  // A failover or circuit-bypassed request therefore cannot reset the ceiling.
+  // Economy, failover and circuit-bypassed requests therefore cannot reset the ceiling.
   reserveAiCall(`${route.label}:${route.model}`);
 
   let response: Response;
@@ -189,12 +195,36 @@ export async function aiJsonWithMeta<T>(system: string, user: string): Promise<A
   return {
     value: parseJson<T>(extractText(payload)),
     meta: {
-      route: usedRoute.kind,
+      route: usedRoute.kind as "primary" | "fallback",
       label: usedRoute.label,
       model: usedRoute.model,
       bypassedPrimary: plan.bypassedPrimary,
     },
   };
+}
+
+export async function aiJsonInternal<T>(system: string, user: string): Promise<T> {
+  const plan = resolveAiInternalRoutePlan();
+  let payload: any;
+
+  try {
+    payload = await callRoute(plan.preferred, system, user);
+  } catch (error) {
+    const canRecover = error instanceof AiRouteFailure
+      && plan.recovery
+      && (plan.policy === "economy" || error.retryable);
+    if (!canRecover || !plan.recovery) throw error;
+    try {
+      payload = await callRoute(plan.recovery, system, user);
+    } catch (recoveryError) {
+      const preferredDetail = safeProviderError(error instanceof Error ? error.message : error);
+      const recoveryDetail = safeProviderError(recoveryError instanceof Error ? recoveryError.message : recoveryError);
+      throw new Error(`AI internal preferred route failed and bounded recovery failed. preferred=${preferredDetail}; recovery=${recoveryDetail}`);
+    }
+  }
+
+  // As with reader-facing calls, malformed model output is never silently regenerated.
+  return parseJson<T>(extractText(payload));
 }
 
 export async function aiJson<T>(system: string, user: string): Promise<T> {
