@@ -182,7 +182,7 @@ F-041の実効上限はAI call時点では即時に効きますが、persistent 
 1. 個別overrideを永続化する
 2. 同じ `reconcileAiPerBlogBudgetIncidents()` をその場で実行する
 3. 新しい実効上限で near-limit WARNING / exhausted WARNING / RECOVERY / reopen を即時反映する
-4. ホームはF-040のexhausted incidentだけを読むため、80–99%では停止扱いせず、100%到達時だけ保護停止表示になる
+4. ホームはF-040/F-049のpersistent incidentを読むため、保存後の次表示から80–99% warning / 100%保護停止へ同期する
 
 安全境界:
 
@@ -221,7 +221,31 @@ ai-per-blog-budget-exhausted    # existing F-039 protection incident, 100%+
 - malformed設定ではOPEN状態を維持し、復旧を推測しません
 - 完全無効化時のRECOVERY detailは「使用量が減った」と主張せず、監視が無効化された事実を残します
 
-near-limit WARNINGは**保護停止ではありません**。AI outbound call、ブログの`active`、publish mode、provider routeを変更しません。F-040ホームカードも`ai-per-blog-budget-exhausted`だけを停止表示に使うため、80–99%のブログを誤って停止中とは表示しません。
+near-limit WARNINGは**保護停止ではありません**。AI outbound call、ブログの`active`、publish mode、provider routeを変更しません。
+
+## F-049: per-blog near-limit home visibility
+
+F-048のWebhookを使わない運用でも、80–99%に達したブログを停止前に見つけられるよう、ホームカードは`ai-per-blog-budget-near-limit`のOPEN incidentを専用queryで表示します。
+
+80–99%のカードには:
+
+- `AI日次call上限が近い · 事前warning`
+- persistent incident detailと更新時刻
+- ブログ設定の個別上限を確認する導線
+- `/diagnostics`への導線
+
+を表示します。
+
+重要な表示境界:
+
+- near-limit中もカード上部の状態は`自動運転`のままです
+- `aiProtected`判定にはglobal hard capと`ai-per-blog-budget-exhausted`だけを使い、near-limitを混ぜません
+- 同じブログにexhausted incidentがある場合はexhaustedを優先し、near-limit表示を抑制します
+- F-048の正規遷移でも80–99% → 100%時にnear-limitはsilent closeされるため、100%ではF-040の`AI上限で保護停止`だけが残ります
+- 100% → 80–99%へ降格するとF-040は消え、F-049 warningが再表示されます
+- ホーム自身は利用率を再計算せず、monitor/F-042が確定したpersistent incidentをsource of truthにします
+
+F-049は表示だけであり、AI処理、ブログの`active`、publish mode、provider route、予算値を変更しません。
 
 ## Why there is no per-blog token hard cap yet
 
