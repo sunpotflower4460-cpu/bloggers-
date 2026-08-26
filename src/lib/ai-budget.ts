@@ -214,7 +214,7 @@ export function recordAiUsage(usage: unknown, model: string): void {
       .run(day, Math.floor(input), Math.floor(output), Math.floor(total), modelKey.slice(0, 160), now);
     db.prepare(`INSERT INTO ai_usage_model_daily
       (day_key,model_key,calls,input_tokens,output_tokens,total_tokens,updated_at)
-      VALUES (?,?,0,?,?,?,?,?)
+      VALUES (?,?,0,?,?,?,?)
       ON CONFLICT(day_key,model_key) DO UPDATE SET
         input_tokens=ai_usage_model_daily.input_tokens+excluded.input_tokens,
         output_tokens=ai_usage_model_daily.output_tokens+excluded.output_tokens,
