@@ -2,6 +2,12 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  blogAiUsageScope,
+  currentAiUsageScope,
+  enterAiUsageScope,
+  type AiUsageScope,
+} from "./ai-usage-context";
 
 type DB = InstanceType<typeof Database>;
 
@@ -25,6 +31,12 @@ CREATE INDEX IF NOT EXISTS idx_blog_leases_expires ON blog_leases(expires_at);
 export interface BlogLease {
   blogId: string;
   owner: string;
+  previousAiUsageScope: AiUsageScope;
+}
+
+function blogName(blogId: string): string {
+  const row = db.prepare("SELECT name FROM blogs WHERE id=?").get(blogId) as { name: string } | undefined;
+  return row?.name || `blog:${blogId}`;
 }
 
 export function acquireBlogLease(blogId: string, ttlMinutes = 90): BlogLease | null {
@@ -38,11 +50,19 @@ export function acquireBlogLease(blogId: string, ttlMinutes = 90): BlogLease | n
       acquired_at=excluded.acquired_at,
       expires_at=excluded.expires_at
     WHERE blog_leases.expires_at <= datetime('now')`).run(blogId, owner, modifier);
-  return result.changes > 0 ? { blogId, owner } : null;
+  if (result.changes <= 0) return null;
+
+  const previousAiUsageScope = currentAiUsageScope();
+  enterAiUsageScope(blogAiUsageScope(blogId, blogName(blogId)));
+  return { blogId, owner, previousAiUsageScope };
 }
 
 export function releaseBlogLease(lease: BlogLease): void {
-  db.prepare("DELETE FROM blog_leases WHERE blog_id=? AND owner=?").run(lease.blogId, lease.owner);
+  try {
+    db.prepare("DELETE FROM blog_leases WHERE blog_id=? AND owner=?").run(lease.blogId, lease.owner);
+  } finally {
+    enterAiUsageScope(lease.previousAiUsageScope);
+  }
 }
 
 export function currentBlogLease(blogId: string): { acquiredAt: string; expiresAt: string } | null {
