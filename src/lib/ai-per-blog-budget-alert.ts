@@ -87,8 +87,8 @@ async function send(kind: NotificationKind, scope: string, detail: string): Prom
   return true;
 }
 
-function openRows(): IncidentRow[] {
-  return db.prepare("SELECT scope,status,detail,last_notified_at FROM operational_incidents WHERE code=? AND status='open'")
+function incidentRows(): IncidentRow[] {
+  return db.prepare("SELECT scope,status,detail,last_notified_at FROM operational_incidents WHERE code=?")
     .all(code) as IncidentRow[];
 }
 
@@ -104,6 +104,10 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
   configError: string | null;
 }> {
   let budget;
+  const allExisting = incidentRows();
+  const existingByScope = new Map(allExisting.map((row) => [row.scope, row]));
+  const existingOpen = new Map(allExisting.filter((row) => row.status === "open").map((row) => [row.scope, row]));
+
   try {
     budget = aiPerBlogBudgetStatus();
   } catch (error) {
@@ -111,7 +115,7 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
     // Preserve existing incidents rather than falsely announcing recovery.
     return {
       configured: true,
-      exhaustedScopes: openRows().length,
+      exhaustedScopes: existingOpen.size,
       notifications: 0,
       notificationFailures: 0,
       configError: safe(error instanceof Error ? error.message : error),
@@ -119,7 +123,6 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
   }
 
   const timestamp = now();
-  const existingOpen = new Map(openRows().map((row) => [row.scope, row]));
   let notifications = 0;
   let notificationFailures = 0;
 
@@ -147,7 +150,7 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
 
   for (const row of exhausted) {
     const detail = detailFor(row, budget.dayKey, budget.timezone);
-    const existing = existingOpen.get(row.scopeKey);
+    const existing = existingByScope.get(row.scopeKey);
     if (!existing) {
       db.prepare(`INSERT INTO operational_incidents
         (code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at)
@@ -158,7 +161,7 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
         .run(detail, timestamp, code, row.scopeKey);
     }
 
-    const shouldNotify = !existing || hoursSince(existing.last_notified_at) >= 48;
+    const shouldNotify = !existing || existing.status === "closed" || hoursSince(existing.last_notified_at) >= 48;
     if (shouldNotify) {
       try {
         if (await send("warning", row.scopeKey, detail)) {
