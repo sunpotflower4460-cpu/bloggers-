@@ -128,7 +128,7 @@ The incident uses `blog:<id>` rather than the display name as its primary scope.
 
 ## F-040: home dashboard visibility
 
-Webhook通知を使わない運用でも、F-039で保護停止しているブログを見失わないよう、ホーム画面は`ai-per-blog-budget-exhausted`の**OPEN incidentだけ**を専用queryで読み取ります。
+Webhook通知を使わない運用でも、F-039で保護停止しているブログを見失わないよう、ホーム画面は`ai-per-blog-budget-exhausted`のOPEN incidentを保持します。
 
 表示:
 
@@ -137,13 +137,7 @@ Webhook通知を使わない運用でも、F-039で保護停止しているブ�
 - incident detailと最終更新時刻
 - `/diagnostics`への確認導線
 
-重要な境界:
-
-- CLOSED incidentはホームへ表示しません
-- unrelated incidentが多数あっても、直近N件の汎用一覧に依存せず対象codeを全件取得するため、停止ブログが押し出されません
-- 表示のためにブログの`active`値を変更しません
-- ホームはpersistent exhausted incidentを表示する層で、near-limit WARNINGを保護停止として扱いません
-- F-039がincidentをCLOSEDへ更新すると、次のホーム表示から通常状態へ戻ります
+F-050以降、ホームの**現在状態そのもの**はlive budget snapshotを優先します。F-040 incidentは履歴・通知・detail補足として残り、live snapshotが設定エラーで作れない時の安全なfallbackにも使われます。
 
 ## F-041: per-blog override
 
@@ -168,21 +162,21 @@ per-blog cap disabled for that blog
 - 個別値も1〜100000の整数だけです
 - 保存先はAI予算専用の`blog_ai_budget_overrides`で、記事/ブログ本体の編集設定と分離します
 - persisted overrideが壊れている場合はfail-closedで、暗黙の無制限にはしません
-- diagnosticsとF-039/F-048 incidentは同じ実効上限を使います
+- diagnosticsとF-039/F-048/F-050は同じ実効上限を使います
 - incident detailには上限が`個別override`か`共通上限`かを残します
 
 設定画面で個別値を変えてもブログの`active`、公開方針、AI routeは変更しません。
 
 ## F-042: settings-save immediate incident reconciliation
 
-F-041の実効上限はAI call時点では即時に効きますが、persistent incidentだけ次回monitorまで待つと、設定直後にホーム表示やWebhookが古いまま残る時間が生まれます。F-042はこのずれをなくします。
+F-041の実効上限はAI call時点では即時に効きますが、persistent incidentだけ次回monitorまで待つと、設定直後にWebhookや履歴が古いまま残る時間が生まれます。F-042は設定保存直後に同じreconcilerを実行してこのずれをなくします。
 
 ブログ設定保存時の順序:
 
 1. 個別overrideを永続化する
 2. 同じ `reconcileAiPerBlogBudgetIncidents()` をその場で実行する
 3. 新しい実効上限で near-limit WARNING / exhausted WARNING / RECOVERY / reopen を即時反映する
-4. ホームはF-040/F-049のpersistent incidentを読むため、保存後の次表示から80–99% warning / 100%保護停止へ同期する
+4. F-050のlive home表示も次render時点で同じ実効上限を直接読む
 
 安全境界:
 
@@ -225,27 +219,53 @@ near-limit WARNINGは**保護停止ではありません**。AI outbound call、
 
 ## F-049: per-blog near-limit home visibility
 
-F-048のWebhookを使わない運用でも、80–99%に達したブログを停止前に見つけられるよう、ホームカードは`ai-per-blog-budget-near-limit`のOPEN incidentを専用queryで表示します。
+F-048のWebhookを使わない運用でも、80–99%に達したブログを停止前に見つけられるよう、ブログカードに事前warningを表示します。
 
 80–99%のカードには:
 
 - `AI日次call上限が近い · 事前warning`
-- persistent incident detailと更新時刻
+- 現在のcalls/limitと実効上限由来
+- persistent incidentが存在する場合はそのdetailと更新時刻
 - ブログ設定の個別上限を確認する導線
 - `/diagnostics`への導線
-
-を表示します。
 
 重要な表示境界:
 
 - near-limit中もカード上部の状態は`自動運転`のままです
-- `aiProtected`判定にはglobal hard capと`ai-per-blog-budget-exhausted`だけを使い、near-limitを混ぜません
-- 同じブログにexhausted incidentがある場合はexhaustedを優先し、near-limit表示を抑制します
-- F-048の正規遷移でも80–99% → 100%時にnear-limitはsilent closeされるため、100%ではF-040の`AI上限で保護停止`だけが残ります
-- 100% → 80–99%へ降格するとF-040は消え、F-049 warningが再表示されます
-- ホーム自身は利用率を再計算せず、monitor/F-042が確定したpersistent incidentをsource of truthにします
+- `aiProtected`判定にはglobal hard capとper-blog exhaustedだけを使います
+- 100%では`AI上限で保護停止`がnear-limitに優先します
+- 100% → 80–99%へ降格すると保護停止表示が消え、warningへ戻ります
 
-F-049は表示だけであり、AI処理、ブログの`active`、publish mode、provider route、予算値を変更しません。
+## F-050: live per-blog budget state on home
+
+F-049だけではpersistent incidentがsourceだったため、通常AI callで80%/100%へ到達してから次回monitorまでホームが古い状態になる可能性がありました。F-050はこのmonitor-cycle gapをなくします。
+
+役割分担:
+
+```text
+current home state  = aiPerBlogBudgetStatus() live snapshot
+history / Webhook   = F-048 / F-039 persistent incidents
+```
+
+ホームrender時に`perBlogBudgetHomeSnapshot()`が同じ`aiPerBlogBudgetStatus()`を読み、現在のscopeだけを分類します。
+
+```text
+< 80%       current noticeなし
+80%..<100%  near-limit
+>= 100%     exhausted
+```
+
+このため、alert reconcilerをまだ一度も実行していなくても、通常AI callで4/5へ到達した直後からwarning、5/5へ到達した直後から保護停止を表示できます。全体statsの停止件数もlive exhausted scope数を使います。
+
+Persistent incidentは捨てません。同じlive状態のincidentがあればdetail・更新時刻を補足し、まだincidentがなければlive calls/limit/day/timezoneから現在説明を生成します。
+
+安全なfallback:
+
+- live snapshotが正常ならlive状態が現在値として優先されます。monitorがまだ閉じていない古いOPEN incidentを現在状態とは扱いません
+- malformed shared cap / persisted overrideなどでlive snapshotを構築できない場合、ホーム自体を落とさず`configError`を返し、その時だけpersistent near/exhausted incidentへfallbackします
+- config errorを「healthy」と解釈してincidentを隠すことはしません
+
+F-050も表示層だけです。予算値、ブログ`active`、publish mode、provider routeを変更せず、実際のAI outbound callを止める権限は引き続き`reserveAiCall()`のatomic reservationにあります。
 
 ## Why there is no per-blog token hard cap yet
 
