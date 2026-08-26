@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { parseBlogAiDailyCallLimit, setBlogAiDailyCallLimitOverride } from "@/lib/ai-budget-overrides";
 import { credentialsFromForm, hasCredentialInput } from "@/lib/credentials";
 import { encryptJson } from "@/lib/crypto";
 import { getBlog, updateBlog } from "@/lib/db";
@@ -39,8 +40,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   let searchConsoleSiteUrl: string | null;
-  try { searchConsoleSiteUrl = searchConsoleSiteFrom(form.get("searchConsoleSiteUrl")); }
-  catch (error) { return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 }); }
+  let aiDailyCallLimitOverride: number | null;
+  try {
+    searchConsoleSiteUrl = searchConsoleSiteFrom(form.get("searchConsoleSiteUrl"));
+    aiDailyCallLimitOverride = parseBlogAiDailyCallLimit(form.get("aiDailyCallLimitOverride"));
+  } catch (error) {
+    return new NextResponse(error instanceof Error ? error.message : String(error), { status: 400 });
+  }
 
   const updated = updateBlog(id, {
     name,
@@ -56,5 +62,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     searchConsoleSiteUrl,
   });
   if (!updated) return new NextResponse("Blog not found", { status: 404 });
+
+  try {
+    setBlogAiDailyCallLimitOverride(id, aiDailyCallLimitOverride);
+  } catch (error) {
+    return new NextResponse(error instanceof Error ? error.message : String(error), { status: 500 });
+  }
   return NextResponse.redirect(new URL("/", request.url), 303);
 }
