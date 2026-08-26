@@ -53,6 +53,40 @@ export const ghostAdapter: BlogPlatformAdapter = {
       publishedAt: post.published_at || null,
     };
   },
+  async publishDraft(blog, raw, publication) {
+    const credentials = raw as GhostCredentials;
+    const base = `${blog.siteUrl.replace(/\/$/, "")}/ghost/api/admin/posts/${encodeURIComponent(publication.platformPostId)}/`;
+    const currentResponse = await fetch(`${base}?formats=html`, { headers: headers(credentials) });
+    if (!currentResponse.ok) throw new Error(`Ghost draft read failed ${currentResponse.status}: ${await currentResponse.text()}`);
+    const current = (await currentResponse.json()).posts?.[0];
+    if (!current?.updated_at) throw new Error("Ghost draft response is missing updated_at");
+    const status = String(current.status || "").toLowerCase();
+    if (status === "published") {
+      return {
+        platformPostId: publication.platformPostId,
+        url: current.url || publication.url,
+        status: "published" as const,
+        publishedAt: current.published_at || publication.publishedAt,
+      };
+    }
+    if (status !== "draft") throw new Error(`Ghost post is no longer a draft (status=${status || "unknown"})`);
+
+    // Ghost requires the latest updated_at on every update. This makes a human edit
+    // between review and publish fail with collision detection instead of being overwritten.
+    const response = await fetch(`${base}?save_revision=true`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...headers(credentials) },
+      body: JSON.stringify({ posts: [{ updated_at: current.updated_at, status: "published" }] }),
+    });
+    if (!response.ok) throw new Error(`Ghost draft publish failed ${response.status}: ${await response.text()}`);
+    const post = (await response.json()).posts?.[0];
+    return {
+      platformPostId: publication.platformPostId,
+      url: post?.url || publication.url,
+      status: "published" as const,
+      publishedAt: post?.published_at || new Date().toISOString(),
+    };
+  },
   async readPost(blog, raw, publication) {
     const credentials = raw as GhostCredentials;
     const endpoint = `${blog.siteUrl.replace(/\/$/, "")}/ghost/api/admin/posts/${encodeURIComponent(publication.platformPostId)}/?formats=html`;
