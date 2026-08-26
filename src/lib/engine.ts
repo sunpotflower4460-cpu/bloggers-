@@ -1,5 +1,6 @@
 import { aiJson, aiJsonWithMeta, type AiJsonRouteMeta } from "./ai";
 import { fallbackContentPolicy } from "./ai-content-policy";
+import { blogAiUsageScope, withAiUsageScope } from "./ai-usage-context";
 import { collectGa4 } from "./analytics/ga4";
 import { collectNativeReactions } from "./analytics/native";
 import { collectSearchConsole } from "./analytics/search-console";
@@ -284,6 +285,9 @@ async function runOne(blog: Blog, force = false): Promise<{ blog: string; status
 export async function runGarden(blogId?: string, options: { force?: boolean } = {}) {
   const blogs = listBlogs().filter((blog) => !blogId || blog.id === blogId);
   const results = [];
-  for (const blog of blogs) results.push(await runOne(blog, options.force === true));
+  for (const blog of blogs) {
+    const scope = blogAiUsageScope(blog.id, blog.name);
+    results.push(await withAiUsageScope(scope, () => runOne(blog, options.force === true)));
+  }
   return results;
 }
