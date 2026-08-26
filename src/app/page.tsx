@@ -2,6 +2,7 @@ import Link from "next/link";
 import { aiEfficiencyPanel, type BlogAiEfficiencyObservation } from "@/lib/ai-efficiency";
 import { dashboard, experimentContext } from "@/lib/db";
 import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
+import { openOperationalIncidentsByCode } from "@/lib/incidents";
 import { latestContentRefresh } from "@/lib/refresh-store";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
 import { FallbackPublishButton } from "@/components/fallback-publish-button";
@@ -77,6 +78,9 @@ export default function Home() {
   const fallbackReviews = fallbackReviewQueue(12);
   const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
   const fallbackQuality = fallbackQualitySummaries();
+  const budgetIncidents = new Map(
+    openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").map((incident) => [incident.scope, incident]),
+  );
   const active = blogs.filter((b) => b.active).length;
   const views = blogs.reduce((n, b) => n + b.views7d, 0);
   const errors = blogs.reduce((n, b) => n + b.failedRuns, 0);
@@ -98,6 +102,7 @@ export default function Home() {
         <article className="stat"><span>稼働ブログ</span><strong>{active}</strong></article>
         <article className="stat"><span>7日間 PV</span><strong>{views.toLocaleString()}</strong></article>
         <article className="stat"><span>7日間エラー</span><strong>{errors}</strong></article>
+        <article className="stat"><span>AI上限停止</span><strong>{budgetIncidents.size}</strong></article>
       </section>
 
       {fallbackReviews.length > 0 ? (
@@ -243,10 +248,19 @@ export default function Home() {
           {blogs.map((blog) => {
             const experiment = latestExperiment(blog.id);
             const refresh = latestContentRefresh(blog.id);
+            const budgetIncident = budgetIncidents.get(`blog:${blog.id}`);
             return (
               <article className="blogCard" key={blog.id}>
-                <div className="cardTop"><div><span className={`dot ${blog.active ? "on" : ""}`} />{blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
+                <div className="cardTop"><div><span className={`dot ${blog.active && !budgetIncident ? "on" : ""}`} />{budgetIncident ? "AI上限で保護停止" : blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
                 <h3>{blog.name}</h3><p className="muted">{blog.niche}</p>
+                {budgetIncident ? (
+                  <div className="latest">
+                    <span>AI日次call上限 · 要確認</span>
+                    <p>{budgetIncident.detail}</p>
+                    <small>incident更新 {date(budgetIncident.updatedAt)} · ブログ自体を停止したわけではありません。上限が解消するとmonitorがRECOVERYへ更新します。</small>
+                    <div className="actions"><Link className="button secondary" href="/diagnostics">健康診断で確認</Link></div>
+                  </div>
+                ) : null}
                 <div className="miniStats four">
                   <div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div>
                   <div><span>前週比</span><strong>{momentum(blog.momentumPercent)}</strong></div>
