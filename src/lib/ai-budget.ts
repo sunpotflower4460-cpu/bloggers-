@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { currentAiUsageScope } from "./ai-usage-context";
 
 type DB = InstanceType<typeof Database>;
 const MAX_USAGE_TOKEN_FIELD = 1_000_000_000;
@@ -34,6 +35,21 @@ CREATE TABLE IF NOT EXISTS ai_usage_model_daily (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_usage_model_daily_day
   ON ai_usage_model_daily(day_key DESC);
+CREATE TABLE IF NOT EXISTS ai_usage_scope_model_daily (
+  day_key TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  scope_label TEXT NOT NULL,
+  model_key TEXT NOT NULL,
+  calls INTEGER NOT NULL DEFAULT 0,
+  metered_calls INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(day_key, scope_key, model_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_scope_model_daily_day
+  ON ai_usage_scope_model_daily(day_key DESC, scope_key);
 `);
 
 // F-032 is additive for databases that already created the model-usage table
@@ -66,6 +82,11 @@ export interface AiModelUsageDaily {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+}
+
+export interface AiScopeModelUsageDaily extends AiModelUsageDaily {
+  scopeKey: string;
+  scopeLabel: string;
 }
 
 function positiveInt(value: string | undefined, fallback: number, max: number): number {
@@ -126,8 +147,9 @@ function cleanModelKey(model: string): string {
   return String(model || "unknown").replace(/[\r\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) || "unknown";
 }
 
-function pruneModelUsage(): void {
+function pruneUsage(): void {
   db.prepare("DELETE FROM ai_usage_model_daily WHERE julianday(day_key) < julianday('now','-120 day')").run();
+  db.prepare("DELETE FROM ai_usage_scope_model_daily WHERE julianday(day_key) < julianday('now','-120 day')").run();
 }
 
 export function aiBudgetStatus(): AiBudgetStatus {
@@ -175,11 +197,41 @@ export function aiUsageByModel(days = 7): AiModelUsageDaily[] {
   }));
 }
 
+export function aiUsageByScope(days = 7): AiScopeModelUsageDaily[] {
+  const keys = recentDayKeys(days);
+  const placeholders = keys.map(() => "?").join(",");
+  const rows = db.prepare(`SELECT day_key,scope_key,scope_label,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens
+    FROM ai_usage_scope_model_daily WHERE day_key IN (${placeholders})
+    ORDER BY day_key DESC,scope_key ASC,model_key ASC`).all(...keys) as Array<{
+      day_key: string;
+      scope_key: string;
+      scope_label: string;
+      model_key: string;
+      calls: number;
+      metered_calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+    }>;
+  return rows.map((row) => ({
+    dayKey: row.day_key,
+    scopeKey: row.scope_key,
+    scopeLabel: row.scope_label,
+    modelKey: row.model_key,
+    calls: Number(row.calls || 0),
+    meteredCalls: Number(row.metered_calls || 0),
+    inputTokens: Number(row.input_tokens || 0),
+    outputTokens: Number(row.output_tokens || 0),
+    totalTokens: Number(row.total_tokens || 0),
+  }));
+}
+
 export function reserveAiCall(model: string): AiBudgetStatus {
   const zone = timezone();
   const day = dayKey(new Date(), zone);
   const { callLimit, tokenLimit } = limits();
   const modelKey = cleanModelKey(model);
+  const scope = currentAiUsageScope();
   const reserve = db.transaction(() => {
     const current = rowFor(day);
     if (current.calls >= callLimit) {
@@ -204,7 +256,15 @@ export function reserveAiCall(model: string): AiBudgetStatus {
         calls=ai_usage_model_daily.calls+1,
         updated_at=excluded.updated_at`)
       .run(day, modelKey, now);
-    pruneModelUsage();
+    db.prepare(`INSERT INTO ai_usage_scope_model_daily
+      (day_key,scope_key,scope_label,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens,updated_at)
+      VALUES (?,?,?,?,1,0,0,0,0,?)
+      ON CONFLICT(day_key,scope_key,model_key) DO UPDATE SET
+        scope_label=excluded.scope_label,
+        calls=ai_usage_scope_model_daily.calls+1,
+        updated_at=excluded.updated_at`)
+      .run(day, scope.scopeKey, scope.scopeLabel, modelKey, now);
+    pruneUsage();
   });
   reserve.immediate();
   return aiBudgetStatus();
@@ -221,6 +281,7 @@ export function recordAiUsage(usage: unknown, model: string): void {
   const zone = timezone();
   const day = dayKey(new Date(), zone);
   const modelKey = cleanModelKey(model);
+  const scope = currentAiUsageScope();
   const now = new Date().toISOString();
   const record = db.transaction(() => {
     db.prepare(`INSERT INTO ai_usage_daily
@@ -243,7 +304,18 @@ export function recordAiUsage(usage: unknown, model: string): void {
         total_tokens=ai_usage_model_daily.total_tokens+excluded.total_tokens,
         updated_at=excluded.updated_at`)
       .run(day, modelKey, input, output, total, now);
-    pruneModelUsage();
+    db.prepare(`INSERT INTO ai_usage_scope_model_daily
+      (day_key,scope_key,scope_label,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens,updated_at)
+      VALUES (?,?,?,?,0,1,?,?,?,?)
+      ON CONFLICT(day_key,scope_key,model_key) DO UPDATE SET
+        scope_label=excluded.scope_label,
+        metered_calls=ai_usage_scope_model_daily.metered_calls+1,
+        input_tokens=ai_usage_scope_model_daily.input_tokens+excluded.input_tokens,
+        output_tokens=ai_usage_scope_model_daily.output_tokens+excluded.output_tokens,
+        total_tokens=ai_usage_scope_model_daily.total_tokens+excluded.total_tokens,
+        updated_at=excluded.updated_at`)
+      .run(day, scope.scopeKey, scope.scopeLabel, modelKey, input, output, total, now);
+    pruneUsage();
   });
   record.immediate();
 }
