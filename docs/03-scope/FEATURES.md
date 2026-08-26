@@ -32,3 +32,4 @@
 | F-026 | 外部dead-man heartbeat hooks | 承認 | GitHub Actionsとは別の外部監視サービスへworker/backup成功pingを送り、VPS停止や周期処理停止を独立系から検知できるようにする | 2026-08-25 | 有: `/diagnostics` |
 | F-027 | fallback生成コンテンツ品質ポリシー | 承認 | 障害時の可用性を保ちながら、別モデルが生成した読者向け内容を無条件に自動公開・既存記事更新せず、人間確認へ安全に降格する | 2026-08-26 | 無 |
 | F-028 | fallback要レビュー待ちキュー | 承認 | fallback品質ポリシーでdraftへ降格した記事を統合HPで見失わず、どのprovider/model由来か確認して人間レビューにつなげる | 2026-08-26 | 有: `/` |
+| F-029 | fallback人間品質評価・provider別学習 | 承認 | fallback draftへの品質OK/要改善判断をprovider/model別に蓄積し、allow-auto判断を推測ではなく実レビュー実績に基づける | 2026-08-26 | 有: `/` |
