@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import http from "node:http";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 
 const dbPath = ".ci/ai-per-blog-budget-alert.sqlite";
 rmSync(dbPath, { force: true });
@@ -65,9 +65,9 @@ try {
   const countRows = (code: string) => Number((db.prepare(`SELECT COUNT(*) n FROM operational_incidents
     WHERE code=? AND scope='blog:alert-blog'`).get(code) as { n: number }).n);
 
-  // F-048 + F-042: 4/5 = 80%. Saving the override must immediately open the
-  // advisory incident without waiting for the monitor, and must not make F-040
-  // treat the blog as hard-cap protected.
+  // F-048 + F-042: 4/5 = 80%. Saving the override immediately opens the
+  // advisory incident. F-049 reads this OPEN code, while F-040 must not treat it
+  // as a hard-cap protected blog.
   const near = await applyBlogAiDailyCallLimitOverride("alert-blog", 5);
   const nearRow = incident("ai-per-blog-budget-near-limit");
   if (!near.reconciled || near.warningScopes !== 1 || near.exhaustedScopes !== 0
@@ -79,6 +79,10 @@ try {
     || notifications[0].code !== "ai-per-blog-budget-near-limit") {
     throw new Error(`initial near-limit webhook missing: ${JSON.stringify(notifications)}`);
   }
+  const openNearForHome = openOperationalIncidentsByCode("ai-per-blog-budget-near-limit");
+  if (openNearForHome.length !== 1 || openNearForHome[0].scope !== "blog:alert-blog" || !openNearForHome[0].detail.includes("4/5")) {
+    throw new Error(`F-049 home lookup missed the near-limit blog: ${JSON.stringify(openNearForHome)}`);
+  }
   if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").length !== 0) {
     throw new Error("F-040 must not show an 80% advisory as protected stop");
   }
@@ -88,8 +92,8 @@ try {
     throw new Error(`near-limit warning duplicated: ${JSON.stringify({ duplicateNear, notifications: notifications.length })}`);
   }
 
-  // 4/4 = 100%. This is escalation, not recovery. Near-limit must close silently
-  // and the existing F-039 hard-cap incident must open with one WARNING.
+  // 4/4 = 100%. Escalation closes near-limit silently and opens F-039. The
+  // F-049 lookup must disappear while the F-040 protected lookup becomes OPEN.
   const exhausted = await applyBlogAiDailyCallLimitOverride("alert-blog", 4);
   const exhaustedRow = incident("ai-per-blog-budget-exhausted");
   const supersededNear = incident("ai-per-blog-budget-near-limit");
@@ -101,6 +105,9 @@ try {
   if (notifications.length !== 2 || notifications[1].severity !== "warning"
     || notifications[1].code !== "ai-per-blog-budget-exhausted") {
     throw new Error(`hard-cap escalation notification is wrong: ${JSON.stringify(notifications)}`);
+  }
+  if (openOperationalIncidentsByCode("ai-per-blog-budget-near-limit").length !== 0) {
+    throw new Error("F-049 near-limit lookup remained visible after hard-cap escalation");
   }
 
   // F-040 dashboard lookup remains code-specific even with many unrelated rows.
@@ -117,7 +124,7 @@ try {
   }
 
   // Raising 4 -> 5 moves 100% -> 80%. That is a downgrade to WARNING, not a
-  // full recovery. The exhausted row closes silently and near-limit reopens.
+  // full recovery. F-049 becomes visible again while F-040 becomes hidden.
   const downgraded = await applyBlogAiDailyCallLimitOverride("alert-blog", 5);
   const downgradedExhausted = incident("ai-per-blog-budget-exhausted");
   const reopenedNear = incident("ai-per-blog-budget-near-limit");
@@ -132,6 +139,9 @@ try {
   }
   if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").length !== 0) {
     throw new Error("F-040 kept a downgraded hard-cap incident visible");
+  }
+  if (openOperationalIncidentsByCode("ai-per-blog-budget-near-limit")[0]?.scope !== "blog:alert-blog") {
+    throw new Error("F-049 did not restore the downgraded near-limit warning");
   }
 
   // Malformed shared config must not falsely recover an existing near-limit row.
@@ -201,12 +211,32 @@ try {
     throw new Error("per-blog budget incidents remained open after explicit cap disable");
   }
 
+  // Static wiring regression: the home must read the persistent near-limit code,
+  // suppress the advisory when exhausted exists, and never include the advisory
+  // in the protected-state calculation.
+  const homeSource = readFileSync("src/app/page.tsx", "utf8");
+  for (const required of [
+    'openOperationalIncidentsByCode("ai-per-blog-budget-near-limit")',
+    "const budgetWarning = budgetIncident ? undefined : budgetWarnings.get(`blog:${blog.id}`);",
+    "const aiProtected = Boolean(globalBudget || budgetIncident);",
+    "AI日次call上限が近い · 事前warning",
+    "まだ保護停止ではないため自動運転は継続中です",
+    "上限設定を確認",
+  ]) {
+    if (!homeSource.includes(required)) throw new Error(`F-049 home wiring missing: ${required}`);
+  }
+  if (homeSource.includes("Boolean(globalBudget || budgetIncident || budgetWarning)")) {
+    throw new Error("F-049 advisory was incorrectly added to the protected-state calculation");
+  }
+
   db.close();
   console.log(JSON.stringify({
     ok: true,
     notifications: notifications.map((item) => `${item.severity}:${item.code}`),
     nearLimitAt80Immediate: true,
+    nearLimitVisibleOnHome: true,
     nearLimitDoesNotStopHomeCard: true,
+    exhaustedReplacesNearLimitOnHome: true,
     warningToHardCapNoFalseRecovery: true,
     hardCapToWarningNoFalseRecovery: true,
     genuineRecoveryOnlyBelow80: true,
