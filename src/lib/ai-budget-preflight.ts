@@ -25,6 +25,14 @@ const globalDb = globalThis as typeof globalThis & { __blogGardenAiBudgetPreflig
 const db = globalDb.__blogGardenAiBudgetPreflightDb ?? new Database(path);
 if (process.env.NODE_ENV !== "production") globalDb.__blogGardenAiBudgetPreflightDb = db;
 db.pragma("journal_mode = WAL");
+db.exec(`
+CREATE TABLE IF NOT EXISTS ai_budget_preflight_state (
+  blog_id TEXT PRIMARY KEY,
+  day_key TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`);
 
 function cleanBlogId(value: string): string {
   const id = String(value || "").trim();
@@ -42,6 +50,47 @@ function scopeCalls(dayKey: string, scopeKey: string): number {
     | { calls: number }
     | undefined;
   return Number(row?.calls || 0);
+}
+
+/**
+ * F-044 transition marker. Returns true only when this blocked state is a new
+ * transition for the blog: first block, a new budget day, a different reason,
+ * or a re-entry after a healthy preflight cleared the marker.
+ *
+ * The blog execution lease normally serializes same-blog runs, and the IMMEDIATE
+ * transaction also makes this safe if callers ever race outside that lease.
+ */
+export function claimAiBudgetProtectedSkipTransition(
+  blogId: string,
+  preflight: AiBudgetPreflightResult,
+): boolean {
+  const id = cleanBlogId(blogId);
+  if (!preflight.blocked || !preflight.reason) return false;
+  const claim = db.transaction(() => {
+    const current = db.prepare("SELECT day_key,reason FROM ai_budget_preflight_state WHERE blog_id=?").get(id) as
+      | { day_key: string; reason: string }
+      | undefined;
+    if (current?.day_key === preflight.dayKey && current.reason === preflight.reason) return false;
+    db.prepare(`INSERT INTO ai_budget_preflight_state (blog_id,day_key,reason,updated_at)
+      VALUES (?,?,?,?)
+      ON CONFLICT(blog_id) DO UPDATE SET
+        day_key=excluded.day_key,
+        reason=excluded.reason,
+        updated_at=excluded.updated_at`)
+      .run(id, preflight.dayKey, preflight.reason, new Date().toISOString());
+    return true;
+  });
+  return claim.immediate();
+}
+
+/**
+ * A healthy preflight ends the current protected episode. Deleting the marker
+ * is what lets the same reason be logged again later on the same budget day if
+ * the blog genuinely recovers and then re-enters protection.
+ */
+export function clearAiBudgetProtectedSkipTransition(blogId: string): void {
+  const id = cleanBlogId(blogId);
+  db.prepare("DELETE FROM ai_budget_preflight_state WHERE blog_id=?").run(id);
 }
 
 /**
