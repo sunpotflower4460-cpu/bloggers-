@@ -43,3 +43,19 @@ export function reconcilePublicationPublished(publicationId: number, result: Pub
   if (!publication) throw new Error("publication disappeared after publish reconciliation");
   return publication;
 }
+
+export function reconcilePublicationContentUpdate(
+  publicationId: number,
+  input: { title?: string; url?: string },
+): Publication {
+  if (!Number.isInteger(publicationId) || publicationId <= 0) throw new Error("publicationId must be a positive integer");
+  const current = getPublicationById(publicationId);
+  if (!current) throw new Error("publication was not found during content reconciliation");
+  const title = input.title === undefined ? current.title : String(input.title);
+  const url = input.url === undefined ? current.url : String(input.url);
+  const info = db.prepare("UPDATE publications SET title=?,url=? WHERE id=?").run(title, url, publicationId);
+  if (info.changes !== 1) throw new Error("publication could not be reconciled after content update");
+  const publication = getPublicationById(publicationId);
+  if (!publication) throw new Error("publication disappeared after content reconciliation");
+  return publication;
+}
