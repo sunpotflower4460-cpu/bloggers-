@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { aiBudgetStatus } from "./ai-budget";
+import { aiBudgetStatus, aiPerBlogBudgetStatus } from "./ai-budget";
 import { fallbackContentPolicy } from "./ai-content-policy";
 import { aiCostThresholds } from "./ai-cost-alert";
 import { aiCostEstimate } from "./ai-cost";
@@ -121,6 +121,32 @@ function aiBudgetDiagnostic(): DiagnosticItem {
     status,
     detail: `${budget.dayKey} (${budget.timezone}) · calls ${budget.calls}/${budget.callLimit} · tokens ${budget.totalTokens.toLocaleString()}/${budget.tokenLimit.toLocaleString()}`,
   };
+}
+
+function aiPerBlogBudgetDiagnostic(): DiagnosticItem | null {
+  try {
+    const budget = aiPerBlogBudgetStatus();
+    if (!budget.configured || budget.limit === null) return null;
+    const worst = budget.scopes.reduce((max, row) => Math.max(max, row.utilization), 0);
+    const exhausted = budget.scopes.some((row) => row.exhausted);
+    const status: DiagnosticStatus = exhausted ? "error" : worst >= 0.8 ? "warn" : "ok";
+    const top = budget.scopes.slice(0, 6).map((row) =>
+      `${row.scopeLabel} ${row.calls}/${row.limit}${row.exhausted ? " 上限到達" : ""}`,
+    ).join(" | ");
+    return {
+      scope: "system",
+      label: "AIブログ別日次call上限",
+      status,
+      detail: `${budget.dayKey} (${budget.timezone}) · 1ブログ ${budget.limit} calls/日${top ? ` · ${top}` : " · 本日のblog scope callはまだありません"} · system/unattributedはこの上限の対象外`,
+    };
+  } catch (error) {
+    return {
+      scope: "system",
+      label: "AIブログ別日次call上限",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function cost(value: number, currency: string): string {
@@ -361,6 +387,8 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   });
   try {
     items.push(aiBudgetDiagnostic());
+    const perBlogBudget = aiPerBlogBudgetDiagnostic();
+    if (perBlogBudget) items.push(perBlogBudget);
     items.push(aiCostDiagnostic());
     items.push(aiCostAttributionDiagnostic());
     const costThreshold = aiCostThresholdDiagnostic();
