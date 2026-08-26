@@ -154,6 +154,37 @@ function aiRoutingDiagnostic(): DiagnosticItem {
   };
 }
 
+function aiEconomyDiagnostic(): DiagnosticItem {
+  const routing = aiRoutingStatus();
+  if (!routing.configured) {
+    return {
+      scope: "system",
+      label: "AI内部タスク経路",
+      status: "error",
+      detail: routing.configError || "AI routing configuration is invalid",
+    };
+  }
+  if (routing.internalPolicy === "primary") {
+    const configuredEconomy = routing.economyConfigured
+      ? ` · economy候補 ${routing.economyLabel}/${routing.economyModel} は待機中`
+      : " · economy未設定";
+    return {
+      scope: "system",
+      label: "AI内部タスク経路",
+      status: "ok",
+      detail: `primary優先 · 企画など内部処理も通常経路を使用${configuredEconomy}`,
+    };
+  }
+
+  const failedLatest = routing.economyAttempts24h > 0 && !routing.economyCurrentlyHealthy && routing.economyFailures24h > 0;
+  return {
+    scope: "system",
+    label: "AI内部タスク経路",
+    status: failedLatest ? "warn" : "ok",
+    detail: `economy優先 · ${routing.economyLabel}/${routing.economyModel} · 24h success ${routing.economySuccesses24h}/${routing.economyAttempts24h} · failures ${routing.economyFailures24h}${routing.lastEconomyAt ? ` · last ${routing.lastEconomyAt}` : " · まだ実行なし"} · 最終記事本文/公開済み記事変更はeconomy対象外`,
+  };
+}
+
 function fallbackContentPolicyDiagnostic(): DiagnosticItem {
   try {
     const policy = fallbackContentPolicy();
@@ -203,8 +234,9 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   }
   try {
     items.push(aiRoutingDiagnostic());
+    items.push(aiEconomyDiagnostic());
   } catch (error) {
-    items.push({ scope: "system", label: "AI failover", status: "error", detail: error instanceof Error ? error.message : String(error) });
+    items.push({ scope: "system", label: "AI routing", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
   items.push(fallbackContentPolicyDiagnostic());
   items.push({
