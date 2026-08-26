@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { blogAiDailyCallLimitOverride, listBlogAiDailyCallLimitOverrides } from "./ai-budget-overrides";
 import { currentAiUsageScope } from "./ai-usage-context";
 
 type DB = InstanceType<typeof Database>;
@@ -94,6 +95,7 @@ export interface AiPerBlogBudgetScopeStatus {
   scopeLabel: string;
   calls: number;
   limit: number;
+  limitSource: "override" | "default";
   exhausted: boolean;
   utilization: number;
 }
@@ -103,6 +105,7 @@ export interface AiPerBlogBudgetStatus {
   dayKey: string;
   timezone: string;
   limit: number | null;
+  overrideCount: number;
   scopes: AiPerBlogBudgetScopeStatus[];
 }
 
@@ -164,8 +167,23 @@ function limits(): { callLimit: number; tokenLimit: number } {
   };
 }
 
-export function aiPerBlogDailyCallLimit(): number | null {
+function defaultPerBlogDailyCallLimit(): number | null {
   return optionalPositiveInt(process.env.AI_PER_BLOG_DAILY_CALL_LIMIT, "AI_PER_BLOG_DAILY_CALL_LIMIT", 100_000);
+}
+
+function blogIdFromScope(scopeKey: string): string | null {
+  if (!scopeKey.startsWith("blog:")) return null;
+  const blogId = scopeKey.slice("blog:".length).trim();
+  return blogId || null;
+}
+
+export function aiPerBlogDailyCallLimit(scopeKey?: string): number | null {
+  const blogId = scopeKey ? blogIdFromScope(scopeKey) : null;
+  if (blogId) {
+    const override = blogAiDailyCallLimitOverride(blogId);
+    if (override !== null) return override;
+  }
+  return defaultPerBlogDailyCallLimit();
 }
 
 function rowFor(day: string): { calls: number; input_tokens: number; output_tokens: number; total_tokens: number } {
@@ -179,6 +197,17 @@ function scopeCallsFor(day: string, scopeKey: string): number {
   const row = db.prepare(`SELECT COALESCE(SUM(calls),0) calls FROM ai_usage_scope_model_daily
     WHERE day_key=? AND scope_key=?`).get(day, scopeKey) as { calls: number } | undefined;
   return Number(row?.calls || 0);
+}
+
+function blogLabel(blogId: string): string {
+  const exists = db.prepare("SELECT 1 ok FROM sqlite_master WHERE type='table' AND name='blogs'").get() as { ok: number } | undefined;
+  if (!exists) return blogId;
+  try {
+    const row = db.prepare("SELECT name FROM blogs WHERE id=?").get(blogId) as { name: string } | undefined;
+    return String(row?.name || blogId).replace(/[\r\n\t]/g, " ").replace(/\s+/g, " ").trim().slice(0, 240) || blogId;
+  } catch {
+    return blogId;
+  }
 }
 
 function cleanModelKey(model: string): string {
@@ -214,28 +243,45 @@ export function aiBudgetStatus(): AiBudgetStatus {
 export function aiPerBlogBudgetStatus(): AiPerBlogBudgetStatus {
   const zone = timezone();
   const day = dayKey(new Date(), zone);
-  const limit = aiPerBlogDailyCallLimit();
-  const rows = db.prepare(`SELECT scope_key,MAX(scope_label) scope_label,COALESCE(SUM(calls),0) calls
+  const defaultLimit = defaultPerBlogDailyCallLimit();
+  const overrides = listBlogAiDailyCallLimitOverrides();
+  const overrideByBlog = new Map(overrides.map((item) => [item.blogId, item.limit]));
+  const usageRows = db.prepare(`SELECT scope_key,MAX(scope_label) scope_label,COALESCE(SUM(calls),0) calls
     FROM ai_usage_scope_model_daily
     WHERE day_key=? AND scope_key LIKE 'blog:%'
-    GROUP BY scope_key
-    ORDER BY calls DESC, scope_label ASC`).all(day) as Array<{ scope_key: string; scope_label: string; calls: number }>;
+    GROUP BY scope_key`).all(day) as Array<{ scope_key: string; scope_label: string; calls: number }>;
+  const usageByScope = new Map(usageRows.map((row) => [row.scope_key, row]));
+  const scopeKeys = new Set(usageRows.map((row) => row.scope_key));
+  for (const override of overrides) scopeKeys.add(`blog:${override.blogId}`);
+
+  const scopes: AiPerBlogBudgetScopeStatus[] = [];
+  for (const scopeKey of scopeKeys) {
+    const blogId = blogIdFromScope(scopeKey);
+    if (!blogId) continue;
+    const override = overrideByBlog.get(blogId);
+    const effectiveLimit = override ?? defaultLimit;
+    if (effectiveLimit === null || effectiveLimit === undefined) continue;
+    const usage = usageByScope.get(scopeKey);
+    const calls = Number(usage?.calls || 0);
+    scopes.push({
+      scopeKey,
+      scopeLabel: usage?.scope_label || blogLabel(blogId),
+      calls,
+      limit: effectiveLimit,
+      limitSource: override !== undefined ? "override" : "default",
+      exhausted: calls >= effectiveLimit,
+      utilization: calls / effectiveLimit,
+    });
+  }
+  scopes.sort((a, b) => b.utilization - a.utilization || b.calls - a.calls || a.scopeLabel.localeCompare(b.scopeLabel));
+
   return {
-    configured: limit !== null,
+    configured: defaultLimit !== null || overrides.length > 0,
     dayKey: day,
     timezone: zone,
-    limit,
-    scopes: limit === null ? [] : rows.map((row) => {
-      const calls = Number(row.calls || 0);
-      return {
-        scopeKey: row.scope_key,
-        scopeLabel: row.scope_label,
-        calls,
-        limit,
-        exhausted: calls >= limit,
-        utilization: calls / limit,
-      };
-    }),
+    limit: defaultLimit,
+    overrideCount: overrides.length,
+    scopes,
   };
 }
 
@@ -299,7 +345,7 @@ export function reserveAiCall(model: string): AiBudgetStatus {
   const modelKey = cleanModelKey(model);
   const scope = currentAiUsageScope();
   const isBlogScope = scope.scopeKey.startsWith("blog:");
-  const perBlogLimit = isBlogScope ? aiPerBlogDailyCallLimit() : null;
+  const perBlogLimit = isBlogScope ? aiPerBlogDailyCallLimit(scope.scopeKey) : null;
   const reserve = db.transaction(() => {
     const current = rowFor(day);
     if (current.calls >= callLimit) {
