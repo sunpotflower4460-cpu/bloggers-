@@ -42,6 +42,7 @@ try {
   const { blogAiUsageScope, withAiUsageScope } = await import("../../src/lib/ai-usage-context");
   const { reserveAiCall } = await import("../../src/lib/ai-budget");
   const { reconcileAiPerBlogBudgetIncidents } = await import("../../src/lib/ai-per-blog-budget-alert");
+  const { openOperationalIncidentsByCode } = await import("../../src/lib/incidents");
 
   const scope = blogAiUsageScope("alert-blog", "Alert Garden");
   await withAiUsageScope(scope, async () => {
@@ -70,6 +71,21 @@ try {
     throw new Error(`persistent per-blog incident was not opened correctly: ${JSON.stringify(opened)}`);
   }
 
+  // F-040 dashboard lookup must be code-specific and unbounded by unrelated
+  // recent incidents. Add enough unrelated OPEN rows to exceed the old generic
+  // recent-incident list size, then verify this blog is still returned.
+  const timestamp = new Date().toISOString();
+  for (let index = 0; index < 25; index += 1) {
+    db.prepare(`INSERT OR REPLACE INTO operational_incidents
+      (code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at)
+      VALUES (?,?, 'open','warning',?,?,?,NULL,NULL)`)
+      .run(`unrelated-${index}`, `system:${index}`, `unrelated ${index}`, timestamp, timestamp);
+  }
+  const openForHome = openOperationalIncidentsByCode("ai-per-blog-budget-exhausted");
+  if (openForHome.length !== 1 || openForHome[0].scope !== "blog:alert-blog" || !openForHome[0].detail.includes("2/2")) {
+    throw new Error(`F-040 home incident lookup missed the exhausted blog: ${JSON.stringify(openForHome)}`);
+  }
+
   const duplicate = await reconcileAiPerBlogBudgetIncidents();
   if (duplicate.notifications !== 0 || notifications.length !== 1 || countRows() !== 1) {
     throw new Error(`persistent warning was duplicated: ${JSON.stringify({ duplicate, notifications: notifications.length, rows: countRows() })}`);
@@ -85,6 +101,9 @@ try {
   if (notifications.length !== 2 || notifications[1].severity !== "recovery") {
     throw new Error(`recovery webhook missing after cap increase: ${JSON.stringify(notifications)}`);
   }
+  if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").length !== 0) {
+    throw new Error("F-040 home lookup kept a CLOSED budget incident visible");
+  }
 
   // Lowering the limit below already-consumed calls reopens the SAME incident row.
   process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "1";
@@ -95,6 +114,9 @@ try {
   }
   if (notifications.length !== 3 || notifications[2].severity !== "warning") {
     throw new Error(`reopen warning webhook missing: ${JSON.stringify(notifications)}`);
+  }
+  if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted")[0]?.scope !== "blog:alert-blog") {
+    throw new Error("F-040 home lookup did not restore the reopened budget incident");
   }
 
   // Bad optional config must not crash the whole monitor and must not falsely
@@ -120,6 +142,9 @@ try {
     throw new Error(`disable recovery webhook missing: ${JSON.stringify(notifications)}`);
   }
   if (countRows() !== 1) throw new Error(`incident lifecycle created duplicate rows: ${countRows()}`);
+  if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").length !== 0) {
+    throw new Error("F-040 home lookup shows an incident after explicit cap disable");
+  }
 
   db.close();
   console.log(JSON.stringify({
@@ -128,6 +153,8 @@ try {
     onePersistentIncidentRow: true,
     invalidConfigPreservesOpenIncident: true,
     explicitDisableRecoveryDoesNotClaimSpendDrop: true,
+    homeLookupIgnoresUnrelatedIncidentVolume: true,
+    closedIncidentsHiddenFromHome: true,
   }));
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
