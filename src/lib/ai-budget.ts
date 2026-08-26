@@ -89,10 +89,38 @@ export interface AiScopeModelUsageDaily extends AiModelUsageDaily {
   scopeLabel: string;
 }
 
+export interface AiPerBlogBudgetScopeStatus {
+  scopeKey: string;
+  scopeLabel: string;
+  calls: number;
+  limit: number;
+  exhausted: boolean;
+  utilization: number;
+}
+
+export interface AiPerBlogBudgetStatus {
+  configured: boolean;
+  dayKey: string;
+  timezone: string;
+  limit: number | null;
+  scopes: AiPerBlogBudgetScopeStatus[];
+}
+
 function positiveInt(value: string | undefined, fallback: number, max: number): number {
   const parsed = Number.parseInt(value || "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(Math.floor(parsed), max);
+}
+
+function optionalPositiveInt(value: string | undefined, name: string, max: number): number | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer when configured`);
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > max) {
+    throw new Error(`${name} must be an integer between 1 and ${max}`);
+  }
+  return parsed;
 }
 
 function usageToken(value: unknown): number {
@@ -136,11 +164,21 @@ function limits(): { callLimit: number; tokenLimit: number } {
   };
 }
 
+export function aiPerBlogDailyCallLimit(): number | null {
+  return optionalPositiveInt(process.env.AI_PER_BLOG_DAILY_CALL_LIMIT, "AI_PER_BLOG_DAILY_CALL_LIMIT", 100_000);
+}
+
 function rowFor(day: string): { calls: number; input_tokens: number; output_tokens: number; total_tokens: number } {
   const row = db.prepare("SELECT calls,input_tokens,output_tokens,total_tokens FROM ai_usage_daily WHERE day_key=?").get(day) as
     | { calls: number; input_tokens: number; output_tokens: number; total_tokens: number }
     | undefined;
   return row || { calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+}
+
+function scopeCallsFor(day: string, scopeKey: string): number {
+  const row = db.prepare(`SELECT COALESCE(SUM(calls),0) calls FROM ai_usage_scope_model_daily
+    WHERE day_key=? AND scope_key=?`).get(day, scopeKey) as { calls: number } | undefined;
+  return Number(row?.calls || 0);
 }
 
 function cleanModelKey(model: string): string {
@@ -170,6 +208,34 @@ export function aiBudgetStatus(): AiBudgetStatus {
     tokenLimit,
     exhausted: row.calls >= callLimit || row.total_tokens >= tokenLimit,
     utilization: Math.max(callRatio, tokenRatio),
+  };
+}
+
+export function aiPerBlogBudgetStatus(): AiPerBlogBudgetStatus {
+  const zone = timezone();
+  const day = dayKey(new Date(), zone);
+  const limit = aiPerBlogDailyCallLimit();
+  const rows = db.prepare(`SELECT scope_key,MAX(scope_label) scope_label,COALESCE(SUM(calls),0) calls
+    FROM ai_usage_scope_model_daily
+    WHERE day_key=? AND scope_key LIKE 'blog:%'
+    GROUP BY scope_key
+    ORDER BY calls DESC, scope_label ASC`).all(day) as Array<{ scope_key: string; scope_label: string; calls: number }>;
+  return {
+    configured: limit !== null,
+    dayKey: day,
+    timezone: zone,
+    limit,
+    scopes: limit === null ? [] : rows.map((row) => {
+      const calls = Number(row.calls || 0);
+      return {
+        scopeKey: row.scope_key,
+        scopeLabel: row.scope_label,
+        calls,
+        limit,
+        exhausted: calls >= limit,
+        utilization: calls / limit,
+      };
+    }),
   };
 }
 
@@ -232,6 +298,8 @@ export function reserveAiCall(model: string): AiBudgetStatus {
   const { callLimit, tokenLimit } = limits();
   const modelKey = cleanModelKey(model);
   const scope = currentAiUsageScope();
+  const isBlogScope = scope.scopeKey.startsWith("blog:");
+  const perBlogLimit = isBlogScope ? aiPerBlogDailyCallLimit() : null;
   const reserve = db.transaction(() => {
     const current = rowFor(day);
     if (current.calls >= callLimit) {
@@ -239,6 +307,12 @@ export function reserveAiCall(model: string): AiBudgetStatus {
     }
     if (current.total_tokens >= tokenLimit) {
       throw new Error(`AI daily token budget exhausted (${current.total_tokens}/${tokenLimit})`);
+    }
+    if (perBlogLimit !== null) {
+      const scopedCalls = scopeCallsFor(day, scope.scopeKey);
+      if (scopedCalls >= perBlogLimit) {
+        throw new Error(`AI per-blog daily call budget exhausted for ${scope.scopeLabel} (${scopedCalls}/${perBlogLimit})`);
+      }
     }
     const now = new Date().toISOString();
     db.prepare(`INSERT INTO ai_usage_daily
