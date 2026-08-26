@@ -84,7 +84,32 @@ The per-blog cards also stop saying `自動運転` while the global cap is activ
 
 When neither global limit is reached, the banner is absent and normal card state returns immediately from the current budget snapshot. Per-blog F-039/F-040 incidents remain independent and can still be displayed for individual cap exhaustion.
 
-## What F-043/F-044/F-045 deliberately do not do
+## F-046: 80% global budget early warning
+
+`/diagnostics` already treats global AI budget utilization of 80% or more as a warning. F-046 extends that same operational threshold to the persistent alert channel so unattended operation gets notice **before** the whole garden reaches the hard cap.
+
+Incident codes remain intentionally separate:
+
+```text
+ai-budget-near-limit   # WARNING, 80% to below 100%
+ai-budget-exhausted    # CRITICAL, 100% or above
+```
+
+Lifecycle rules:
+
+- below 80%: neither incident is OPEN
+- 80% to below 100%: `ai-budget-near-limit` is OPEN with WARNING
+- repeated monitor runs do not duplicate the row or notification; WARNING reminders remain bounded to 48 hours
+- 100% or above: near-limit WARNING is silently closed as superseded and `ai-budget-exhausted` becomes OPEN with CRITICAL
+- the WARNING -> CRITICAL transition **does not emit a RECOVERY**
+- if an operator raises the budget and utilization falls from 100% to a still-high 80–99%, CRITICAL is silently closed and WARNING reopens
+- the CRITICAL -> WARNING downgrade **does not emit a RECOVERY**
+- a genuine RECOVERY is sent only when utilization falls below 80%
+- call and token utilization share the same threshold; whichever ratio is higher drives `budget.utilization`
+
+The warning is advisory only. It never pauses work, changes provider routing, modifies a blog, or increases a budget. The existing hard-cap reservation remains the only mechanism that stops outbound AI calls.
+
+## What F-043/F-044/F-045/F-046 deliberately do not do
 
 The preflight is advisory and does not replace the authoritative reservation inside `reserveAiCall()`.
 
