@@ -36,6 +36,8 @@ export interface ContentRefreshSummary {
   createdAt: string;
   outcome: RefreshOutcome | null;
   evaluation: RefreshEvaluation | null;
+  revisionId: number | null;
+  rolledBackAt: string | null;
 }
 
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
@@ -58,6 +60,8 @@ CREATE TABLE IF NOT EXISTS content_refreshes (
   outcome TEXT,
   evaluation_json TEXT,
   evaluated_at TEXT,
+  revision_id INTEGER,
+  rolled_back_at TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_refresh_publication_created ON content_refreshes(publication_id, created_at DESC);
@@ -67,6 +71,8 @@ const refreshColumns = new Set((db.prepare("PRAGMA table_info(content_refreshes)
 if (!refreshColumns.has("outcome")) db.exec("ALTER TABLE content_refreshes ADD COLUMN outcome TEXT");
 if (!refreshColumns.has("evaluation_json")) db.exec("ALTER TABLE content_refreshes ADD COLUMN evaluation_json TEXT");
 if (!refreshColumns.has("evaluated_at")) db.exec("ALTER TABLE content_refreshes ADD COLUMN evaluated_at TEXT");
+if (!refreshColumns.has("revision_id")) db.exec("ALTER TABLE content_refreshes ADD COLUMN revision_id INTEGER");
+if (!refreshColumns.has("rolled_back_at")) db.exec("ALTER TABLE content_refreshes ADD COLUMN rolled_back_at TEXT");
 
 function toPublication(row: any): Publication {
   return {
@@ -95,7 +101,8 @@ function parseEvaluation(raw: unknown): RefreshEvaluation | null {
 
 export function findRefreshCandidate(blogId: string): RefreshCandidate | null {
   // One autonomous refresh per blog per week prevents a garden from endlessly polishing
-  // existing pages while neglecting new publishing.
+  // existing pages while neglecting new publishing. Rolled-back attempts still count as
+  // a recent attempt so automation does not immediately repeat the same failed experiment.
   const recentBlogRefresh = db.prepare(`SELECT 1 FROM content_refreshes r
     JOIN publications p ON p.id=r.publication_id
     WHERE p.blog_id=? AND r.created_at >= datetime('now','-7 day') LIMIT 1`).get(blogId);
@@ -132,7 +139,8 @@ export function findRefreshCandidate(blogId: string): RefreshCandidate | null {
 }
 
 export function latestContentRefresh(blogId: string): ContentRefreshSummary | null {
-  const row = db.prepare(`SELECT r.before_title,r.after_title,r.hypothesis,r.reason,r.created_at,r.outcome,r.evaluation_json
+  const row = db.prepare(`SELECT r.before_title,r.after_title,r.hypothesis,r.reason,r.created_at,r.outcome,r.evaluation_json,
+      r.revision_id,r.rolled_back_at
     FROM content_refreshes r JOIN publications p ON p.id=r.publication_id
     WHERE p.blog_id=? ORDER BY r.created_at DESC LIMIT 1`).get(blogId) as any;
   if (!row) return null;
@@ -144,6 +152,8 @@ export function latestContentRefresh(blogId: string): ContentRefreshSummary | nu
     createdAt: String(row.created_at),
     outcome: ["win", "loss", "inconclusive"].includes(String(row.outcome)) ? row.outcome as RefreshOutcome : null,
     evaluation: parseEvaluation(row.evaluation_json),
+    revisionId: row.revision_id == null ? null : Number(row.revision_id),
+    rolledBackAt: row.rolled_back_at ? String(row.rolled_back_at) : null,
   };
 }
 
@@ -175,6 +185,7 @@ function judgeRefresh(input: {
 export function evaluateDueRefreshes(blogId: string): RefreshEvaluation[] {
   // Search Console collection uses a finalized seven-day window ending three days ago.
   // Waiting 14 days means that window is fully post-refresh before we judge the result.
+  // Rolled-back changes are not judged as if the experimental headline had remained live.
   const rows = db.prepare(`SELECT r.id,r.trigger_json,r.created_at,
       s.snapshot_date,s.clicks,s.impressions,s.ctr,s.position
     FROM content_refreshes r
@@ -184,6 +195,7 @@ export function evaluateDueRefreshes(blogId: string): RefreshEvaluation[] {
     )
     WHERE p.blog_id=?
       AND r.evaluated_at IS NULL
+      AND r.rolled_back_at IS NULL
       AND r.created_at <= datetime('now','-14 day')
       AND s.snapshot_date >= date(r.created_at,'+10 day')
     ORDER BY r.created_at ASC
@@ -216,7 +228,7 @@ export function evaluateDueRefreshes(blogId: string): RefreshEvaluation[] {
 export function refreshLearningContext(blogId: string): string {
   const rows = db.prepare(`SELECT r.before_title,r.after_title,r.hypothesis,r.outcome,r.evaluation_json
     FROM content_refreshes r JOIN publications p ON p.id=r.publication_id
-    WHERE p.blog_id=? AND r.evaluated_at IS NOT NULL
+    WHERE p.blog_id=? AND r.evaluated_at IS NOT NULL AND r.rolled_back_at IS NULL
     ORDER BY r.evaluated_at DESC LIMIT 8`).all(blogId) as any[];
   if (!rows.length) return "まだ評価済みの既存記事改善はない。検索意図に忠実な小さな変更を優先する。";
   return rows.map((row, i) => {
@@ -231,6 +243,7 @@ export function refreshLearningContext(blogId: string): string {
 
 export function recordContentRefresh(input: {
   publicationId: number;
+  revisionId?: number | null;
   beforeTitle: string;
   afterTitle: string;
   hypothesis: string;
@@ -241,8 +254,8 @@ export function recordContentRefresh(input: {
   const now = new Date().toISOString();
   const tx = db.transaction(() => {
     db.prepare(`INSERT INTO content_refreshes
-      (publication_id,axis,before_title,after_title,hypothesis,reason,trigger_json,created_at)
-      VALUES (?,?,?,?,?,?,?,?)`).run(
+      (publication_id,axis,before_title,after_title,hypothesis,reason,trigger_json,revision_id,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
         input.publicationId,
         "headline",
         input.beforeTitle,
@@ -250,10 +263,17 @@ export function recordContentRefresh(input: {
         input.hypothesis,
         input.reason,
         JSON.stringify(input.trigger ?? {}),
+        input.revisionId ?? null,
         now,
       );
     if (input.url) db.prepare("UPDATE publications SET title=?, url=? WHERE id=?").run(input.afterTitle, input.url, input.publicationId);
     else db.prepare("UPDATE publications SET title=? WHERE id=?").run(input.afterTitle, input.publicationId);
   });
   tx();
+}
+
+export function markContentRefreshRolledBack(revisionId: number): void {
+  if (!Number.isInteger(revisionId) || revisionId <= 0) throw new Error("revisionId must be a positive integer");
+  db.prepare(`UPDATE content_refreshes SET rolled_back_at=?
+    WHERE revision_id=? AND rolled_back_at IS NULL`).run(new Date().toISOString(), revisionId);
 }
