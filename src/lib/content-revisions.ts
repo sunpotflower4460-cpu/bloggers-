@@ -29,6 +29,7 @@ export interface ContentRevision {
   after: RevisionSnapshot;
   status: ContentRevisionStatus;
   appliedUpdatedAt: string | null;
+  rolledBackUpdatedAt: string | null;
   error: string | null;
   createdAt: string;
   appliedAt: string | null;
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS content_revisions (
   after_json TEXT NOT NULL,
   status TEXT NOT NULL,
   applied_updated_at TEXT,
+  rolled_back_updated_at TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
   applied_at TEXT,
@@ -62,6 +64,8 @@ CREATE INDEX IF NOT EXISTS idx_content_revisions_publication_created
 CREATE INDEX IF NOT EXISTS idx_content_revisions_status_created
   ON content_revisions(status, created_at DESC);
 `);
+const revisionColumns = new Set((db.prepare("PRAGMA table_info(content_revisions)").all() as Array<{ name: string }>).map((row) => row.name));
+if (!revisionColumns.has("rolled_back_updated_at")) db.exec("ALTER TABLE content_revisions ADD COLUMN rolled_back_updated_at TEXT");
 
 function cleanSnapshot(value: ExistingPost): RevisionSnapshot {
   return {
@@ -123,6 +127,7 @@ function mapRow(row: any): ContentRevision {
     after: parseSnapshot(String(row.after_json)),
     status: String(row.status) as ContentRevisionStatus,
     appliedUpdatedAt: row.applied_updated_at ? String(row.applied_updated_at) : null,
+    rolledBackUpdatedAt: row.rolled_back_updated_at ? String(row.rolled_back_updated_at) : null,
     error: row.error ? String(row.error) : null,
     createdAt: String(row.created_at),
     appliedAt: row.applied_at ? String(row.applied_at) : null,
@@ -183,7 +188,7 @@ export function markContentRevisionFailed(revisionId: number, error: unknown): v
 export function markContentRevisionRolledBack(revisionId: number, updatedAt: string | null): ContentRevision {
   const now = new Date().toISOString();
   const info = db.prepare(`UPDATE content_revisions
-    SET status='rolled-back',rolled_back_at=?,applied_updated_at=COALESCE(?,applied_updated_at)
+    SET status='rolled-back',rolled_back_at=?,rolled_back_updated_at=?
     WHERE id=? AND status='applied'`).run(now, updatedAt, revisionId);
   if (info.changes !== 1) throw new Error("revision is no longer eligible for rollback");
   const revision = getContentRevision(revisionId);
