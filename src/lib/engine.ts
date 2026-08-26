@@ -9,6 +9,11 @@ import { blogAiUsageScope, withAiUsageScope } from "./ai-usage-context";
 import { collectGa4 } from "./analytics/ga4";
 import { collectNativeReactions } from "./analytics/native";
 import { collectSearchConsole } from "./analytics/search-console";
+import {
+  markContentRevisionApplied,
+  markContentRevisionFailed,
+  prepareContentRevision,
+} from "./content-revisions";
 import { decryptJson } from "./crypto";
 import {
   countTodayPublications,
@@ -159,9 +164,29 @@ async function refreshExistingPost(blog: Blog, candidate: RefreshCandidate, star
     .find((title) => similarity(title, newTitle) >= 0.58);
   if (collision) throw new Error(`Refreshed headline is too similar to another article: ${collision}`);
 
-  const result = await adapter.updatePost(blog, credentials, candidate.publication, { title: newTitle }, existing);
+  // F-051: persist the rollback material BEFORE touching the external CMS.
+  // SQLite and the remote platform cannot share a transaction, so this prepared
+  // record is the durable recovery line if anything fails after the remote call.
+  const revision = prepareContentRevision({
+    publicationId: candidate.publication.id,
+    mutationKind: "headline-refresh",
+    axes: ["headline"],
+    before: existing,
+    update: { title: newTitle },
+  });
+
+  let result;
+  try {
+    result = await adapter.updatePost(blog, credentials, candidate.publication, { title: newTitle }, existing);
+  } catch (error) {
+    markContentRevisionFailed(revision.id, error);
+    throw error;
+  }
+  markContentRevisionApplied(revision.id, { updatedAt: result.updatedAt });
+
   recordContentRefresh({
     publicationId: candidate.publication.id,
+    revisionId: revision.id,
     beforeTitle: existing.title,
     afterTitle: newTitle,
     hypothesis: String(plan.hypothesis || "Headline clarity may improve organic CTR").slice(0, 600),
@@ -176,7 +201,12 @@ async function refreshExistingPost(blog: Blog, candidate: RefreshCandidate, star
     url: result.url,
   });
   setLastRun(blog.id);
-  recordRun(blog.id, "content-refresh", "ok", `Refreshed headline: ${existing.title} → ${newTitle}`, { candidate, result, aiRoute: generated.meta }, started);
+  recordRun(blog.id, "content-refresh", "ok", `Refreshed headline: ${existing.title} → ${newTitle}`, {
+    candidate,
+    result,
+    revisionId: revision.id,
+    aiRoute: generated.meta,
+  }, started);
   return { blog: blog.name, status: "refreshed", title: newTitle };
 }
 
