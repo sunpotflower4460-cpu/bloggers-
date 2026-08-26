@@ -35,7 +35,7 @@ function RotationFields({ platform }: { platform: BlogPlatform }) {
   );
 }
 
-export function BlogSettingsForm({ blog }: { blog: SafeBlog }) {
+export function BlogSettingsForm({ blog, aiDailyCallLimitOverride }: { blog: SafeBlog; aiDailyCallLimitOverride: number | null }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [test, setTest] = useState<TestState>({ kind: "idle" });
   const [searchTest, setSearchTest] = useState<TestState>({ kind: "idle" });
@@ -75,6 +75,11 @@ export function BlogSettingsForm({ blog }: { blog: SafeBlog }) {
       <label>追うキーワード<input name="keywords" required defaultValue={blog.keywords.join(", ")} /><small>カンマ区切り。テーマを変えすぎず、探索軸だけ調整できます。</small></label>
       <label>追加RSS<input name="feeds" defaultValue={blog.feeds.join(", ")} /></label>
       <div className="two"><label>投稿間隔（時間）<input name="cadenceHours" type="number" min="1" defaultValue={blog.cadenceHours} /></label><label>1日最大本数<input name="dailyLimit" type="number" min="1" max="10" defaultValue={blog.dailyLimit} /></label></div>
+      <label>
+        AI日次call上限（このブログだけ）
+        <input name="aiDailyCallLimitOverride" type="number" min="1" max="100000" defaultValue={aiDailyCallLimitOverride ?? ""} placeholder="共通上限を継承" />
+        <small>空欄ならサーバー共通のAI_PER_BLOG_DAILY_CALL_LIMITを継承します。空欄は「無制限」指定ではありません。個別値はprimary / fallback / economyすべてのcallに適用されます。</small>
+      </label>
       <label>公開方針<select name="publishMode" defaultValue={blog.publishMode}><option value="review">まず下書きへ送る</option><option value="auto">自動公開する</option></select></label>
       <label>GA4 Property ID<input name="ga4PropertyId" inputMode="numeric" defaultValue={blog.ga4PropertyId || ""} /><small>空欄にするとGA4反応学習を無効にします。</small></label>
       <label>Search Console Property<input name="searchConsoleSiteUrl" defaultValue={blog.searchConsoleSiteUrl || ""} placeholder="https://example.com/ または sc-domain:example.com" /><small>空欄にすると検索反応学習を無効にします。service accountメールには対象propertyの閲覧権限が必要です。</small></label>
