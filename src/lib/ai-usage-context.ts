@@ -25,21 +25,32 @@ function clean(value: string, fallback: string, max: number): string {
     .slice(0, max) || fallback;
 }
 
-export function blogAiUsageScope(blogId: string, blogName: string): AiUsageScope {
+function normalizedScope(scope: AiUsageScope): AiUsageScope {
   return {
+    scopeKey: clean(scope.scopeKey, systemScope.scopeKey, 240),
+    scopeLabel: clean(scope.scopeLabel, systemScope.scopeLabel, 240),
+  };
+}
+
+export function blogAiUsageScope(blogId: string, blogName: string): AiUsageScope {
+  return normalizedScope({
     scopeKey: `blog:${clean(blogId, "unknown", 180)}`,
     scopeLabel: clean(blogName, "Unnamed blog", 180),
-  };
+  });
 }
 
 export function currentAiUsageScope(): AiUsageScope {
   return storage.getStore() ?? systemScope;
 }
 
+export function enterAiUsageScope(scope: AiUsageScope): void {
+  storage.enterWith(normalizedScope(scope));
+}
+
+export function systemAiUsageScope(): AiUsageScope {
+  return { ...systemScope };
+}
+
 export function withAiUsageScope<T>(scope: AiUsageScope, work: () => T): T {
-  const normalized: AiUsageScope = {
-    scopeKey: clean(scope.scopeKey, systemScope.scopeKey, 240),
-    scopeLabel: clean(scope.scopeLabel, systemScope.scopeLabel, 240),
-  };
-  return storage.run(normalized, work);
+  return storage.run(normalizedScope(scope), work);
 }
