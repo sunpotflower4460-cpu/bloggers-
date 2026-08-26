@@ -1,9 +1,9 @@
 import { aiBudgetStatus, type AiBudgetStatus } from "./ai-budget";
 
 export type GlobalAiBudgetProtectionReason = "calls" | "tokens" | "calls-and-tokens";
+export type GlobalAiBudgetWarningReason = "calls" | "tokens" | "calls-and-tokens";
 
-export interface GlobalAiBudgetProtection {
-  reason: GlobalAiBudgetProtectionReason;
+interface GlobalAiBudgetSnapshot {
   reasonLabel: string;
   dayKey: string;
   timezone: string;
@@ -11,6 +11,33 @@ export interface GlobalAiBudgetProtection {
   callLimit: number;
   totalTokens: number;
   tokenLimit: number;
+}
+
+export interface GlobalAiBudgetProtection extends GlobalAiBudgetSnapshot {
+  reason: GlobalAiBudgetProtectionReason;
+}
+
+export interface GlobalAiBudgetWarning extends GlobalAiBudgetSnapshot {
+  reason: GlobalAiBudgetWarningReason;
+  utilizationPercent: number;
+}
+
+function reasonLabel(reason: "calls" | "tokens" | "calls-and-tokens", warning = false): string {
+  if (reason === "calls-and-tokens") return warning ? "call・token残量注意" : "call上限・token上限";
+  if (reason === "calls") return warning ? "call残量注意" : "call上限";
+  return warning ? "token残量注意" : "token上限";
+}
+
+function snapshot(status: AiBudgetStatus, reason: "calls" | "tokens" | "calls-and-tokens", warning = false): GlobalAiBudgetSnapshot {
+  return {
+    reasonLabel: reasonLabel(reason, warning),
+    dayKey: status.dayKey,
+    timezone: status.timezone,
+    calls: status.calls,
+    callLimit: status.callLimit,
+    totalTokens: status.totalTokens,
+    tokenLimit: status.tokenLimit,
+  };
 }
 
 /**
@@ -31,18 +58,35 @@ export function globalAiBudgetProtection(
       ? "calls"
       : "tokens";
 
+  return { reason, ...snapshot(status, reason) };
+}
+
+/**
+ * F-047 pre-exhaustion home warning. The 80% threshold intentionally matches
+ * diagnostics and F-046. Hard-cap states are excluded so the home never shows
+ * both "warning" and "stopped" for the same global budget snapshot.
+ */
+export function globalAiBudgetWarning(
+  status: AiBudgetStatus = aiBudgetStatus(),
+): GlobalAiBudgetWarning | null {
+  if (status.calls >= status.callLimit || status.totalTokens >= status.tokenLimit) return null;
+
+  const callRatio = status.calls / status.callLimit;
+  const tokenRatio = status.totalTokens / status.tokenLimit;
+  const callsWarning = callRatio >= 0.8;
+  const tokensWarning = tokenRatio >= 0.8;
+  if (!callsWarning && !tokensWarning) return null;
+
+  const reason: GlobalAiBudgetWarningReason = callsWarning && tokensWarning
+    ? "calls-and-tokens"
+    : callsWarning
+      ? "calls"
+      : "tokens";
+  const utilization = Math.max(callRatio, tokenRatio);
+
   return {
     reason,
-    reasonLabel: reason === "calls-and-tokens"
-      ? "call上限・token上限"
-      : reason === "calls"
-        ? "call上限"
-        : "token上限",
-    dayKey: status.dayKey,
-    timezone: status.timezone,
-    calls: status.calls,
-    callLimit: status.callLimit,
-    totalTokens: status.totalTokens,
-    tokenLimit: status.tokenLimit,
+    utilizationPercent: Math.round(utilization * 1000) / 10,
+    ...snapshot(status, reason, true),
   };
 }
