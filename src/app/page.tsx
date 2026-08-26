@@ -186,7 +186,7 @@ export default function Home() {
           <section className="grid" aria-label="ブログ別AI費用と成果の参考観測">
             {efficiency.observations.map((observation) => (
               <article className="blogCard" key={`efficiency:${observation.blogId}`}>
-                <div className="cardTop"><div>参考観測</div><span className="platform">7 days</span></div>
+                <div className="cardTop"><div>{observation.flags.length ? `${observation.flags.length}件 確認` : "参考観測"}</div><span className="platform">7 days</span></div>
                 <h3>{observation.blogName}</h3>
                 <p className="muted">AI費用と反応を同じ場所で確認します。自動ROI判定やランキングは行いません。</p>
                 <div className="miniStats four">
@@ -195,6 +195,21 @@ export default function Home() {
                   <div><span>新規記事 7d</span><strong>{observation.publications7d}</strong></div>
                   <div><span>PV 7d</span><strong>{observation.views7d.toLocaleString()}</strong></div>
                 </div>
+                {observation.flags.length ? (
+                  <div className="latest">
+                    <span>確認するとよい運用シグナル</span>
+                    {observation.flags.map((flag) => (
+                      <p key={flag.code}>{flag.tone === "warn" ? "要確認" : "参考"} · {flag.title} — {flag.detail}</p>
+                    ))}
+                    <small>フラグは事実の確認入口です。低評価・ROI判定・自動停止・route変更には使いません。</small>
+                  </div>
+                ) : (
+                  <div className="latest">
+                    <span>運用シグナル</span>
+                    <p>現在の保守的ルールでは追加確認フラグはありません。</p>
+                    <small>「問題なし」を保証するものではなく、機械的に断定できる観測事項がないという意味です。</small>
+                  </div>
+                )}
                 <div className="latest">
                   <span>AI費用の観測品質</span>
                   <p>{aiCoverageLabel(observation, efficiency)}</p>
@@ -211,7 +226,7 @@ export default function Home() {
                 </div>
                 <div className="latest">
                   <span>補助シグナル</span>
-                  <p>sessions 7d {observation.sessions7d.toLocaleString()} · engaged {observation.engagementRate === null ? "—" : `${observation.engagementRate}%`} · comments {observation.nativeComments}</p>
+                  <p>sessions 7d {observation.sessions7d.toLocaleString()} · engaged {observation.engagementRate === null ? "—" : `${observation.engagementRate}%`} · comments {observation.nativeComments} · run errors {observation.failedRuns7d}</p>
                   <small>AI費用は現在までの直近7日、Search Consoleは3日遅れの確定7日窓です。期間も因果も一致しないため「費用対効果」「1クリック単価」として解釈しません。</small>
                 </div>
               </article>
