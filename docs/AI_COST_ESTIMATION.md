@@ -185,9 +185,48 @@ AI費用は「今日までの直近7日」ですが、Search Consoleはデータ
 
 価格表が壊れている場合、トップ画面はクラッシュせず、費用欄を設定エラー/金額未推定として表示します。投稿・PV・検索など他の成果シグナルは引き続き確認できます。
 
+## F-037: ブログ別AI運用観測フラグ
+
+F-037はF-036のカードに、**人間が確認するとよい運用上の事実**だけを追加表示します。これはランキング、品質評価、ROI判定ではありません。
+
+現在の保守的ルール:
+
+- `cost-coverage-gap`: AI callがあるのに、そのブログの価格/token usage coverageが完全ではない
+- `calls-without-publication`: 直近7日でAI callが4回以上あるが、新規publicationが0
+- `high-call-density`: 新規publicationがあり、直近7日AI callが12回以上かつpublicationあたり6 calls以上
+- `outcome-data-sparse`: AI callが3回以上あるが、GA4 PV/sessions・native comments・確定Search Consoleの観測値がまだ無い
+- `recent-run-errors`: 直近7日のrun logに2件以上のerrorがある
+
+### 閾値を保守的にする理由
+
+新規記事の通常フローでも、内部企画と最終生成で複数AI callを使います。さらにfallback救済、headline refresh、draft、人間操作などでcall数は増えます。
+
+そのため、`high-call-density`は単純な「2 calls/articleを超えたら異常」にはしていません。**12 calls以上かつ6 calls/publication以上**という絶対値と比率の両方を満たす時だけ、「内訳を確認するとよい」という参考フラグにします。
+
+`calls-without-publication`も「失敗」とは断定しません。refresh・draft・企画・失敗後の回復など正当な理由があり得るため、run logを確認する入口に留めます。
+
+`outcome-data-sparse`は特に新規ブログや連携直後では正常です。「成果が悪い」ではなく**まだ測定材料が足りない**という意味しか持ちません。
+
+### フラグが0件でも安全保証ではない
+
+カードに追加フラグが無い場合も「問題なし」「高効率」という意味ではありません。現在の保守的な決め打ちルールで、機械的に目立たせられる観測事項が無いだけです。
+
+### 自動制御には使わない
+
+F-037のフラグは次へ接続しません。
+
+- ブログ停止/再開
+- primary / fallback / economyのroute変更
+- publish mode変更
+- AI budget変更
+- 記事削除や既存記事更新
+- provider/modelの品質ランク付け
+
+フラグは人間の調査対象を絞るための表示情報です。
+
 ## 安全境界
 
-F-032/F-034/F-035/F-036は可視化・警告・帰属・観測機能です。推定コストや成果の見え方を理由に、Blog Gardenが自動で次を変更することはありません。
+F-032/F-034/F-035/F-036/F-037は可視化・警告・帰属・観測機能です。推定コストや成果の見え方を理由に、Blog Gardenが自動で次を変更することはありません。
 
 - primary / fallback provider
 - `AI_INTERNAL_ROUTE_POLICY`
