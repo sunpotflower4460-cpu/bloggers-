@@ -37,6 +37,7 @@ export interface PostUpdateResult {
 export interface BlogPlatformAdapter {
   validate(siteUrl: string, credentials: unknown): Promise<ValidationResult>;
   publish(blog: Blog, credentials: unknown, article: GeneratedArticle): Promise<PublishResult>;
+  publishDraft(blog: Blog, credentials: unknown, publication: Publication): Promise<PublishResult>;
   readPost(blog: Blog, credentials: unknown, publication: Publication): Promise<ExistingPost>;
   updatePost(blog: Blog, credentials: unknown, publication: Publication, update: PostUpdate, existing: ExistingPost): Promise<PostUpdateResult>;
   collectReactions?(blog: Blog, credentials: unknown, publication: Publication): Promise<NativeReactionResult>;
