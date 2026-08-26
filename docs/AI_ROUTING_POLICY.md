@@ -84,11 +84,33 @@ economyを優先している内部リクエストでeconomy callが失敗した�
 
 economyがHTTP成功しても返したJSON内容が壊れていた場合は、別modelへ再生成しません。model/output品質問題をavailability障害として隠さず、追加コストも使わないためです。
 
+## economy degradation incident
+
+F-033では、economy最適化が壊れたまま通常route救済だけで処理が成功し続ける状態を検知します。
+
+次の条件をすべて満たすと`ai-economy-degraded` warning incidentをOPENします。
+
+- active blogが存在する
+- `AI_INTERNAL_ROUTE_POLICY=economy`
+- routing設定自体は有効
+- economyの直近3試行がすべて`retryable_error`または`fatal_error`
+- 3試行の最古が6時間以内
+
+1〜2回の単発失敗ではincidentにしません。
+
+このincidentはサービス停止を意味しません。economy失敗後にprimary/fallbackへbounded recoveryできている場合でも、**1論理処理に2 call使い続けてコスト最適化が逆効果になっている**ことを知らせる運用劣化です。
+
+同じ障害は既存incident行を更新し、行を増殖させません。economyが次に成功するか、internal policyをprimaryへ戻すなど条件が解消すると同incidentをCLOSEDにし、Webhook設定済みならRECOVERY通知を送ります。
+
+Blog Garden自身がこのincidentを理由に`AI_INTERNAL_ROUTE_POLICY`を変更することはありません。
+
 ## 予算
 
 primary / fallback / economyの実callはすべて同じSQLite日次予算を消費します。
 
 `AI_DAILY_CALL_LIMIT`と`AI_DAILY_TOKEN_LIMIT`をeconomyで迂回することはできません。
+
+F-032ではmodel単位のusageも保存し、運用者が設定した単価表から参考コストを表示できます。詳細は`docs/AI_COST_ESTIMATION.md`を参照してください。
 
 ## observability
 
@@ -100,6 +122,8 @@ primary / fallback / economyの実callはすべて同じSQLite日次予算を消
 - 最終economy attempt
 
 `ai_provider_attempts.route`では`primary`、`fallback`、`economy`を分けて記録します。そのため、意図的なeconomy利用がfallbackの障害統計・健全性判定を汚しません。
+
+persistentなeconomy障害は通常のincident一覧にも`ai-economy-degraded`として表示されます。
 
 ## 運用ルール
 
