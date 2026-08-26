@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { aiBudgetStatus } from "./ai-budget";
 import { fallbackContentPolicy } from "./ai-content-policy";
+import { aiCostThresholds } from "./ai-cost-alert";
 import { aiCostEstimate } from "./ai-cost";
 import { aiRoutingStatus } from "./ai-routing";
 import { testSearchConsole } from "./analytics/search-console";
@@ -165,6 +166,58 @@ function aiCostDiagnostic(): DiagnosticItem {
   }
 }
 
+function aiCostThresholdDiagnostic(): DiagnosticItem | null {
+  try {
+    const thresholds = aiCostThresholds();
+    if (thresholds.daily === null && thresholds.projected30d === null) return null;
+    const estimate = aiCostEstimate();
+    const thresholdText = [
+      thresholds.daily !== null ? `daily=${cost(thresholds.daily, estimate.currency)}` : "",
+      thresholds.projected30d !== null ? `30d=${cost(thresholds.projected30d, estimate.currency)}` : "",
+    ].filter(Boolean).join(" · ");
+    if (!estimate.configured) {
+      return {
+        scope: "system",
+        label: "AI推定コスト閾値",
+        status: "warn",
+        detail: `${thresholdText} · 閾値は設定されていますがAI_PRICE_TABLE_JSONがないため判定不能です`,
+      };
+    }
+    const dailyExceeded = thresholds.daily !== null && estimate.todayEstimatedCost >= thresholds.daily;
+    const projectedExceeded = thresholds.projected30d !== null && estimate.projected30dCost >= thresholds.projected30d;
+    const current = `今日 ${cost(estimate.todayEstimatedCost, estimate.currency)} · 30日換算 ${cost(estimate.projected30dCost, estimate.currency)}`;
+    if (dailyExceeded || projectedExceeded) {
+      return {
+        scope: "system",
+        label: "AI推定コスト閾値",
+        status: "warn",
+        detail: `${current} · warning閾値 ${thresholdText} · 観測済み推定額だけで閾値以上です。自動停止やroute変更は行いません`,
+      };
+    }
+    if (!estimate.complete) {
+      return {
+        scope: "system",
+        label: "AI推定コスト閾値",
+        status: "warn",
+        detail: `${current} · warning閾値 ${thresholdText} · 観測済み推定額は閾値未満ですがcoverage不完全のため「安全」とは判定しません`,
+      };
+    }
+    return {
+      scope: "system",
+      label: "AI推定コスト閾値",
+      status: "ok",
+      detail: `${current} · warning閾値 ${thresholdText} · 完全なcoverageで閾値未満`,
+    };
+  } catch (error) {
+    return {
+      scope: "system",
+      label: "AI推定コスト閾値",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function aiRoutingDiagnostic(): DiagnosticItem {
   const routing = aiRoutingStatus();
   if (!routing.configured) {
@@ -274,6 +327,8 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   try {
     items.push(aiBudgetDiagnostic());
     items.push(aiCostDiagnostic());
+    const costThreshold = aiCostThresholdDiagnostic();
+    if (costThreshold) items.push(costThreshold);
   } catch (error) {
     items.push({ scope: "system", label: "AI予算/コスト", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
