@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { globalAiBudgetProtection } from "@/lib/ai-budget-home";
+import { globalAiBudgetProtection, globalAiBudgetWarning } from "@/lib/ai-budget-home";
 import { aiEfficiencyPanel, type BlogAiEfficiencyObservation } from "@/lib/ai-efficiency";
 import { dashboard, experimentContext } from "@/lib/db";
 import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
@@ -80,6 +80,7 @@ export default function Home() {
   const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
   const fallbackQuality = fallbackQualitySummaries();
   const globalBudget = globalAiBudgetProtection();
+  const globalBudgetWarning = globalAiBudgetWarning();
   const budgetIncidents = new Map(
     openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").map((incident) => [incident.scope, incident]),
   );
@@ -115,6 +116,26 @@ export default function Home() {
             <span>現在の保護状態</span>
             <p>{globalBudget.reasonLabel}に到達したため、F-043と同じ現在値判定で庭全体の次のAI工程を止めています。</p>
             <small>ブログのactive状態や公開方針は変更していません。hard capが解消すると次の実行からAI工程へ進めます。</small>
+            <div className="actions"><Link className="button secondary" href="/diagnostics">AI予算を健康診断で確認</Link></div>
+          </div>
+        </section>
+      ) : null}
+
+      {globalBudgetWarning ? (
+        <section className="blogCard" aria-label="庭全体のAI予算残量warning" aria-live="polite">
+          <div className="cardTop"><div><span className="dot on" />AI予算の残りが少なくなっています</div><span className="platform">{globalBudgetWarning.reasonLabel}</span></div>
+          <h3>global AI日次予算が {globalBudgetWarning.utilizationPercent}% に達しています</h3>
+          <p className="muted">まだhard capには到達していないため、ブログは停止していません。停止前に使用量や上限設定を確認できます。</p>
+          <div className="miniStats four">
+            <div><span>AI calls</span><strong>{globalBudgetWarning.calls.toLocaleString()} / {globalBudgetWarning.callLimit.toLocaleString()}</strong></div>
+            <div><span>AI tokens</span><strong>{globalBudgetWarning.totalTokens.toLocaleString()} / {globalBudgetWarning.tokenLimit.toLocaleString()}</strong></div>
+            <div><span>budget day</span><strong>{globalBudgetWarning.dayKey}</strong></div>
+            <div><span>timezone</span><strong>{globalBudgetWarning.timezone}</strong></div>
+          </div>
+          <div className="latest">
+            <span>事前warning</span>
+            <p>F-046と同じ80%基準です。100%へ達するとF-045の「庭全体のAI生成を保護停止」表示へ切り替わります。</p>
+            <small>このwarning自体はAI処理・active状態・公開方針・routeを変更しません。</small>
             <div className="actions"><Link className="button secondary" href="/diagnostics">AI予算を健康診断で確認</Link></div>
           </div>
         </section>
