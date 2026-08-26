@@ -2,6 +2,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { aiBudgetStatus } from "./ai-budget";
 import { fallbackContentPolicy } from "./ai-content-policy";
+import { aiCostEstimate } from "./ai-cost";
 import { aiRoutingStatus } from "./ai-routing";
 import { testSearchConsole } from "./analytics/search-console";
 import { decryptJson } from "./crypto";
@@ -121,6 +122,49 @@ function aiBudgetDiagnostic(): DiagnosticItem {
   };
 }
 
+function cost(value: number, currency: string): string {
+  const digits = Math.abs(value) < 1 ? 4 : 2;
+  return `${currency} ${value.toFixed(digits)}`;
+}
+
+function aiCostDiagnostic(): DiagnosticItem {
+  try {
+    const estimate = aiCostEstimate();
+    if (!estimate.configured) {
+      return {
+        scope: "system",
+        label: "AI推定コスト",
+        status: "warn",
+        detail: "AI_PRICE_TABLE_JSON未設定 · model別usageは保存しますが、provider価格をBlog Garden側で決め打ちしないため金額推定は行いません",
+      };
+    }
+    const coverage = estimate.coveragePercent === null ? "usageなし" : `${estimate.coveragePercent.toFixed(1)}%`;
+    const gaps = [
+      estimate.unpricedModelKeys.length ? `単価未設定: ${estimate.unpricedModelKeys.slice(0, 4).join(", ")}` : "",
+      estimate.unpricedTokens > 0 ? `推定外tokens=${estimate.unpricedTokens.toLocaleString()}` : "",
+      estimate.unmeteredCalls > 0 ? `token未報告calls=${estimate.unmeteredCalls}` : "",
+    ].filter(Boolean).join(" · ");
+    const top = estimate.models.slice(0, 3).map((model) =>
+      model.estimatedCost === null
+        ? `${model.modelKey}=単価未設定`
+        : `${model.modelKey}=${cost(model.estimatedCost, estimate.currency)}`,
+    ).join(" | ");
+    return {
+      scope: "system",
+      label: "AI推定コスト",
+      status: estimate.complete ? "ok" : "warn",
+      detail: `今日 ${cost(estimate.todayEstimatedCost, estimate.currency)} · 直近7日 ${cost(estimate.last7dEstimatedCost, estimate.currency)} · 30日換算 ${cost(estimate.projected30dCost, estimate.currency)}（観測${estimate.observedDays}日平均） · token価格カバレッジ ${coverage}${gaps ? ` · ${gaps}` : ""}${top ? ` · ${top}` : ""}`,
+    };
+  } catch (error) {
+    return {
+      scope: "system",
+      label: "AI推定コスト",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function aiRoutingDiagnostic(): DiagnosticItem {
   const routing = aiRoutingStatus();
   if (!routing.configured) {
@@ -229,8 +273,9 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   });
   try {
     items.push(aiBudgetDiagnostic());
+    items.push(aiCostDiagnostic());
   } catch (error) {
-    items.push({ scope: "system", label: "AI日次予算", status: "error", detail: error instanceof Error ? error.message : String(error) });
+    items.push({ scope: "system", label: "AI予算/コスト", status: "error", detail: error instanceof Error ? error.message : String(error) });
   }
   try {
     items.push(aiRoutingDiagnostic());
