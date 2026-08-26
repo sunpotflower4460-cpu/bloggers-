@@ -5,6 +5,7 @@ export interface BlogAiBudgetOverrideApplyResult {
   limit: number | null;
   reconciled: boolean;
   exhaustedScopes: number | null;
+  warningScopes: number | null;
   notifications: number;
   notificationFailures: number;
   configError: string | null;
@@ -20,8 +21,9 @@ function safeError(error: unknown): string {
 }
 
 /**
- * Operator-facing F-042 path: persist the F-041 override first, then reconcile
- * the same persistent F-039 incident state immediately.
+ * Operator-facing F-042/F-048 path: persist the F-041 override first, then
+ * immediately reconcile both the near-limit advisory and F-039 protection
+ * incident state using the same monitor logic.
  *
  * A reconcile failure must not undo a successfully persisted safety setting.
  * The monitor remains the fallback reconciler, so this function reports the
@@ -39,6 +41,7 @@ export async function applyBlogAiDailyCallLimitOverride(
       limit,
       reconciled: reconciliation.configError === null,
       exhaustedScopes: reconciliation.exhaustedScopes,
+      warningScopes: reconciliation.warningScopes,
       notifications: reconciliation.notifications,
       notificationFailures: reconciliation.notificationFailures,
       configError: reconciliation.configError,
@@ -51,6 +54,7 @@ export async function applyBlogAiDailyCallLimitOverride(
       limit,
       reconciled: false,
       exhaustedScopes: null,
+      warningScopes: null,
       notifications: 0,
       notificationFailures: 0,
       configError: null,
