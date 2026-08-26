@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 type DB = InstanceType<typeof Database>;
+export type FallbackReviewOutcome = "quality-ok" | "needs-improvement";
 
 export interface FallbackReviewItem {
   publicationId: number;
@@ -18,6 +19,16 @@ export interface FallbackReviewItem {
   createdAt: string;
 }
 
+export interface FallbackQualitySummary {
+  providerLabel: string;
+  model: string;
+  reviewed: number;
+  qualityOk: number;
+  needsImprovement: number;
+  approvalRate: number | null;
+  signal: "insufficient-sample" | "strong" | "mixed" | "weak";
+}
+
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
 const globalDb = globalThis as typeof globalThis & { __blogGardenFallbackReviewDb?: DB };
@@ -28,9 +39,21 @@ db.pragma("foreign_keys = ON");
 db.exec(`
 CREATE TABLE IF NOT EXISTS fallback_review_state (
   publication_id INTEGER PRIMARY KEY,
-  reviewed_at TEXT NOT NULL
+  reviewed_at TEXT NOT NULL,
+  outcome TEXT
 );
 `);
+const reviewColumns = new Set(
+  (db.prepare("PRAGMA table_info(fallback_review_state)").all() as Array<{ name: string }>).map((row) => row.name),
+);
+if (!reviewColumns.has("outcome")) db.exec("ALTER TABLE fallback_review_state ADD COLUMN outcome TEXT");
+
+function positivePublicationId(publicationId: number): number {
+  if (!Number.isInteger(publicationId) || publicationId <= 0) {
+    throw new Error("publicationId must be a positive integer");
+  }
+  return publicationId;
+}
 
 export function fallbackReviewQueue(limit = 20): FallbackReviewItem[] {
   const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
@@ -87,9 +110,70 @@ export function fallbackReviewQueue(limit = 20): FallbackReviewItem[] {
   }));
 }
 
+export function recordFallbackReviewOutcome(publicationId: number, outcome: FallbackReviewOutcome): void {
+  const id = positivePublicationId(publicationId);
+  if (outcome !== "quality-ok" && outcome !== "needs-improvement") {
+    throw new Error("fallback review outcome must be quality-ok or needs-improvement");
+  }
+  db.prepare(`INSERT INTO fallback_review_state (publication_id,reviewed_at,outcome) VALUES (?,?,?)
+    ON CONFLICT(publication_id) DO UPDATE SET reviewed_at=excluded.reviewed_at,outcome=excluded.outcome`)
+    .run(id, new Date().toISOString(), outcome);
+}
+
+// Backward-compatible acknowledgment for any older callers. It intentionally does
+// not count toward provider/model quality statistics because no quality judgment
+// was captured.
 export function markFallbackReviewReviewed(publicationId: number): void {
-  if (!Number.isInteger(publicationId) || publicationId <= 0) throw new Error("publicationId must be a positive integer");
-  db.prepare(`INSERT INTO fallback_review_state (publication_id,reviewed_at) VALUES (?,?)
+  const id = positivePublicationId(publicationId);
+  db.prepare(`INSERT INTO fallback_review_state (publication_id,reviewed_at,outcome) VALUES (?,?,NULL)
     ON CONFLICT(publication_id) DO UPDATE SET reviewed_at=excluded.reviewed_at`)
-    .run(publicationId, new Date().toISOString());
+    .run(id, new Date().toISOString());
+}
+
+export function fallbackQualitySummaries(): FallbackQualitySummary[] {
+  const rows = db.prepare(`
+    SELECT
+      COALESCE(json_extract(r.meta_json, '$.aiRoute.label'), 'fallback') provider_label,
+      COALESCE(json_extract(r.meta_json, '$.aiRoute.model'), 'unknown') model,
+      COUNT(*) reviewed,
+      SUM(CASE WHEN s.outcome='quality-ok' THEN 1 ELSE 0 END) quality_ok,
+      SUM(CASE WHEN s.outcome='needs-improvement' THEN 1 ELSE 0 END) needs_improvement
+    FROM fallback_review_state s
+    JOIN publications p ON p.id=s.publication_id
+    JOIN run_logs r
+      ON r.blog_id=p.blog_id
+     AND r.kind='editorial'
+     AND r.status='ok'
+     AND COALESCE(json_extract(r.meta_json, '$.fallbackForcedReview'), 0)=1
+     AND CAST(json_extract(r.meta_json, '$.result.platformPostId') AS TEXT)=p.platform_post_id
+    WHERE s.outcome IN ('quality-ok','needs-improvement')
+    GROUP BY provider_label, model
+    ORDER BY reviewed DESC, provider_label ASC, model ASC
+  `).all() as Array<{
+    provider_label: string;
+    model: string;
+    reviewed: number;
+    quality_ok: number;
+    needs_improvement: number;
+  }>;
+
+  return rows.map((row) => {
+    const reviewed = Number(row.reviewed || 0);
+    const qualityOk = Number(row.quality_ok || 0);
+    const needsImprovement = Number(row.needs_improvement || 0);
+    const approvalRate = reviewed > 0 ? qualityOk / reviewed : null;
+    let signal: FallbackQualitySummary["signal"] = "insufficient-sample";
+    if (reviewed >= 10 && approvalRate !== null) {
+      signal = approvalRate >= 0.9 ? "strong" : approvalRate >= 0.7 ? "mixed" : "weak";
+    }
+    return {
+      providerLabel: row.provider_label,
+      model: row.model,
+      reviewed,
+      qualityOk,
+      needsImprovement,
+      approvalRate,
+      signal,
+    };
+  });
 }
