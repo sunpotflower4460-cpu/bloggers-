@@ -82,7 +82,7 @@ When the current global hard cap is reached, the top of `/` shows:
 
 The per-blog cards also stop saying `自動運転` while the global cap is active and instead show `庭全体AI上限で保護停止`. This is display-only: F-045 never changes the blog's stored `active` value or publish mode.
 
-When neither global limit is reached, the banner is absent and normal card state returns immediately from the current budget snapshot. Per-blog F-039/F-040 incidents remain independent and can still be displayed for individual cap exhaustion.
+When neither global limit is reached, the protection banner is absent and normal card state returns immediately from the current budget snapshot. Per-blog F-039/F-040 incidents remain independent and can still be displayed for individual cap exhaustion.
 
 ## F-046: 80% global budget early warning
 
@@ -109,7 +109,29 @@ Lifecycle rules:
 
 The warning is advisory only. It never pauses work, changes provider routing, modifies a blog, or increases a budget. The existing hard-cap reservation remains the only mechanism that stops outbound AI calls.
 
-## What F-043/F-044/F-045/F-046 deliberately do not do
+## F-047: near-limit warning on the home dashboard
+
+Webhook通知を設定していない運用でも停止直前を見逃さないよう、F-047はF-046と同じ現在の80%基準をホームへ即時表示します。monitor incidentの到着待ちではなく、F-045と同じ`aiBudgetStatus()`由来の現在値を使います。
+
+Home state is deliberately exclusive:
+
+```text
+< 80%       warningなし / 通常表示
+80%..<100%  AI予算の残りが少なくなっています
+>= 100%     庭全体のAI生成を保護停止
+```
+
+80〜99% warningでは、calls/tokens、budget day、timezone、現在の最大利用率と`/diagnostics`導線を表示します。ただしこれは停止ではありません。
+
+重要な表示境界:
+
+- warning中も稼働ブログカードは`自動運転`のままです
+- warningを`aiProtected`判定へ混ぜません
+- 100%到達時はwarningを同時表示せず、F-045 hard-cap bannerだけを表示します
+- 80%未満へ戻れば現在値に基づきwarningは即消えます
+- F-046 persistent incident/Webhookは履歴と外部通知、F-047は現在状態の即時UIであり、役割を分離しています
+
+## What F-043/F-044/F-045/F-046/F-047 deliberately do not do
 
 The preflight is advisory and does not replace the authoritative reservation inside `reserveAiCall()`.
 
