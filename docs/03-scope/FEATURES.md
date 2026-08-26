@@ -51,3 +51,4 @@
 | F-045 | global AI予算保護のホーム即時表示 | 承認 | global call/token hard capで庭全体のAI工程が保護停止している時、monitorやdiagnosticsを待たず統合HP最上部で現在のhard-cap状態・使用量・budget dayを把握できるようにする | 2026-08-26 | 有: `/` |
 | F-046 | global AI予算80%事前warning | 承認 | hard cap到達後ではなく既存diagnosticsと同じ80%利用率でpersistent WARNINGを出し、放置運用でも庭全体が止まる前に予算調整・原因確認の時間を確保する。100%到達時は既存CRITICALへ引き継ぎ、warning側から誤ったRECOVERYを送らない | 2026-08-26 | 有: `/diagnostics` |
 | F-047 | global AI予算80% warningのホーム即時表示 | 承認 | Webhook未設定でもhard cap直前の80〜99%状態を統合HPで即時把握し、停止前に調整できるようにする。ただしwarningではブログを停止表示せず、自動運転中であることと区別する | 2026-08-26 | 有: `/` |
+| F-048 | ブログ別AI日次call上限80%事前warning | 承認 | 個別ブログの実効call上限が80〜99%に達した段階でpersistent WARNINGを出し、F-039保護停止に入る前にその庭だけ調整できるようにする。100%到達・上限変更時はnear-limitとexhaustedを誤RECOVERYなしで引き継ぐ | 2026-08-26 | 有: `/diagnostics` |
