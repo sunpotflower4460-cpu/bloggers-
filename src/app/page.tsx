@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { dashboard, experimentContext } from "@/lib/db";
+import { fallbackReviewQueue } from "@/lib/fallback-review";
 import { latestContentRefresh } from "@/lib/refresh-store";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
+import { FallbackReviewButton } from "@/components/fallback-review-button";
 import { RunButton } from "@/components/run-button";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +33,7 @@ function refreshResult(outcome: string | null) {
 
 export default function Home() {
   const blogs = dashboard();
+  const fallbackReviews = fallbackReviewQueue(12);
   const active = blogs.filter((b) => b.active).length;
   const views = blogs.reduce((n, b) => n + b.views7d, 0);
   const errors = blogs.reduce((n, b) => n + b.failedRuns, 0);
@@ -50,6 +53,33 @@ export default function Home() {
         <article className="stat"><span>7日間 PV</span><strong>{views.toLocaleString()}</strong></article>
         <article className="stat"><span>7日間エラー</span><strong>{errors}</strong></article>
       </section>
+
+      {fallbackReviews.length > 0 ? (
+        <>
+          <section className="sectionHead"><div><p className="eyebrow">REVIEW QUEUE</p><h2>fallback生成 · 要レビュー</h2></div><span>{fallbackReviews.length} waiting</span></section>
+          <section className="grid" aria-label="fallback生成レビュー待ち">
+            {fallbackReviews.map((item) => (
+              <article className="blogCard" key={item.publicationId}>
+                <div className="cardTop"><div><span className="dot" />要レビュー</div><span className="platform">{item.platform}</span></div>
+                <h3>{item.title}</h3>
+                <p className="muted">{item.blogName}</p>
+                <div className="latest">
+                  <span>生成経路</span>
+                  <p>{item.providerLabel} / {item.model}</p>
+                  <small>{item.bypassedPrimary ? "primary circuitを迂回してfallback生成" : "primary失敗後にfallback生成"} · {date(item.createdAt)}</small>
+                </div>
+                <div className="cardFoot">
+                  <span>自動公開せずdraftへ安全降格</span>
+                  <div className="actions">
+                    {item.url ? <a className="button" href={item.url} target="_blank" rel="noreferrer">下書きを確認</a> : null}
+                    <FallbackReviewButton publicationId={item.publicationId} />
+                  </div>
+                </div>
+              </article>
+            ))}
+          </section>
+        </>
+      ) : null}
 
       <section className="sectionHead"><div><p className="eyebrow">YOUR GARDEN</p><h2>育っているブログ</h2></div><span>{blogs.length} plots</span></section>
       {blogs.length === 0 ? (
