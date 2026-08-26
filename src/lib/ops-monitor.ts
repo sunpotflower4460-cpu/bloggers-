@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { reconcileStalePreparedContentRevisions } from "./content-revision-monitor";
 import { decryptJson } from "./crypto";
 import { listBlogs } from "./db";
 import { platformAdapter } from "./platforms";
@@ -150,7 +151,8 @@ function addSignal(map: Map<string, Signal>, signal: Signal): void {
 async function collectSignals(): Promise<{ signals: Map<string, Signal>; evaluated: Set<string> }> {
   const signals = new Map<string, Signal>();
   const evaluated = new Set<string>();
-  const blogs = listBlogs().filter((blog) => blog.active);
+  const allBlogs = listBlogs();
+  const blogs = allBlogs.filter((blog) => blog.active);
 
   const workerKey = keyOf("worker-stale", "system");
   evaluated.add(workerKey);
@@ -210,6 +212,24 @@ async function collectSignals(): Promise<{ signals: Map<string, Signal>; evaluat
         detail: `offsite backupの最終成功が${marker.ageHours.toFixed(1)}時間前です`,
       });
     }
+  }
+
+  // F-052: a stale prepared row means the process died somewhere between the
+  // durable pre-mutation snapshot and final local bookkeeping. Re-read the CMS
+  // only; never retry or rollback remotely from the monitor.
+  const existingRevisionIncidents = db.prepare(`SELECT scope FROM operational_incidents
+    WHERE code='content-revision-uncertain' AND status='open'`).all() as Array<{ scope: string }>;
+  for (const row of existingRevisionIncidents) evaluated.add(keyOf("content-revision-uncertain", row.scope));
+  const revisionRecovery = await reconcileStalePreparedContentRevisions(15);
+  for (const issue of revisionRecovery.uncertain) {
+    const incidentKey = keyOf("content-revision-uncertain", issue.scope);
+    evaluated.add(incidentKey);
+    addSignal(signals, {
+      code: "content-revision-uncertain",
+      scope: issue.scope,
+      severity: "critical",
+      detail: issue.detail,
+    });
   }
 
   for (const blog of blogs) {
