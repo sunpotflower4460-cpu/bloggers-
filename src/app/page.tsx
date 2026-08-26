@@ -2,11 +2,13 @@ import Link from "next/link";
 import { perBlogBudgetHomeSnapshot, type PerBlogBudgetHomeScope } from "@/lib/ai-per-blog-budget-home";
 import { globalAiBudgetProtection, globalAiBudgetWarning } from "@/lib/ai-budget-home";
 import { aiEfficiencyPanel, type BlogAiEfficiencyObservation } from "@/lib/ai-efficiency";
+import { rollbackRevisionQueue } from "@/lib/content-revisions";
 import { dashboard, experimentContext } from "@/lib/db";
 import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
 import { openOperationalIncidentsByCode } from "@/lib/incidents";
 import { latestContentRefresh } from "@/lib/refresh-store";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
+import { ContentRollbackButton } from "@/components/content-rollback-button";
 import { FallbackPublishButton } from "@/components/fallback-publish-button";
 import { FallbackReviewButton } from "@/components/fallback-review-button";
 import { RunButton } from "@/components/run-button";
@@ -79,6 +81,7 @@ function liveBudgetDetail(scope: PerBlogBudgetHomeScope): string {
 export default function Home() {
   const blogs = dashboard();
   const efficiency = aiEfficiencyPanel(blogs);
+  const rollbackQueue = rollbackRevisionQueue(12);
   const fallbackReviews = fallbackReviewQueue(12);
   const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
   const fallbackQuality = fallbackQualitySummaries();
@@ -105,12 +108,7 @@ export default function Home() {
           <div className="cardTop"><div><span className="dot" />庭全体のAI生成を保護停止</div><span className="platform">{globalBudget.reasonLabel}</span></div>
           <h3>global AI日次予算のhard capに到達しています</h3>
           <p className="muted">記事生成とAIを使う既存記事改善は保護停止中です。GA4・Search Console・コメントなどAIを使わない反応収集は継続します。</p>
-          <div className="miniStats four">
-            <div><span>AI calls</span><strong>{globalBudget.calls.toLocaleString()} / {globalBudget.callLimit.toLocaleString()}</strong></div>
-            <div><span>AI tokens</span><strong>{globalBudget.totalTokens.toLocaleString()} / {globalBudget.tokenLimit.toLocaleString()}</strong></div>
-            <div><span>budget day</span><strong>{globalBudget.dayKey}</strong></div>
-            <div><span>timezone</span><strong>{globalBudget.timezone}</strong></div>
-          </div>
+          <div className="miniStats four"><div><span>AI calls</span><strong>{globalBudget.calls.toLocaleString()} / {globalBudget.callLimit.toLocaleString()}</strong></div><div><span>AI tokens</span><strong>{globalBudget.totalTokens.toLocaleString()} / {globalBudget.tokenLimit.toLocaleString()}</strong></div><div><span>budget day</span><strong>{globalBudget.dayKey}</strong></div><div><span>timezone</span><strong>{globalBudget.timezone}</strong></div></div>
           <div className="latest"><span>現在の保護状態</span><p>{globalBudget.reasonLabel}に到達したため、F-043と同じ現在値判定で庭全体の次のAI工程を止めています。</p><small>ブログのactive状態や公開方針は変更していません。hard capが解消すると次の実行からAI工程へ進めます。</small><div className="actions"><Link className="button secondary" href="/diagnostics">AI予算を健康診断で確認</Link></div></div>
         </section>
       ) : null}
@@ -120,12 +118,7 @@ export default function Home() {
           <div className="cardTop"><div><span className="dot on" />AI予算の残りが少なくなっています</div><span className="platform">{globalBudgetWarning.reasonLabel}</span></div>
           <h3>global AI日次予算が {globalBudgetWarning.utilizationPercent}% に達しています</h3>
           <p className="muted">まだhard capには到達していないため、ブログは停止していません。停止前に使用量や上限設定を確認できます。</p>
-          <div className="miniStats four">
-            <div><span>AI calls</span><strong>{globalBudgetWarning.calls.toLocaleString()} / {globalBudgetWarning.callLimit.toLocaleString()}</strong></div>
-            <div><span>AI tokens</span><strong>{globalBudgetWarning.totalTokens.toLocaleString()} / {globalBudgetWarning.tokenLimit.toLocaleString()}</strong></div>
-            <div><span>budget day</span><strong>{globalBudgetWarning.dayKey}</strong></div>
-            <div><span>timezone</span><strong>{globalBudgetWarning.timezone}</strong></div>
-          </div>
+          <div className="miniStats four"><div><span>AI calls</span><strong>{globalBudgetWarning.calls.toLocaleString()} / {globalBudgetWarning.callLimit.toLocaleString()}</strong></div><div><span>AI tokens</span><strong>{globalBudgetWarning.totalTokens.toLocaleString()} / {globalBudgetWarning.tokenLimit.toLocaleString()}</strong></div><div><span>budget day</span><strong>{globalBudgetWarning.dayKey}</strong></div><div><span>timezone</span><strong>{globalBudgetWarning.timezone}</strong></div></div>
           <div className="latest"><span>事前warning</span><p>F-046と同じ80%基準です。100%へ達するとF-045の「庭全体のAI生成を保護停止」表示へ切り替わります。</p><small>このwarning自体はAI処理・active状態・公開方針・routeを変更しません。</small><div className="actions"><Link className="button secondary" href="/diagnostics">AI予算を健康診断で確認</Link></div></div>
         </section>
       ) : null}
@@ -136,6 +129,8 @@ export default function Home() {
         <article className="stat"><span>7日間エラー</span><strong>{errors}</strong></article>
         <article className="stat"><span>AI保護停止</span><strong>{globalBudget ? "全体" : livePerBlogBudget.configError ? budgetIncidents.size : livePerBlogBudget.scopes.filter((scope) => scope.state === "exhausted").length}</strong></article>
       </section>
+
+      {rollbackQueue.length > 0 ? <><section className="sectionHead"><div><p className="eyebrow">REVISION SAFETY</p><h2>自動改善 · 戻せる変更</h2></div><span>{rollbackQueue.length} rollback ready</span></section><section className="grid" aria-label="自動既存記事変更のrollback候補">{rollbackQueue.map((revision) => <article className="blogCard" key={`revision:${revision.id}`}><div className="cardTop"><div><span className="dot on" />rollback可能</div><span className="platform">{revision.platform}</span></div><h3>{revision.after.title}</h3><p className="muted">{revision.blogName}</p><div className="latest"><span>自動変更</span><p>{revision.before.title} → {revision.after.title}</p><small>{date(revision.appliedAt)} · {revision.mutationKind} · 変更前snapshot保存済み</small></div><div className="latest"><span>安全な戻し方</span><p>現在の外部記事がこの自動変更後の状態と一致する場合だけ、変更した項目を元へ戻します。</p><small>人間がその後headlineを編集していた場合は衝突として中止し、上書きしません。</small></div><div className="cardFoot"><span>rollbackは自動実行されません</span><div className="actions">{revision.publicationUrl ? <a className="button secondary" href={revision.publicationUrl} target="_blank" rel="noreferrer">現在の記事を確認</a> : null}<ContentRollbackButton revisionId={revision.id} /></div></div></article>)}</section></> : null}
 
       {fallbackReviews.length > 0 ? <><section className="sectionHead"><div><p className="eyebrow">REVIEW QUEUE</p><h2>fallback生成 · 要レビュー</h2></div><span>{fallbackReviews.length} waiting</span></section><section className="grid" aria-label="fallback生成レビュー待ち">{fallbackReviews.map((item) => <article className="blogCard" key={item.publicationId}><div className="cardTop"><div><span className="dot" />要レビュー</div><span className="platform">{item.platform}</span></div><h3>{item.title}</h3><p className="muted">{item.blogName}</p><div className="latest"><span>生成経路</span><p>{item.providerLabel} / {item.model}</p><small>{item.bypassedPrimary ? "primary circuitを迂回してfallback生成" : "primary失敗後にfallback生成"} · {date(item.createdAt)}</small></div><div className="cardFoot"><span>下書きを確認して品質を記録</span><div className="actions">{item.url ? <a className="button secondary" href={item.url} target="_blank" rel="noreferrer">下書きを確認</a> : null}<FallbackReviewButton publicationId={item.publicationId} /></div></div></article>)}</section></> : null}
 
@@ -167,7 +162,7 @@ export default function Home() {
           <div className="miniStats four"><div><span>7d PV</span><strong>{blog.views7d.toLocaleString()}</strong></div><div><span>前週比</span><strong>{momentum(blog.momentumPercent)}</strong></div><div><span>engaged</span><strong>{blog.engagementRate === null ? "—" : `${blog.engagementRate}%`}</strong></div><div><span>comments</span><strong>{blog.nativeComments}</strong></div></div>
           <div className="latest"><span>検索シグナル</span>{blog.searchConsoleSiteUrl ? <><p>{blog.searchImpressions.toLocaleString()} impressions · {blog.searchClicks.toLocaleString()} clicks · CTR {blog.searchCtrPercent === null ? "—" : `${blog.searchCtrPercent}%`} · 平均 {blog.searchPosition ?? "—"}位</p><small>{blog.searchWindowEnd ? `確定窓 ${blog.searchWindowEnd} 終了 · ` : ""}{blog.topSearchQuery ? `強い検索語: ${blog.topSearchQuery}` : "Search Consoleの学習データを蓄積中"}</small></> : <p>Search Console未設定</p>}</div>
           <div className="latest"><span>学習中の実験</span><p>{experiment || "最初の記事から実験記憶を開始します"}</p></div>
-          {refresh ? <div className="latest"><span>最近の自動改善 · {refreshResult(refresh.outcome)}</span><p>{refresh.beforeTitle} → {refresh.afterTitle}</p>{refresh.evaluation ? <small>CTR {(refresh.evaluation.beforeCtr * 100).toFixed(1)}% → {(refresh.evaluation.afterCtr * 100).toFixed(1)}% · 平均順位 {refresh.evaluation.beforePosition.toFixed(1)} → {refresh.evaluation.afterPosition.toFixed(1)} · {refresh.evaluation.reason}</small> : <small>{date(refresh.createdAt)} · 仮説: {refresh.hypothesis} · 14日後から評価</small>}</div> : null}
+          {refresh ? <div className="latest"><span>最近の自動改善 · {refresh.rolledBackAt ? "rollback済み" : refreshResult(refresh.outcome)}</span><p>{refresh.beforeTitle} → {refresh.afterTitle}</p>{refresh.rolledBackAt ? <small>{date(refresh.rolledBackAt)} に人間が変更前へ戻しました。この試行は14日後評価・学習対象から除外します。</small> : refresh.evaluation ? <small>CTR {(refresh.evaluation.beforeCtr * 100).toFixed(1)}% → {(refresh.evaluation.afterCtr * 100).toFixed(1)}% · 平均順位 {refresh.evaluation.beforePosition.toFixed(1)} → {refresh.evaluation.afterPosition.toFixed(1)} · {refresh.evaluation.reason}</small> : <small>{date(refresh.createdAt)} · 仮説: {refresh.hypothesis} · 14日後から評価</small>}</div> : null}
           <div className="latest"><span>最新</span>{blog.latestUrl ? <a href={blog.latestUrl} target="_blank" rel="noreferrer">{blog.latestTitle}</a> : <p>まだ公開記事はありません</p>}<small>{date(blog.latestPublishedAt)}</small></div>
           <div className="cardFoot"><span>{blog.publishMode === "auto" ? "自動公開" : "下書き確認"} · {blog.cadenceHours}h · 7d {blog.recentRuns} runs · {blog.failedRuns} errors</span><div className="actions"><Link className="button secondary" href={`/blogs/${blog.id}/settings`}>設定</Link><BlogToggleButton blogId={blog.id} active={blog.active} /><RunButton blogId={blog.id} /></div></div>
         </article>;
