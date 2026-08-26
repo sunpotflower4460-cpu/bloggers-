@@ -16,6 +16,18 @@ export interface OperationalIncidentSummary {
   resolvedAt: string | null;
 }
 
+interface IncidentRow {
+  code: string;
+  scope: string;
+  status: string;
+  severity: string;
+  detail: string;
+  opened_at: string;
+  updated_at: string;
+  last_notified_at: string | null;
+  resolved_at: string | null;
+}
+
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
 const globalDb = globalThis as typeof globalThis & { __blogGardenIncidentDb?: DB };
@@ -37,25 +49,8 @@ CREATE TABLE IF NOT EXISTS operational_incidents (
 );
 `);
 
-export function recentOperationalIncidents(limit = 20): OperationalIncidentSummary[] {
-  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
-  const rows = db.prepare(`SELECT code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at
-    FROM operational_incidents
-    ORDER BY CASE WHEN status='open' THEN 0 ELSE 1 END,
-             CASE WHEN severity='critical' THEN 0 ELSE 1 END,
-             updated_at DESC
-    LIMIT ?`).all(safeLimit) as Array<{
-      code: string;
-      scope: string;
-      status: string;
-      severity: string;
-      detail: string;
-      opened_at: string;
-      updated_at: string;
-      last_notified_at: string | null;
-      resolved_at: string | null;
-    }>;
-  return rows.map((row) => ({
+function mapIncident(row: IncidentRow): OperationalIncidentSummary {
+  return {
     code: row.code,
     scope: row.scope,
     status: row.status === "open" ? "open" : "closed",
@@ -65,5 +60,26 @@ export function recentOperationalIncidents(limit = 20): OperationalIncidentSumma
     updatedAt: row.updated_at,
     lastNotifiedAt: row.last_notified_at,
     resolvedAt: row.resolved_at,
-  }));
+  };
+}
+
+export function recentOperationalIncidents(limit = 20): OperationalIncidentSummary[] {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = db.prepare(`SELECT code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at
+    FROM operational_incidents
+    ORDER BY CASE WHEN status='open' THEN 0 ELSE 1 END,
+             CASE WHEN severity='critical' THEN 0 ELSE 1 END,
+             updated_at DESC
+    LIMIT ?`).all(safeLimit) as IncidentRow[];
+  return rows.map(mapIncident);
+}
+
+export function openOperationalIncidentsByCode(code: string): OperationalIncidentSummary[] {
+  const cleanCode = String(code || "").replace(/[\r\n\t]/g, " ").trim().slice(0, 160);
+  if (!cleanCode) return [];
+  const rows = db.prepare(`SELECT code,scope,status,severity,detail,opened_at,updated_at,last_notified_at,resolved_at
+    FROM operational_incidents
+    WHERE code=? AND status='open'
+    ORDER BY updated_at DESC`).all(cleanCode) as IncidentRow[];
+  return rows.map(mapIncident);
 }
