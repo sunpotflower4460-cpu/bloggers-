@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 
 const dbPath = ".ci/ai-budget-home.sqlite";
 rmSync(dbPath, { force: true });
@@ -43,6 +43,16 @@ if (both.dayKey !== "2026-08-26" || both.timezone !== "Asia/Tokyo") {
   throw new Error(`budget day/timezone were not preserved: ${JSON.stringify(both)}`);
 }
 
+const homeSource = readFileSync("src/app/page.tsx", "utf8");
+for (const required of [
+  "const globalBudget = globalAiBudgetProtection();",
+  "庭全体のAI生成を保護停止",
+  "庭全体AI上限で保護停止",
+  "AI予算を健康診断で確認",
+]) {
+  if (!homeSource.includes(required)) throw new Error(`home is not wired to F-045: missing ${required}`);
+}
+
 console.log(JSON.stringify({
   ok: true,
   healthyHidden: true,
@@ -50,4 +60,5 @@ console.log(JSON.stringify({
   tokenExhaustionVisible: true,
   combinedExhaustionVisible: true,
   budgetWindowPreserved: true,
+  homeWiringVerified: true,
 }));
