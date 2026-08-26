@@ -14,12 +14,12 @@ process.env.AI_DAILY_TOKEN_LIMIT = "10000000";
 process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "1";
 
 const { encryptJson } = await import("../../src/lib/crypto");
-const { createBlog, getBlog } = await import("../../src/lib/db");
+const { createBlog, getBlog, recordPublication } = await import("../../src/lib/db");
 const { blogAiUsageScope, withAiUsageScope } = await import("../../src/lib/ai-usage-context");
 const { aiBudgetStatus, reserveAiCall } = await import("../../src/lib/ai-budget");
 const { runGarden } = await import("../../src/lib/engine");
 
-function createTestBlog(name: string) {
+function createTestBlog(name: string, publishMode: "auto" | "review" = "auto") {
   return createBlog({
     name,
     niche: "CI budget protection",
@@ -28,7 +28,7 @@ function createTestBlog(name: string) {
     keywords: ["ci"],
     feeds: [],
     credentialsCipher: encryptJson({}),
-    publishMode: "auto",
+    publishMode,
     cadenceHours: 24,
     dailyLimit: 1,
     language: "ja",
@@ -39,8 +39,8 @@ function createTestBlog(name: string) {
   });
 }
 
-const perBlog = createTestBlog("Per Blog Protected Garden");
-const globalBlog = createTestBlog("Global Protected Garden");
+const perBlog = createTestBlog("Per Blog Protected Garden", "review");
+const globalBlog = createTestBlog("Global Protected Garden", "review");
 
 // Consume the only per-blog slot. The authoritative reservation succeeds and
 // leaves the blog exactly at 1/1 without exhausting the global 20-call budget.
@@ -67,7 +67,7 @@ function editorialErrors(blogId: string): number {
   return Number((db.prepare("SELECT COUNT(*) n FROM run_logs WHERE blog_id=? AND kind='editorial' AND status='error'").get(blogId) as { n: number }).n);
 }
 function protectedSkips(blogId: string): Array<{ message: string; meta_json: string }> {
-  return db.prepare("SELECT message,meta_json FROM run_logs WHERE blog_id=? AND kind='execution' AND status='ok' ORDER BY id DESC")
+  return db.prepare("SELECT message,meta_json FROM run_logs WHERE blog_id=? AND kind='execution' AND status='ok' AND message LIKE 'Protected AI editorial skip:%' ORDER BY id DESC")
     .all(blogId) as Array<{ message: string; meta_json: string }>;
 }
 
@@ -83,8 +83,65 @@ if (perBlogMeta.aiBudgetPreflight?.reason !== "per-blog-call-limit") {
   throw new Error(`per-blog protected reason was not persisted: ${perBlogSkip.meta_json}`);
 }
 
-// Now make the already-consumed single call equal the GLOBAL limit, while
-// disabling the per-blog layer for the second blog. It must also protected-skip.
+// F-044: repeated worker/manual attempts in the SAME protected episode still
+// return budget-blocked, but must not append another identical execution log.
+const duplicatePerBlog = await runGarden(perBlog.id, { force: true });
+if (duplicatePerBlog[0]?.status !== "budget-blocked") {
+  throw new Error(`repeated protected run lost API status: ${JSON.stringify(duplicatePerBlog)}`);
+}
+if (protectedSkips(perBlog.id).length !== 1) {
+  throw new Error(`same protected episode created duplicate logs: ${protectedSkips(perBlog.id).length}`);
+}
+
+// A reason change on the same day is a real transition and must be logged.
+process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "";
+process.env.AI_DAILY_CALL_LIMIT = "1";
+const changedReason = await runGarden(perBlog.id, { force: true });
+if (changedReason[0]?.status !== "budget-blocked" || protectedSkips(perBlog.id).length !== 2) {
+  throw new Error(`budget reason transition was not logged: ${JSON.stringify({ changedReason, logs: protectedSkips(perBlog.id).length })}`);
+}
+const changedReasonMeta = JSON.parse(protectedSkips(perBlog.id)[0].meta_json) as { aiBudgetPreflight?: { reason?: string } };
+if (changedReasonMeta.aiBudgetPreflight?.reason !== "global-call-limit") {
+  throw new Error(`reason transition did not persist global-call-limit: ${protectedSkips(perBlog.id)[0].meta_json}`);
+}
+
+// A healthy preflight must clear the episode marker. Avoid all real network/AI
+// work by placing a same-day publication and using a non-force review-mode run,
+// which safely returns daily-limit immediately after the healthy preflight.
+process.env.AI_DAILY_CALL_LIMIT = "20";
+process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "2";
+recordPublication({
+  blogId: perBlog.id,
+  platformPostId: "ci-existing",
+  title: "CI existing publication",
+  url: "https://example.invalid/ci-existing",
+  status: "draft",
+  sourceUrls: [],
+  publishedAt: null,
+});
+const healthy = await runGarden(perBlog.id);
+if (healthy[0]?.status !== "daily-limit") {
+  throw new Error(`healthy preflight did not reach safe daily-limit exit: ${JSON.stringify(healthy)}`);
+}
+
+// Same-day re-entry into the original per-blog reason is a NEW protected
+// episode after recovery and therefore must append one new transition log.
+process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "1";
+const reentered = await runGarden(perBlog.id, { force: true });
+if (reentered[0]?.status !== "budget-blocked" || protectedSkips(perBlog.id).length !== 3) {
+  throw new Error(`same-day recovery/re-entry transition was lost: ${JSON.stringify({ reentered, logs: protectedSkips(perBlog.id).length })}`);
+}
+
+// Simulate the persisted marker belonging to a previous budget day. The next
+// blocked run must create a fresh daily transition even with the same reason.
+db.prepare("UPDATE ai_budget_preflight_state SET day_key='1900-01-01' WHERE blog_id=?").run(perBlog.id);
+const nextDayTransition = await runGarden(perBlog.id, { force: true });
+if (nextDayTransition[0]?.status !== "budget-blocked" || protectedSkips(perBlog.id).length !== 4) {
+  throw new Error(`new budget-day transition was not logged: ${JSON.stringify({ nextDayTransition, logs: protectedSkips(perBlog.id).length })}`);
+}
+
+// Test a separate blog at the GLOBAL limit. Its protected state must remain
+// independent from the first blog's transition marker.
 process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "";
 process.env.AI_DAILY_CALL_LIMIT = "1";
 const globalResult = await runGarden(globalBlog.id, { force: true });
@@ -120,5 +177,9 @@ console.log(JSON.stringify({
   globalExhaustionIsProtectedSkip: true,
   protectedSkipDoesNotConsumeAiCall: true,
   protectedSkipDoesNotAdvanceLastRun: true,
+  repeatedProtectedStateIsLogDeduped: true,
+  reasonChangeCreatesTransitionLog: true,
+  recoveryThenSameReasonReentryCreatesTransitionLog: true,
+  newBudgetDayCreatesTransitionLog: true,
   malformedConfigRemainsError: true,
 }));
