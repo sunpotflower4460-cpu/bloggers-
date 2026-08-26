@@ -84,6 +84,9 @@ export default function Home() {
   const budgetIncidents = new Map(
     openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").map((incident) => [incident.scope, incident]),
   );
+  const budgetWarnings = new Map(
+    openOperationalIncidentsByCode("ai-per-blog-budget-near-limit").map((incident) => [incident.scope, incident]),
+  );
   const active = blogs.filter((b) => b.active).length;
   const views = blogs.reduce((n, b) => n + b.views7d, 0);
   const errors = blogs.reduce((n, b) => n + b.failedRuns, 0);
@@ -292,6 +295,7 @@ export default function Home() {
             const experiment = latestExperiment(blog.id);
             const refresh = latestContentRefresh(blog.id);
             const budgetIncident = budgetIncidents.get(`blog:${blog.id}`);
+            const budgetWarning = budgetIncident ? undefined : budgetWarnings.get(`blog:${blog.id}`);
             const aiProtected = Boolean(globalBudget || budgetIncident);
             const aiStateLabel = budgetIncident
               ? "AI上限で保護停止"
@@ -310,6 +314,14 @@ export default function Home() {
                     <p>{budgetIncident.detail}</p>
                     <small>incident更新 {date(budgetIncident.updatedAt)} · ブログ自体を停止したわけではありません。上限が解消するとmonitorがRECOVERYへ更新します。</small>
                     <div className="actions"><Link className="button secondary" href="/diagnostics">健康診断で確認</Link></div>
+                  </div>
+                ) : null}
+                {budgetWarning ? (
+                  <div className="latest">
+                    <span>AI日次call上限が近い · 事前warning</span>
+                    <p>{budgetWarning.detail}</p>
+                    <small>incident更新 {date(budgetWarning.updatedAt)} · まだ保護停止ではないため自動運転は継続中です。100%に達するとF-040の保護停止表示へ切り替わります。</small>
+                    <div className="actions"><Link className="button secondary" href={`/blogs/${blog.id}/settings`}>上限設定を確認</Link><Link className="button secondary" href="/diagnostics">健康診断で確認</Link></div>
                   </div>
                 ) : null}
                 <div className="miniStats four">
