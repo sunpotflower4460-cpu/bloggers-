@@ -93,7 +93,8 @@ function incidentRows(): IncidentRow[] {
 }
 
 function detailFor(row: AiPerBlogBudgetScopeStatus, dayKey: string, timezone: string): string {
-  return `${row.scopeLabel} がブログ別AI日次call上限に到達: ${row.calls}/${row.limit} calls, day=${dayKey} (${timezone})。このブログの次のAI outbound callは上限が解消するまで送信されません。`;
+  const source = row.limitSource === "override" ? "個別override" : "共通上限";
+  return `${row.scopeLabel} がブログ別AI日次call上限に到達: ${row.calls}/${row.limit} calls (${source}), day=${dayKey} (${timezone})。このブログの次のAI outbound callは上限が解消するまで送信されません。`;
 }
 
 export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
@@ -111,8 +112,8 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
   try {
     budget = aiPerBlogBudgetStatus();
   } catch (error) {
-    // A malformed optional cap must not take down unrelated operational checks.
-    // Preserve existing incidents rather than falsely announcing recovery.
+    // A malformed optional cap or persisted override must not take down unrelated
+    // operational checks. Preserve OPEN incidents rather than claiming recovery.
     return {
       configured: true,
       exhaustedScopes: existingOpen.size,
@@ -126,7 +127,7 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
   let notifications = 0;
   let notificationFailures = 0;
 
-  if (!budget.configured || budget.limit === null) {
+  if (!budget.configured) {
     for (const incident of existingOpen.values()) {
       const detail = `ブログ別AI日次call上限の監視が運用者により無効化されました。これはAI使用量が減少したことを確認した復旧ではありません。直前の状態: ${safe(incident.detail)}`;
       db.prepare(`UPDATE operational_incidents SET status='closed',detail=?,updated_at=?,resolved_at=? WHERE code=? AND scope=?`)
@@ -180,8 +181,8 @@ export async function reconcileAiPerBlogBudgetIncidents(): Promise<{
     const row = current.get(incident.scope);
     if (row?.exhausted) continue;
     const reason = row
-      ? `${row.scopeLabel} のブログ別AI call上限状態が解消: ${row.calls}/${row.limit} calls, day=${budget.dayKey} (${budget.timezone})。日付切替または上限変更の可能性があります。`
-      : `ブログ別AI call上限状態が解消しました。現在のbudget day=${budget.dayKey} (${budget.timezone})では、このscopeに上限到達したcall履歴はありません。`;
+      ? `${row.scopeLabel} のブログ別AI call上限状態が解消: ${row.calls}/${row.limit} calls (${row.limitSource === "override" ? "個別override" : "共通上限"}), day=${budget.dayKey} (${budget.timezone})。日付切替・実効上限変更・override解除の可能性があります。`
+      : `ブログ別AI call上限状態が解消しました。現在のbudget day=${budget.dayKey} (${budget.timezone})では、このscopeに有効な上限到達状態がありません。共通上限または個別overrideの変更・解除の可能性があります。`;
     db.prepare(`UPDATE operational_incidents SET status='closed',detail=?,updated_at=?,resolved_at=? WHERE code=? AND scope=?`)
       .run(reason, timestamp, timestamp, code, incident.scope);
     try {
