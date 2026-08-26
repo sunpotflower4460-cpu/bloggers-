@@ -327,6 +327,7 @@ export function recordRun(blogId: string | null, kind: string, status: string, m
 export function dashboard(): DashboardBlog[] {
   return listBlogs().map((blog) => {
     const latest = db.prepare("SELECT title,url,published_at FROM publications WHERE blog_id=? ORDER BY created_at DESC LIMIT 1").get(blog.id) as any;
+    const recentPublications = db.prepare("SELECT COUNT(*) n FROM publications WHERE blog_id=? AND created_at >= datetime('now','-7 day')").get(blog.id) as { n: number } | undefined;
     const metrics = db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN m.snapshot_date >= date('now','-6 day') THEN m.views ELSE 0 END),0) views7,
       COALESCE(SUM(CASE WHEN m.snapshot_date BETWEEN date('now','-13 day') AND date('now','-7 day') THEN m.views ELSE 0 END),0) prev7,
@@ -335,14 +336,27 @@ export function dashboard(): DashboardBlog[] {
       FROM metric_snapshots m JOIN publications p ON p.id=m.publication_id
       WHERE p.blog_id=? AND m.snapshot_date >= date('now','-13 day')`).get(blog.id) as any;
     const native = db.prepare(`SELECT COALESCE(SUM((SELECT r.comments FROM reaction_snapshots r WHERE r.publication_id=p.id ORDER BY r.snapshot_date DESC LIMIT 1)),0) comments FROM publications p WHERE p.blog_id=?`).get(blog.id) as any;
-    const search = db.prepare(`SELECT
-      COALESCE(SUM(s.clicks),0) clicks,
-      COALESCE(SUM(s.impressions),0) impressions,
-      CASE WHEN SUM(s.impressions) > 0 THEN SUM(s.clicks) / SUM(s.impressions) ELSE NULL END ctr,
-      CASE WHEN SUM(s.impressions) > 0 THEN SUM(s.position * s.impressions) / SUM(s.impressions) ELSE NULL END position
-      FROM publications p JOIN search_snapshots s ON s.id=(SELECT s2.id FROM search_snapshots s2 WHERE s2.publication_id=p.id ORDER BY s2.snapshot_date DESC LIMIT 1)
-      WHERE p.blog_id=?`).get(blog.id) as any;
-    const topQueryRow = db.prepare(`SELECT s.top_queries_json FROM publications p JOIN search_snapshots s ON s.id=(SELECT s2.id FROM search_snapshots s2 WHERE s2.publication_id=p.id ORDER BY s2.snapshot_date DESC LIMIT 1) WHERE p.blog_id=? ORDER BY s.impressions DESC LIMIT 1`).get(blog.id) as { top_queries_json?: string } | undefined;
+
+    // Search Console snapshots represent finalized seven-day windows. Pick the
+    // newest window for the blog first, then aggregate only rows from that exact
+    // window so stale publications cannot silently mix different observation periods.
+    const searchWindow = db.prepare(`SELECT MAX(s.snapshot_date) snapshot_date
+      FROM search_snapshots s JOIN publications p ON p.id=s.publication_id
+      WHERE p.blog_id=?`).get(blog.id) as { snapshot_date: string | null } | undefined;
+    const searchWindowEnd = searchWindow?.snapshot_date ?? null;
+    const search = searchWindowEnd
+      ? db.prepare(`SELECT
+          COALESCE(SUM(s.clicks),0) clicks,
+          COALESCE(SUM(s.impressions),0) impressions,
+          CASE WHEN SUM(s.impressions) > 0 THEN SUM(s.clicks) / SUM(s.impressions) ELSE NULL END ctr,
+          CASE WHEN SUM(s.impressions) > 0 THEN SUM(s.position * s.impressions) / SUM(s.impressions) ELSE NULL END position
+          FROM publications p JOIN search_snapshots s ON s.publication_id=p.id
+          WHERE p.blog_id=? AND s.snapshot_date=?`).get(blog.id, searchWindowEnd) as any
+      : null;
+    const topQueryRow = searchWindowEnd
+      ? db.prepare(`SELECT s.top_queries_json FROM publications p JOIN search_snapshots s ON s.publication_id=p.id
+          WHERE p.blog_id=? AND s.snapshot_date=? ORDER BY s.impressions DESC LIMIT 1`).get(blog.id, searchWindowEnd) as { top_queries_json?: string } | undefined
+      : undefined;
     const runs = db.prepare(`SELECT COUNT(*) n, SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) failed FROM run_logs WHERE blog_id=? AND started_at >= datetime('now','-7 day')`).get(blog.id) as any;
     const views7d = Number(metrics?.views7 ?? 0);
     const viewsPrev7d = Number(metrics?.prev7 ?? 0);
@@ -355,6 +369,7 @@ export function dashboard(): DashboardBlog[] {
       latestTitle: latest?.title ?? null,
       latestUrl: latest?.url ?? null,
       latestPublishedAt: latest?.published_at ?? null,
+      publications7d: Number(recentPublications?.n ?? 0),
       views7d,
       viewsPrev7d,
       sessions7d,
@@ -362,6 +377,7 @@ export function dashboard(): DashboardBlog[] {
       momentumPercent: viewsPrev7d > 0 ? Math.round(((views7d - viewsPrev7d) / viewsPrev7d) * 100) : null,
       engagementRate: sessions7d > 0 ? Math.round((engagedSessions7d / sessions7d) * 100) : null,
       nativeComments: Number(native?.comments ?? 0),
+      searchWindowEnd,
       searchClicks: Number(search?.clicks ?? 0),
       searchImpressions: Number(search?.impressions ?? 0),
       searchCtrPercent: search?.ctr == null ? null : Math.round(Number(search.ctr) * 1000) / 10,
