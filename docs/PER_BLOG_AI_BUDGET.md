@@ -31,7 +31,7 @@ AI_BUDGET_TIMEZONE=Asia/Tokyo
 When the per-blog cap is enabled, an outbound request from `blog:<id>` must pass **both**:
 
 1. the global daily call/token budget
-2. that blog scope's daily call cap
+2. that blog scope's effective daily call cap
 
 The per-blog cap does not create extra allowance beyond the global budget.
 
@@ -67,21 +67,22 @@ An invalid configured value such as `abc`, `0`, a negative number, or an excessi
 
 ## Diagnostics
 
-When enabled, `/diagnostics` shows `AIブログ別日次call上限` with:
+When at least one shared or individual cap is active, `/diagnostics` shows `AIブログ別日次call上限` with:
 
 - budget day/timezone
-- configured calls-per-blog limit
-- current calls for the busiest blog scopes
+- shared/default cap when configured
+- individual override count
+- each visible blog scope's effective limit and whether it came from `共通` or `個別`
 - warning at 80% or more
-- error when a scope reaches the cap
+- error when a scope reaches its effective cap
 
-When the setting is empty, this diagnostic is omitted because F-038 is disabled.
+If neither the shared cap nor any individual override exists, the diagnostic is omitted.
 
 ## Why this is a hard cap while F-037 is not
 
 F-037's observation flags only help a human notice unusual activity. They never stop work.
 
-F-038 is different: it is an explicit operator-configured safety boundary. Reaching it prevents the **next AI outbound call for that blog** until the budget day changes or the operator changes/disables the cap. It does not automatically toggle the blog's `active` state, change publish mode, or reroute to another provider.
+F-038 is different: it is an explicit operator-configured safety boundary. Reaching it prevents the **next AI outbound call for that blog** until the budget day changes or the operator changes/disables the effective cap. It does not automatically toggle the blog's `active` state, change publish mode, or reroute to another provider.
 
 ## F-039: persistent exhaustion incident
 
@@ -104,18 +105,20 @@ Behavior:
 
 ### Recovery cases
 
-The incident closes when the current budget state is no longer exhausted. This can happen because:
+The incident closes when the current effective budget state is no longer exhausted. This can happen because:
 
 - the `AI_BUDGET_TIMEZONE` day changed and the new day's blog counter is below the cap
-- the operator raised `AI_PER_BLOG_DAILY_CALL_LIMIT`
+- the operator raised the shared limit
+- the operator raised or removed that blog's individual override
+- removing an override makes the blog inherit a higher shared limit
 - the scope has no calls in the current budget day
-- the operator explicitly disabled the per-blog cap
+- both the shared limit and relevant overrides are explicitly disabled/removed
 
-When monitoring is explicitly disabled, the recovery detail says that monitoring was disabled and **does not claim AI usage itself fell**.
+When monitoring is fully disabled, the recovery detail says that monitoring was disabled and **does not claim AI usage itself fell**.
 
 ### Invalid configuration is not recovery
 
-If `AI_PER_BLOG_DAILY_CALL_LIMIT` becomes malformed while an incident is OPEN, F-039 does not close it and does not emit a false RECOVERY. The per-blog reconcile step reports the configuration error while unrelated monitor checks continue.
+If the shared setting or a persisted override becomes malformed while an incident is OPEN, F-039 does not close it and does not emit a false RECOVERY. The per-blog reconcile step reports the configuration error while unrelated monitor checks continue.
 
 ### Stable incident scope
 
@@ -140,6 +143,34 @@ Webhook通知を使わない運用でも、F-039で保護停止しているブ�
 - ホームはpersistent incidentを表示する層です。monitorがまだF-039 reconcileを実行していない瞬間状態を独自に推測してincident扱いにはしません
 - 上限解消後にmonitorがincidentをCLOSEDへ更新すると、次のホーム表示から通常状態へ戻ります
 
+## F-041: per-blog override
+
+更新頻度や役割が異なる庭をすべて同じblast-radius枠へ押し込めないため、各ブログの設定画面から任意の個別上限を設定できます。
+
+実効上限の解決順序は固定です。
+
+```text
+individual blog override
+        ↓ if absent
+AI_PER_BLOG_DAILY_CALL_LIMIT
+        ↓ if absent
+per-blog cap disabled for that blog
+```
+
+重要な意味:
+
+- 設定画面の個別欄が空なら**共通上限を継承**します。空欄は「無制限」指定ではありません
+- 個別overrideを削除すると、その時点の共通上限へ戻ります
+- 共通envが空でも、個別overrideがあるブログだけF-038保護を有効にできます
+- 個別overrideは共通値より低くも高くもできますが、global `AI_DAILY_CALL_LIMIT`を超える追加枠を作るものではありません
+- 個別値も1〜100000の整数だけです
+- 保存先はAI予算専用の`blog_ai_budget_overrides`で、記事/ブログ本体の編集設定と分離します
+- persisted overrideが壊れている場合はfail-closedで、暗黙の無制限にはしません
+- diagnosticsとF-039 incidentは同じ実効上限を使います
+- incident detailには上限が`個別override`か`共通上限`かを残します
+
+設定画面で個別値を変えただけではブログの`active`、公開方針、AI routeは変更しません。すでに当日のcallsが新しい実効上限以上なら、次のmonitor reconcileでF-039 incidentがOPEN/再OPENします。逆に実効上限を引き上げて現在callsが下回ればRECOVERY対象になります。
+
 ## Why there is no per-blog token hard cap yet
 
 A reliable token amount is normally known only after the provider returns the response. Pre-reserving an unknown per-blog token quantity would either under-protect or reject legitimate work using an arbitrary guess.
@@ -147,7 +178,7 @@ A reliable token amount is normally known only after the provider returns the re
 For now:
 
 - global `AI_DAILY_TOKEN_LIMIT` remains the token safety ceiling
-- per-blog F-038 is a deterministic pre-request **call** cap
+- F-038/F-041 are deterministic pre-request **call** caps
 - F-035/F-036 continue to expose per-blog token/cost usage for human observation
 
 A future per-blog token policy should only be added if it can reserve a defensible upper bound without making provider-specific assumptions.
