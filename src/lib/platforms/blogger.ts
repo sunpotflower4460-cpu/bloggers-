@@ -68,6 +68,39 @@ export const bloggerAdapter: BlogPlatformAdapter = {
       publishedAt: post.published || null,
     };
   },
+  async publishDraft(blog, raw, publication) {
+    const credentials = raw as BloggerCredentials;
+    if (!credentials.blogId) throw new Error("Blogger blogId is required");
+    const token = await accessToken(credentials);
+    const currentResponse = await fetch(`${postEndpoint(credentials, publication.platformPostId)}?view=ADMIN&fetchBody=false&maxComments=0`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!currentResponse.ok) throw new Error(`Blogger draft read failed ${currentResponse.status}: ${await currentResponse.text()}`);
+    const current = await currentResponse.json();
+    const status = String(current.status || "").toUpperCase();
+    if (status === "LIVE") {
+      return {
+        platformPostId: publication.platformPostId,
+        url: current.url || publication.url,
+        status: "published" as const,
+        publishedAt: current.published || publication.publishedAt,
+      };
+    }
+    if (status !== "DRAFT") throw new Error(`Blogger post is no longer a draft (status=${status || "unknown"})`);
+
+    const response = await fetch(`${postEndpoint(credentials, publication.platformPostId)}/publish`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) throw new Error(`Blogger draft publish failed ${response.status}: ${await response.text()}`);
+    const post = await response.json();
+    return {
+      platformPostId: publication.platformPostId,
+      url: post.url || publication.url || blog.siteUrl,
+      status: "published" as const,
+      publishedAt: post.published || new Date().toISOString(),
+    };
+  },
   async readPost(_blog, raw, publication) {
     const credentials = raw as BloggerCredentials;
     const token = await accessToken(credentials);
