@@ -1,4 +1,9 @@
-import { aiUsageByModel, type AiModelUsageDaily } from "./ai-budget";
+import {
+  aiUsageByModel,
+  aiUsageByScope,
+  type AiModelUsageDaily,
+  type AiScopeModelUsageDaily,
+} from "./ai-budget";
 
 export interface AiModelPrice {
   inputPerMillion: number;
@@ -16,6 +21,23 @@ export interface AiModelCostSummary {
   estimatedCost: number | null;
 }
 
+export interface AiScopeCostSummary {
+  scopeKey: string;
+  scopeLabel: string;
+  calls: number;
+  meteredCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  todayEstimatedCost: number;
+  last7dEstimatedCost: number;
+  coveragePercent: number | null;
+  unpricedTokens: number;
+  unmeteredCalls: number;
+  unpricedModelKeys: string[];
+  complete: boolean;
+}
+
 export interface AiCostEstimate {
   configured: boolean;
   currency: string;
@@ -29,7 +51,16 @@ export interface AiCostEstimate {
   unpricedModelKeys: string[];
   complete: boolean;
   models: AiModelCostSummary[];
+  scopes: AiScopeCostSummary[];
+  attributionCallCoveragePercent: number | null;
+  attributionTokenCoveragePercent: number | null;
+  unattributedHistoricalCalls: number;
+  unattributedHistoricalTokens: number;
 }
+
+type UsageRow = Pick<AiModelUsageDaily,
+  "dayKey" | "modelKey" | "calls" | "meteredCalls" | "inputTokens" | "outputTokens" | "totalTokens"
+>;
 
 function currency(): string {
   const value = (process.env.AI_PRICE_CURRENCY?.trim() || "USD").toUpperCase();
@@ -77,7 +108,7 @@ export function aiPriceTable(): { configured: boolean; currency: string; prices:
   return { configured: true, currency: unit, prices };
 }
 
-function modelCost(row: Pick<AiModelUsageDaily, "inputTokens" | "outputTokens">, price: AiModelPrice): number {
+function modelCost(row: Pick<UsageRow, "inputTokens" | "outputTokens">, price: AiModelPrice): number {
   return (row.inputTokens / 1_000_000) * price.inputPerMillion
     + (row.outputTokens / 1_000_000) * price.outputPerMillion;
 }
@@ -104,22 +135,34 @@ function aggregate(rows: AiModelUsageDaily[]): Map<string, AiModelUsageDaily> {
   return result;
 }
 
-function estimateRows(rows: AiModelUsageDaily[], prices: Map<string, AiModelPrice>): {
+function estimateRows(rows: UsageRow[], prices: Map<string, AiModelPrice>): {
   estimatedCost: number;
   pricedTokens: number;
   reportedTokens: number;
+  calls: number;
+  meteredCalls: number;
+  inputTokens: number;
+  outputTokens: number;
   unmeteredCalls: number;
   unpricedModelKeys: Set<string>;
 } {
   let estimatedCost = 0;
   let pricedTokens = 0;
   let reportedTokens = 0;
+  let calls = 0;
+  let meteredCalls = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   let unmeteredCalls = 0;
   const unpricedModelKeys = new Set<string>();
 
   for (const row of rows) {
     const knownTokens = row.inputTokens + row.outputTokens;
     const totalTokens = Math.max(row.totalTokens, knownTokens);
+    calls += row.calls;
+    meteredCalls += row.meteredCalls;
+    inputTokens += row.inputTokens;
+    outputTokens += row.outputTokens;
     reportedTokens += totalTokens;
     unmeteredCalls += Math.max(0, row.calls - row.meteredCalls);
     const price = prices.get(row.modelKey);
@@ -133,7 +176,27 @@ function estimateRows(rows: AiModelUsageDaily[], prices: Map<string, AiModelPric
     pricedTokens += knownTokens;
   }
 
-  return { estimatedCost, pricedTokens, reportedTokens, unmeteredCalls, unpricedModelKeys };
+  return {
+    estimatedCost,
+    pricedTokens,
+    reportedTokens,
+    calls,
+    meteredCalls,
+    inputTokens,
+    outputTokens,
+    unmeteredCalls,
+    unpricedModelKeys,
+  };
+}
+
+function groupScopes(rows: AiScopeModelUsageDaily[]): Map<string, AiScopeModelUsageDaily[]> {
+  const grouped = new Map<string, AiScopeModelUsageDaily[]>();
+  for (const row of rows) {
+    const current = grouped.get(row.scopeKey) ?? [];
+    current.push(row);
+    grouped.set(row.scopeKey, current);
+  }
+  return grouped;
 }
 
 export function aiCostEstimate(): AiCostEstimate {
@@ -161,6 +224,50 @@ export function aiCostEstimate(): AiCostEstimate {
     };
   }).sort((a, b) => (b.estimatedCost ?? -1) - (a.estimatedCost ?? -1) || b.totalTokens - a.totalTokens);
 
+  const todayScopeRows = aiUsageByScope(1);
+  const last7ScopeRows = aiUsageByScope(7);
+  const todayScopes = groupScopes(todayScopeRows);
+  const last7Scopes = groupScopes(last7ScopeRows);
+  const scopeKeys = new Set([...todayScopes.keys(), ...last7Scopes.keys()]);
+  const scopes = [...scopeKeys].map((scopeKey): AiScopeCostSummary => {
+    const todayGroup = todayScopes.get(scopeKey) ?? [];
+    const last7Group = last7Scopes.get(scopeKey) ?? [];
+    const source = last7Group[0] ?? todayGroup[0];
+    const todayEstimate = estimateRows(todayGroup, config.prices);
+    const scopeEstimate = estimateRows(last7Group, config.prices);
+    const scopeCoverage = scopeEstimate.reportedTokens > 0
+      ? (scopeEstimate.pricedTokens / scopeEstimate.reportedTokens) * 100
+      : null;
+    const scopeUnpricedTokens = Math.max(0, scopeEstimate.reportedTokens - scopeEstimate.pricedTokens);
+    return {
+      scopeKey,
+      scopeLabel: source?.scopeLabel || scopeKey,
+      calls: scopeEstimate.calls,
+      meteredCalls: scopeEstimate.meteredCalls,
+      inputTokens: scopeEstimate.inputTokens,
+      outputTokens: scopeEstimate.outputTokens,
+      totalTokens: scopeEstimate.reportedTokens,
+      todayEstimatedCost: todayEstimate.estimatedCost,
+      last7dEstimatedCost: scopeEstimate.estimatedCost,
+      coveragePercent: scopeCoverage,
+      unpricedTokens: scopeUnpricedTokens,
+      unmeteredCalls: scopeEstimate.unmeteredCalls,
+      unpricedModelKeys: [...scopeEstimate.unpricedModelKeys].sort(),
+      complete: config.configured
+        && scopeEstimate.unpricedModelKeys.size === 0
+        && scopeUnpricedTokens === 0
+        && scopeEstimate.unmeteredCalls === 0,
+    };
+  }).sort((a, b) => b.last7dEstimatedCost - a.last7dEstimatedCost || b.totalTokens - a.totalTokens || a.scopeLabel.localeCompare(b.scopeLabel));
+
+  const attributed = estimateRows(last7ScopeRows, config.prices);
+  const attributionCallCoveragePercent = last7.calls > 0 ? Math.min(100, (attributed.calls / last7.calls) * 100) : null;
+  const attributionTokenCoveragePercent = last7.reportedTokens > 0
+    ? Math.min(100, (attributed.reportedTokens / last7.reportedTokens) * 100)
+    : null;
+  const unattributedHistoricalCalls = Math.max(0, last7.calls - attributed.calls);
+  const unattributedHistoricalTokens = Math.max(0, last7.reportedTokens - attributed.reportedTokens);
+
   return {
     configured: config.configured,
     currency: config.currency,
@@ -177,5 +284,10 @@ export function aiCostEstimate(): AiCostEstimate {
       && unpricedTokens === 0
       && last7.unmeteredCalls === 0,
     models,
+    scopes,
+    attributionCallCoveragePercent,
+    attributionTokenCoveragePercent,
+    unattributedHistoricalCalls,
+    unattributedHistoricalTokens,
   };
 }
