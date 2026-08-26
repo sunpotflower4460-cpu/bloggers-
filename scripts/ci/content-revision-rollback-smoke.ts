@@ -1,3 +1,4 @@
+import Database from "better-sqlite3";
 import http from "node:http";
 import { readFileSync, rmSync } from "node:fs";
 
@@ -7,6 +8,7 @@ rmSync(`${dbPath}-shm`, { force: true });
 rmSync(`${dbPath}-wal`, { force: true });
 process.env.DATABASE_PATH = dbPath;
 process.env.APP_ENCRYPTION_KEY = "0000000000000000000000000000000000000000000000000000000000000000";
+process.env.ALERT_WEBHOOK_KIND = "generic";
 
 let modifiedCounter = 0;
 const post = {
@@ -15,8 +17,20 @@ const post = {
   excerpt: "Original excerpt",
 };
 const updateBodies: Array<Record<string, unknown>> = [];
+const notifications: Array<Record<string, unknown>> = [];
 
 const server = http.createServer((request, response) => {
+  if (request.url === "/webhook" && request.method === "POST") {
+    let raw = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => { raw += chunk; });
+    request.on("end", () => {
+      notifications.push(JSON.parse(raw || "{}") as Record<string, unknown>);
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("ok");
+    });
+    return;
+  }
   if (!request.url?.startsWith("/wp-json/wp/v2/posts/post-1")) {
     response.writeHead(404); response.end("not found"); return;
   }
@@ -62,19 +76,23 @@ await new Promise<void>((resolve, reject) => {
 const address = server.address();
 if (!address || typeof address === "string") throw new Error("mock WordPress did not bind a port");
 const siteUrl = `http://127.0.0.1:${address.port}`;
+process.env.ALERT_WEBHOOK_URL = `${siteUrl}/webhook`;
 
 try {
   const { encryptJson } = await import("../../src/lib/crypto");
-  const { createBlog, recordPublication } = await import("../../src/lib/db");
+  const { createBlog, recordPublication, setBlogActive } = await import("../../src/lib/db");
   const { platformAdapter } = await import("../../src/lib/platforms");
+  const { getPublicationById } = await import("../../src/lib/publication-store");
   const {
     getContentRevision,
     markContentRevisionApplied,
     prepareContentRevision,
+    revisionAttentionQueue,
     rollbackRevisionQueue,
   } = await import("../../src/lib/content-revisions");
   const { recordContentRefresh, latestContentRefresh } = await import("../../src/lib/refresh-store");
   const { ContentRollbackError, rollbackContentRevision } = await import("../../src/lib/content-rollback");
+  const { runOperationalMonitor } = await import("../../src/lib/ops-monitor");
 
   const blog = createBlog({
     name: "Revision Garden",
@@ -178,9 +196,97 @@ try {
     throw new Error("conflicted revision must remain applied and reviewable");
   }
 
+  // F-052 runs even for an inactive blog, but disabling the garden prevents the
+  // general monitor from adding unrelated platform-auth/worker signals in this smoke.
+  setBlogActive(blog.id, false);
+  const auditDb = new Database(dbPath);
+  const makeStale = (revisionId: number) => auditDb.prepare("UPDATE content_revisions SET created_at=? WHERE id=?")
+    .run(new Date(Date.now() - 30 * 60000).toISOString(), revisionId);
+  const monitorMutationBaseline = updateBodies.length;
+
+  // Crash before the CMS mutation: live content still equals BEFORE. The monitor
+  // can prove no external mutation happened and safely finalize the row as failed.
+  const noMutationBefore = await adapter.readPost(blog, credentials, publication);
+  const noMutation = prepareContentRevision({
+    publicationId: publication.id,
+    mutationKind: "headline-refresh",
+    axes: ["headline"],
+    before: noMutationBefore,
+    update: { title: "Crash no-mutation target" },
+  });
+  makeStale(noMutation.id);
+  await runOperationalMonitor();
+  if (getContentRevision(noMutation.id)?.status !== "failed") {
+    throw new Error("stale prepared revision matching BEFORE was not safely finalized as failed");
+  }
+
+  // Crash after the remote CMS succeeded but before local finalization: live
+  // content equals AFTER. The monitor recovers local state without writing remotely.
+  const remoteAppliedBefore = await adapter.readPost(blog, credentials, publication);
+  const remoteApplied = prepareContentRevision({
+    publicationId: publication.id,
+    mutationKind: "headline-refresh",
+    axes: ["headline"],
+    before: remoteAppliedBefore,
+    update: { title: "Crash remote-applied target" },
+  });
+  post.title = "Crash remote-applied target";
+  modifiedCounter += 1;
+  makeStale(remoteApplied.id);
+  await runOperationalMonitor();
+  if (getContentRevision(remoteApplied.id)?.status !== "applied") {
+    throw new Error("stale prepared revision matching AFTER was not recovered as applied");
+  }
+  if (getPublicationById(publication.id)?.title !== "Crash remote-applied target") {
+    throw new Error("recovered applied revision did not reconcile local publication title");
+  }
+
+  // Third state: neither BEFORE nor AFTER. This may be a human edit and must not
+  // be guessed. Keep PREPARED, open CRITICAL incident, and send one notification.
+  const uncertainBefore = await adapter.readPost(blog, credentials, publication);
+  const uncertain = prepareContentRevision({
+    publicationId: publication.id,
+    mutationKind: "headline-refresh",
+    axes: ["headline"],
+    before: uncertainBefore,
+    update: { title: "Expected after crash" },
+  });
+  post.title = "Third-party headline";
+  modifiedCounter += 1;
+  makeStale(uncertain.id);
+  const uncertainRun = await runOperationalMonitor();
+  const openIncident = auditDb.prepare(`SELECT status,severity FROM operational_incidents
+    WHERE code='content-revision-uncertain' AND scope=?`).get(`revision:${uncertain.id}`) as { status: string; severity: string } | undefined;
+  if (getContentRevision(uncertain.id)?.status !== "prepared" || !openIncident
+    || openIncident.status !== "open" || openIncident.severity !== "critical"
+    || uncertainRun.notifications !== 1 || notifications.at(-1)?.code !== "content-revision-uncertain"
+    || notifications.at(-1)?.severity !== "critical") {
+    throw new Error(`uncertain stale revision did not become a CRITICAL incident: ${JSON.stringify({ openIncident, uncertainRun, notifications })}`);
+  }
+  if (!revisionAttentionQueue(12, 15).some((item) => item.id === uncertain.id && item.status === "prepared")) {
+    throw new Error("uncertain stale revision was not visible in the home attention queue source");
+  }
+
+  // Once the remote state is safely identifiable as BEFORE, the next monitor can
+  // finalize the row as no-mutation and close the incident with RECOVERY.
+  post.title = uncertainBefore.title;
+  modifiedCounter += 1;
+  const recoveredRun = await runOperationalMonitor();
+  const closedIncident = auditDb.prepare(`SELECT status,resolved_at FROM operational_incidents
+    WHERE code='content-revision-uncertain' AND scope=?`).get(`revision:${uncertain.id}`) as { status: string; resolved_at: string | null } | undefined;
+  if (getContentRevision(uncertain.id)?.status !== "failed" || !closedIncident
+    || closedIncident.status !== "closed" || !closedIncident.resolved_at
+    || recoveredRun.notifications !== 1 || notifications.at(-1)?.severity !== "recovery") {
+    throw new Error(`uncertain revision recovery lifecycle is wrong: ${JSON.stringify({ closedIncident, recoveredRun, notifications })}`);
+  }
+  if (updateBodies.length !== monitorMutationBaseline) {
+    throw new Error("F-052 monitor performed a remote CMS mutation; reconciliation must be read-only");
+  }
+  auditDb.close();
+
   // Structural safety regression: the real engine must create the snapshot before
   // calling the CMS, the public route must demand explicit confirmation, and the
-  // home must surface the rollback queue rather than hiding applied revisions.
+  // home must surface rollback/attention queues separately.
   const engineSource = readFileSync("src/lib/engine.ts", "utf8");
   const prepareIndex = engineSource.indexOf("const revision = prepareContentRevision({");
   const remoteMutationIndex = engineSource.indexOf("result = await adapter.updatePost", prepareIndex);
@@ -199,8 +305,22 @@ try {
     throw new Error("rollback API no longer requires explicit external-mutation confirmation");
   }
   const homeSource = readFileSync("src/app/page.tsx", "utf8");
-  for (const required of ["rollbackRevisionQueue(12)", "自動改善 · 戻せる変更", "<ContentRollbackButton revisionId={revision.id} />"]) {
-    if (!homeSource.includes(required)) throw new Error(`home rollback queue wiring missing: ${required}`);
+  for (const required of [
+    "revisionAttentionQueue(12, 15)",
+    "自動改善 · 要確認revision",
+    "rollbackRevisionQueue(12)",
+    "自動改善 · 戻せる変更",
+    "<ContentRollbackButton revisionId={revision.id} />",
+  ]) {
+    if (!homeSource.includes(required)) throw new Error(`home revision safety wiring missing: ${required}`);
+  }
+  const monitorSource = readFileSync("src/lib/content-revision-monitor.ts", "utf8");
+  if (!monitorSource.includes("await adapter.readPost") || monitorSource.includes("adapter.updatePost")) {
+    throw new Error("F-052 stale revision monitor is no longer strictly read-only against the CMS");
+  }
+  const diagnosticsRoute = readFileSync("src/app/api/diagnostics/route.ts", "utf8");
+  if (!diagnosticsRoute.includes("contentRevisionOperationalSummary(15)") || !diagnosticsRoute.includes("既存記事revision整合性")) {
+    throw new Error("F-052 diagnostics wiring is missing");
   }
 
   console.log(JSON.stringify({
@@ -210,9 +330,16 @@ try {
     localRefreshMarkedRolledBack: true,
     humanEditCollisionBlocked: true,
     conflictedRevisionRemainsReviewable: true,
+    staleBeforeRecoveredAsFailed: true,
+    staleAfterRecoveredAsApplied: true,
+    uncertainThirdStateCritical: true,
+    uncertainRecoveryWebhook: true,
+    staleReconciliationIsReadOnly: true,
     engineOrderingVerified: true,
     explicitApiConfirmationVerified: true,
     homeRollbackQueueVerified: true,
+    homeRevisionAttentionVerified: true,
+    diagnosticsRevisionHealthVerified: true,
   }));
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
