@@ -68,6 +68,7 @@ export interface DashboardBlog extends Blog {
   latestTitle: string | null;
   latestUrl: string | null;
   latestPublishedAt: string | null;
+  publications7d: number;
   views7d: number;
   viewsPrev7d: number;
   sessions7d: number;
@@ -75,6 +76,7 @@ export interface DashboardBlog extends Blog {
   momentumPercent: number | null;
   engagementRate: number | null;
   nativeComments: number;
+  searchWindowEnd: string | null;
   searchClicks: number;
   searchImpressions: number;
   searchCtrPercent: number | null;
