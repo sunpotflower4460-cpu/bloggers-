@@ -1,41 +1,37 @@
-/*
-  tokens.css
-  値はすべてプレースホルダ。具体的な色・数値はプロジェクトごとに定義すること。
-  ここに定義されていない変数を UI で新規にハードコードしてはならない。
-*/
-
 :root {
-  /* 色 */
-  --bg: /* プロジェクトごとに定義 */;
-  --surface: /* プロジェクトごとに定義 */;
-  --text: /* プロジェクトごとに定義 */;
-  --text-muted: /* プロジェクトごとに定義 */;
-  --accent: /* プロジェクトごとに定義 */;
-  --border: /* プロジェクトごとに定義 */;
+  --bg: #f4f6f0;
+  --surface: #ffffff;
+  --surface-soft: #edf2e8;
+  --text: #172018;
+  --text-muted: #667066;
+  --accent: #3d6f51;
+  --accent-strong: #244a34;
+  --positive: #2f7a4b;
+  --warning: #9a6b24;
+  --danger: #9a4343;
+  --border: #d9e0d7;
+  --shadow: 0 12px 36px rgba(26, 44, 31, 0.08);
 
-  /* タイポ */
-  --ff-display: /* プロジェクトごとに定義 */;
-  --ff-body: /* プロジェクトごとに定義 */;
-  --fs-1: /* プロジェクトごとに定義 */;
-  --fs-2: /* プロジェクトごとに定義 */;
-  --fs-3: /* プロジェクトごとに定義 */;
-  --fs-4: /* プロジェクトごとに定義 */;
-  --fs-5: /* プロジェクトごとに定義 */;
-  --fs-6: /* プロジェクトごとに定義 */;
+  --ff-display: ui-rounded, "Hiragino Maru Gothic ProN", "Yu Gothic", sans-serif;
+  --ff-body: Inter, "Hiragino Sans", "Yu Gothic", sans-serif;
+  --fs-1: 0.75rem;
+  --fs-2: 0.875rem;
+  --fs-3: 1rem;
+  --fs-4: 1.25rem;
+  --fs-5: 1.75rem;
+  --fs-6: clamp(2rem, 5vw, 3.6rem);
 
-  /* 余白（4px基準） */
-  --sp-1: /* プロジェクトごとに定義 */;
-  --sp-2: /* プロジェクトごとに定義 */;
-  --sp-3: /* プロジェクトごとに定義 */;
-  --sp-4: /* プロジェクトごとに定義 */;
-  --sp-5: /* プロジェクトごとに定義 */;
-  --sp-6: /* プロジェクトごとに定義 */;
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-7: 3rem;
 
-  /* 角丸 */
-  --radius-s: /* プロジェクトごとに定義 */;
-  --radius-m: /* プロジェクトごとに定義 */;
-
-  /* モーション */
-  --dur: /* プロジェクトごとに定義 */;
-  --ease: /* プロジェクトごとに定義 */;
+  --radius-s: 0.65rem;
+  --radius-m: 1rem;
+  --radius-l: 1.5rem;
+  --dur: 160ms;
+  --ease: cubic-bezier(.2,.8,.2,1);
 }

@@ -1,0 +1,204 @@
+name: app-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/autonomous-blog-garden
+
+jobs:
+  app-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run typecheck
+      - name: Smoke test generated article safety gate
+        run: ./node_modules/.bin/tsx scripts/ci/article-safety-smoke.ts
+      - name: Smoke test AI daily budget and incident recovery
+        shell: bash
+        run: |
+          mkdir -p .ci
+          DATABASE_PATH=.ci/ai-budget-calls.sqlite AI_DAILY_CALL_LIMIT=2 AI_DAILY_TOKEN_LIMIT=999999 TEST_AI_BUDGET_MODE=calls ./node_modules/.bin/tsx scripts/ci/ai-budget-smoke.ts
+          DATABASE_PATH=.ci/ai-budget-alert.sqlite AI_DAILY_CALL_LIMIT=10 AI_DAILY_TOKEN_LIMIT=200 TEST_AI_BUDGET_MODE=tokens ./node_modules/.bin/tsx scripts/ci/ai-budget-smoke.ts
+          DATABASE_PATH=.ci/ai-budget-alert.sqlite AI_DAILY_CALL_LIMIT=10 AI_DAILY_TOKEN_LIMIT=200 BACKUP_DIR=.ci/ai-budget-backups npm run monitor >/dev/null
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/ai-budget-alert.sqlite');
+          const incident = db.prepare("SELECT status FROM operational_incidents WHERE code='ai-budget-exhausted' AND scope='system'").get();
+          if (!incident || incident.status !== 'open') throw new Error('AI budget exhaustion incident was not opened');
+          db.prepare('UPDATE ai_usage_daily SET calls=0,total_tokens=0,input_tokens=0,output_tokens=0').run();
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/ai-budget-alert.sqlite AI_DAILY_CALL_LIMIT=10 AI_DAILY_TOKEN_LIMIT=200 BACKUP_DIR=.ci/ai-budget-backups npm run monitor >/dev/null
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/ai-budget-alert.sqlite', { readonly: true });
+          const incident = db.prepare("SELECT status,resolved_at FROM operational_incidents WHERE code='ai-budget-exhausted' AND scope='system'").get();
+          db.close();
+          if (!incident || incident.status !== 'closed' || !incident.resolved_at) throw new Error('AI budget incident did not recover');
+          NODE
+      - name: Smoke test global AI budget warning lifecycle
+        run: ./node_modules/.bin/tsx scripts/ci/ai-budget-warning-smoke.ts
+      - name: Smoke test global AI budget home protection
+        run: ./node_modules/.bin/tsx scripts/ci/ai-budget-home-smoke.ts
+      - name: Smoke test per-blog AI daily call cap
+        run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-smoke.ts
+      - name: Smoke test per-blog AI call cap overrides
+        run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-override-smoke.ts
+      - name: Smoke test live per-blog AI budget home state
+        run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-home-live-smoke.ts
+      - name: Smoke test protected AI budget preflight
+        run: ./node_modules/.bin/tsx scripts/ci/ai-budget-preflight-smoke.ts
+      - name: Smoke test per-blog AI budget incident lifecycle
+        run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-alert-smoke.ts
+      - name: Smoke test reversible autonomous content revisions
+        run: ./node_modules/.bin/tsx scripts/ci/content-revision-rollback-smoke.ts
+      - name: Smoke test backup and restore
+        shell: bash
+        run: |
+          mkdir -p .ci/data .ci/backups
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/data/smoke.sqlite');
+          db.exec("CREATE TABLE smoke (value TEXT NOT NULL); INSERT INTO smoke VALUES ('before');");
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/data/smoke.sqlite BACKUP_DIR=.ci/backups BACKUP_RETENTION_DAYS=1 npm run backup
+          BACKUP_FILE="$(ls -1t .ci/backups/blog-garden-*.sqlite | head -n 1)"
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/data/smoke.sqlite');
+          db.prepare('UPDATE smoke SET value = ?').run('mutated');
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/data/smoke.sqlite BACKUP_DIR=.ci/backups BACKUP_FILE="$BACKUP_FILE" CONFIRM_RESTORE=RESTORE npm run restore
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/data/smoke.sqlite', { readonly: true });
+          const row = db.prepare('SELECT value FROM smoke').get();
+          db.close();
+          if (!row || row.value !== 'before') {
+            console.error('restore verification failed', row);
+            process.exit(1);
+          }
+          NODE
+      - name: Smoke test incident dedupe and recovery webhook
+        shell: bash
+        run: |
+          mkdir -p .ci/monitor-backups
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups npm run monitor >/dev/null
+          node <<'NODE'
+          const fs = require('fs');
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/monitor.sqlite');
+          const created = new Date(Date.now() - 4 * 86400000).toISOString();
+          db.prepare(`INSERT INTO blogs
+            (id,name,niche,platform,site_url,keywords_json,feeds_json,credentials_cipher,publish_mode,cadence_hours,daily_limit,language,timezone,active,last_run_at,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+              'ci-blog','CI Blog','test','wordpress','https://example.invalid','[]','[]','unused','auto',24,1,'ja','Asia/Tokyo',1,null,created
+            );
+          db.prepare(`INSERT INTO system_heartbeats (name,last_seen,meta_json) VALUES ('worker',datetime('now','-5 hour'),'{}')`).run();
+          db.prepare(`INSERT INTO monitor_checks (check_key,checked_at) VALUES ('platform-auth:ci-blog',datetime('now'))`).run();
+          db.close();
+          fs.writeFileSync('.ci/monitor-backups/blog-garden-20260825-000000Z.sqlite', 'verified-placeholder');
+          NODE
+          node <<'NODE' &
+          const http = require('http');
+          const fs = require('fs');
+          const server = http.createServer((req, res) => {
+            let body = '';
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+              fs.appendFileSync('.ci/webhook.log', body + '\n');
+              res.writeHead(200, {'content-type':'text/plain'});
+              res.end('ok');
+            });
+          });
+          server.listen(48765, '127.0.0.1');
+          NODE
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
+          grep -q 'worker-stale' .ci/webhook.log
+          FIRST_COUNT="$(wc -l < .ci/webhook.log)"
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
+          test "$(wc -l < .ci/webhook.log)" -eq "$FIRST_COUNT"
+          node <<'NODE'
+          const Database = require('better-sqlite3');
+          const db = new Database('.ci/monitor.sqlite');
+          db.prepare(`UPDATE system_heartbeats SET last_seen=datetime('now') WHERE name='worker'`).run();
+          db.close();
+          NODE
+          DATABASE_PATH=.ci/monitor.sqlite BACKUP_DIR=.ci/monitor-backups ALERT_WEBHOOK_URL=http://127.0.0.1:48765 ALERT_WEBHOOK_KIND=generic npm run monitor >/dev/null
+          test "$(wc -l < .ci/webhook.log)" -eq "$((FIRST_COUNT + 1))"
+          tail -n 1 .ci/webhook.log | grep -q 'recovery'
+          kill "$SERVER_PID" 2>/dev/null || true
+          trap - EXIT
+      - name: Smoke test external uptime issue lifecycle
+        shell: bash
+        run: |
+          node scripts/ci/external-uptime-mock.mjs >.ci/external-uptime-mock.log 2>&1 &
+          MOCK_PID=$!
+          trap 'kill "$MOCK_PID" 2>/dev/null || true' EXIT
+          sleep 1
+          export BLOG_GARDEN_HEALTH_URL=http://127.0.0.1:47891/api/health
+          export BLOG_GARDEN_UPTIME_WEBHOOK_URL=http://127.0.0.1:47891/webhook
+          export BLOG_GARDEN_UPTIME_WEBHOOK_KIND=generic
+          export GITHUB_API_URL=http://127.0.0.1:47891
+          export GITHUB_REPOSITORY=test/repo
+          export GITHUB_TOKEN=ci-token
+          export EXTERNAL_MONITOR_REQUIRE_HTTPS=false
+
+          set +e
+          npm run external-uptime >/dev/null 2>&1
+          FIRST_EXIT=$?
+          set -e
+          test "$FIRST_EXIT" -eq 1
+          curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
+          node <<'NODE'
+          const state = require('./.ci/external-state.json');
+          if (state.issues.length !== 1 || state.issues[0].state !== 'open') process.exit(1);
+          if (state.notifications.length !== 1 || state.notifications[0].severity !== 'critical') process.exit(1);
+          NODE
+
+          set +e
+          npm run external-uptime >/dev/null 2>&1
+          SECOND_EXIT=$?
+          set -e
+          test "$SECOND_EXIT" -eq 1
+          curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
+          node <<'NODE'
+          const state = require('./.ci/external-state.json');
+          if (state.issues.length !== 1 || state.notifications.length !== 1) process.exit(1);
+          NODE
+
+          curl -fsS -X POST http://127.0.0.1:47891/control/healthy >/dev/null
+          npm run external-uptime >/dev/null
+          curl -fsS http://127.0.0.1:47891/state > .ci/external-state.json
+          node <<'NODE'
+          const state = require('./.ci/external-state.json');
+          if (state.issues[0].state !== 'closed') process.exit(1);
+          if (state.comments.length !== 1) process.exit(1);
+          if (state.notifications.length !== 2 || state.notifications[1].severity !== 'recovery') process.exit(1);
+          NODE
+          kill "$MOCK_PID" 2>/dev/null || true
+          trap - EXIT
+      - name: Validate Docker Compose production and offsite configurations
+        shell: bash
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.offsite.yml config >/dev/null
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.offsite.yml config >/dev/null
+          rm .env
+      - run: npm run build
+        env:
+          APP_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+          AI_API_KEY: ci-placeholder
+          AI_MODEL: ci-placeholder

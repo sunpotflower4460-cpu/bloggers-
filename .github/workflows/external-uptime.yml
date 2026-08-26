@@ -1,0 +1,31 @@
+name: external-uptime
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: blog-garden-external-uptime
+  cancel-in-progress: false
+
+jobs:
+  uptime:
+    if: ${{ vars.BLOG_GARDEN_HEALTH_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe Blog Garden from GitHub-hosted infrastructure
+        env:
+          BLOG_GARDEN_HEALTH_URL: ${{ vars.BLOG_GARDEN_HEALTH_URL }}
+          BLOG_GARDEN_UPTIME_WEBHOOK_URL: ${{ secrets.BLOG_GARDEN_UPTIME_WEBHOOK_URL }}
+          BLOG_GARDEN_UPTIME_WEBHOOK_KIND: ${{ vars.BLOG_GARDEN_UPTIME_WEBHOOK_KIND }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EXTERNAL_MONITOR_REQUIRE_HTTPS: "true"
+        run: node scripts/external-uptime-check.mjs

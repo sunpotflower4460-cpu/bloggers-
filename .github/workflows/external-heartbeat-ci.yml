@@ -1,0 +1,20 @@
+name: external-heartbeat-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/autonomous-blog-garden
+
+jobs:
+  external-heartbeat-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - name: Smoke test worker/backup external dead-man heartbeats
+        run: ./node_modules/.bin/tsx scripts/ci/external-heartbeat-smoke.ts

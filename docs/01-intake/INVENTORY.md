@@ -1,14 +1,29 @@
 # INVENTORY.md
 
-<!-- 「装飾」「不明」に分類したものは既定で削除候補である。 -->
+## 受入時点
 
-記録フォーマット（1機能ごとに以下の形式で本文の末尾に追記する。下の例自体は実データではなくフォーマットの見本である）:
+- リポジトリは `GPT-template` から生成済み
+- アプリ実装は未着手
+- guard / human approval workflow / docs台帳 / craft資産が存在
+- `PHASE.md` は P0 のまま
 
-    ### F-001 ○○機能
-    - 見つけた場所:
-    - 私の解釈:
-    - 魂との関係: 中核 / 補助 / 装飾 / 不明
-    - 確認: この認識で合っていますか？
-    - [ ] 合っている
-    - [ ] 違う →（　　）
-    - [ ] 削る
+## 再利用するテンプレート資産
+
+- `AGENTS.md`: スコープ逸脱防止
+- `docs/00-soul`: プロダクトの核を固定
+- `docs/01-intake`: ユーザー要求を原文保存
+- `docs/02-decisions`: 技術判断と制約の追跡
+- `docs/03-scope`: 実装対象IDの台帳
+- `docs/04-design/tokens.css`: UI値の一元化
+- `.github/workflows/guard.yml`: PR時の機械監査
+
+## 新規実装予定
+
+- Next.js統合ダッシュボード
+- SQLite永続層
+- 自律編集エンジン
+- WordPress / Ghost / Blogger adapters
+- RSS / Google News収集
+- GA4 feedback loop
+- 暗号化資格情報
+- Docker常駐worker
