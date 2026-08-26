@@ -33,6 +33,11 @@ CREATE TABLE run_logs (
   started_at TEXT NOT NULL,
   finished_at TEXT NOT NULL
 );
+-- Simulate the F-028 schema so the module must migrate it by adding outcome.
+CREATE TABLE fallback_review_state (
+  publication_id INTEGER PRIMARY KEY,
+  reviewed_at TEXT NOT NULL
+);
 `);
 const now = new Date().toISOString();
 db.prepare("INSERT INTO blogs (id,name,platform) VALUES (?,?,?)").run("b1", "Fallback Blog", "wordpress");
@@ -87,6 +92,13 @@ const {
   recordFallbackReviewOutcome,
 } = await import("../../src/lib/fallback-review");
 
+const migrationDb = new Database(dbPath, { readonly: true });
+const columns = migrationDb.prepare("PRAGMA table_info(fallback_review_state)").all() as Array<{ name: string }>;
+migrationDb.close();
+if (!columns.some((column) => column.name === "outcome")) {
+  throw new Error("fallback review schema migration did not add outcome column");
+}
+
 let queue = fallbackReviewQueue();
 if (queue.length !== 10) throw new Error(`expected 10 fallback review items, got ${queue.length}`);
 if (queue.some((item) => item.publicationId === primaryPublication)) throw new Error("primary publication leaked into fallback review queue");
@@ -123,4 +135,4 @@ try {
 }
 if (!invalidRejected) throw new Error("invalid fallback review outcome was not rejected");
 
-console.log(JSON.stringify({ ok: true, summary }));
+console.log(JSON.stringify({ ok: true, migrated: true, summary }));
