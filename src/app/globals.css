@@ -21,7 +21,7 @@ h3 { margin-bottom: var(--sp-2); font: 750 var(--fs-4)/1.2 var(--ff-display); }
 .button:disabled { opacity: .6; cursor: wait; }
 .button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 .button.large { padding: var(--sp-4) var(--sp-6); font-size: var(--fs-3); }
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-3); margin-bottom: var(--sp-7); }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-3); margin-bottom: var(--sp-7); }
 .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-m); padding: var(--sp-5); box-shadow: var(--shadow); }
 .stat span, .miniStats span, .latest > span { display: block; color: var(--text-muted); font-size: var(--fs-1); font-weight: 750; text-transform: uppercase; letter-spacing: .07em; }
 .stat strong { display: block; margin-top: var(--sp-2); font: 800 var(--fs-5)/1 var(--ff-display); }
