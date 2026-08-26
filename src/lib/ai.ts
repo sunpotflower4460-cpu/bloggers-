@@ -1,6 +1,18 @@
 import { recordAiUsage, reserveAiCall } from "./ai-budget";
 import { isRetryableAiStatus, recordAiProviderAttempt, resolveAiRoutePlan, type AiRoute } from "./ai-routing";
 
+export interface AiJsonRouteMeta {
+  route: "primary" | "fallback";
+  label: string;
+  model: string;
+  bypassedPrimary: boolean;
+}
+
+export interface AiJsonResult<T> {
+  value: T;
+  meta: AiJsonRouteMeta;
+}
+
 function extractText(payload: any): string {
   if (typeof payload.output_text === "string") return payload.output_text;
   const chunks: string[] = [];
@@ -140,13 +152,15 @@ async function callRoute(route: AiRoute, system: string, user: string): Promise<
   return payload;
 }
 
-export async function aiJson<T>(system: string, user: string): Promise<T> {
+export async function aiJsonWithMeta<T>(system: string, user: string): Promise<AiJsonResult<T>> {
   const plan = resolveAiRoutePlan();
   let payload: any;
+  let usedRoute: AiRoute;
 
   if (plan.bypassedPrimary) {
     if (!plan.fallback) throw new Error("AI primary circuit is open but no fallback route is available");
     try {
+      usedRoute = plan.fallback;
       payload = await callRoute(plan.fallback, system, user);
     } catch (error) {
       throw new Error(`AI primary circuit is open and fallback failed: ${safeProviderError(error instanceof Error ? error.message : error)}`);
@@ -154,10 +168,12 @@ export async function aiJson<T>(system: string, user: string): Promise<T> {
   } else {
     if (!plan.primary) throw new Error("AI primary route is unavailable");
     try {
+      usedRoute = plan.primary;
       payload = await callRoute(plan.primary, system, user);
     } catch (error) {
       if (!(error instanceof AiRouteFailure) || !error.retryable || !plan.fallback) throw error;
       try {
+        usedRoute = plan.fallback;
         payload = await callRoute(plan.fallback, system, user);
       } catch (fallbackError) {
         const primaryDetail = safeProviderError(error.message);
@@ -170,5 +186,17 @@ export async function aiJson<T>(system: string, user: string): Promise<T> {
   // Output-shape errors are deliberately not retried on another provider. They are
   // editorial/model-quality failures, not transport availability failures, and a
   // second generation would spend extra budget while hiding the real defect.
-  return parseJson<T>(extractText(payload));
+  return {
+    value: parseJson<T>(extractText(payload)),
+    meta: {
+      route: usedRoute.kind,
+      label: usedRoute.label,
+      model: usedRoute.model,
+      bypassedPrimary: plan.bypassedPrimary,
+    },
+  };
+}
+
+export async function aiJson<T>(system: string, user: string): Promise<T> {
+  return (await aiJsonWithMeta<T>(system, user)).value;
 }
