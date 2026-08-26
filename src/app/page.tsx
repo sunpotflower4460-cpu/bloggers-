@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { globalAiBudgetProtection } from "@/lib/ai-budget-home";
 import { aiEfficiencyPanel, type BlogAiEfficiencyObservation } from "@/lib/ai-efficiency";
 import { dashboard, experimentContext } from "@/lib/db";
 import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
@@ -78,6 +79,7 @@ export default function Home() {
   const fallbackReviews = fallbackReviewQueue(12);
   const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
   const fallbackQuality = fallbackQualitySummaries();
+  const globalBudget = globalAiBudgetProtection();
   const budgetIncidents = new Map(
     openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").map((incident) => [incident.scope, incident]),
   );
@@ -98,11 +100,31 @@ export default function Home() {
         <div className="actions"><RunButton /><Link className="button secondary" href="/diagnostics">健康診断</Link><Link className="button secondary" href="/setup">ブログを植える</Link></div>
       </header>
 
+      {globalBudget ? (
+        <section className="blogCard" aria-label="庭全体のAI予算保護状態" aria-live="polite">
+          <div className="cardTop"><div><span className="dot" />庭全体のAI生成を保護停止</div><span className="platform">{globalBudget.reasonLabel}</span></div>
+          <h3>global AI日次予算のhard capに到達しています</h3>
+          <p className="muted">記事生成とAIを使う既存記事改善は保護停止中です。GA4・Search Console・コメントなどAIを使わない反応収集は継続します。</p>
+          <div className="miniStats four">
+            <div><span>AI calls</span><strong>{globalBudget.calls.toLocaleString()} / {globalBudget.callLimit.toLocaleString()}</strong></div>
+            <div><span>AI tokens</span><strong>{globalBudget.totalTokens.toLocaleString()} / {globalBudget.tokenLimit.toLocaleString()}</strong></div>
+            <div><span>budget day</span><strong>{globalBudget.dayKey}</strong></div>
+            <div><span>timezone</span><strong>{globalBudget.timezone}</strong></div>
+          </div>
+          <div className="latest">
+            <span>現在の保護状態</span>
+            <p>{globalBudget.reasonLabel}に到達したため、F-043と同じ現在値判定で庭全体の次のAI工程を止めています。</p>
+            <small>ブログのactive状態や公開方針は変更していません。hard capが解消すると次の実行からAI工程へ進めます。</small>
+            <div className="actions"><Link className="button secondary" href="/diagnostics">AI予算を健康診断で確認</Link></div>
+          </div>
+        </section>
+      ) : null}
+
       <section className="stats" aria-label="全体状況">
         <article className="stat"><span>稼働ブログ</span><strong>{active}</strong></article>
         <article className="stat"><span>7日間 PV</span><strong>{views.toLocaleString()}</strong></article>
         <article className="stat"><span>7日間エラー</span><strong>{errors}</strong></article>
-        <article className="stat"><span>AI上限停止</span><strong>{budgetIncidents.size}</strong></article>
+        <article className="stat"><span>AI保護停止</span><strong>{globalBudget ? "全体" : budgetIncidents.size}</strong></article>
       </section>
 
       {fallbackReviews.length > 0 ? (
@@ -249,9 +271,17 @@ export default function Home() {
             const experiment = latestExperiment(blog.id);
             const refresh = latestContentRefresh(blog.id);
             const budgetIncident = budgetIncidents.get(`blog:${blog.id}`);
+            const aiProtected = Boolean(globalBudget || budgetIncident);
+            const aiStateLabel = budgetIncident
+              ? "AI上限で保護停止"
+              : globalBudget
+                ? "庭全体AI上限で保護停止"
+                : blog.active
+                  ? "自動運転"
+                  : "停止中";
             return (
               <article className="blogCard" key={blog.id}>
-                <div className="cardTop"><div><span className={`dot ${blog.active && !budgetIncident ? "on" : ""}`} />{budgetIncident ? "AI上限で保護停止" : blog.active ? "自動運転" : "停止中"}</div><span className="platform">{blog.platform}</span></div>
+                <div className="cardTop"><div><span className={`dot ${blog.active && !aiProtected ? "on" : ""}`} />{aiStateLabel}</div><span className="platform">{blog.platform}</span></div>
                 <h3>{blog.name}</h3><p className="muted">{blog.niche}</p>
                 {budgetIncident ? (
                   <div className="latest">
