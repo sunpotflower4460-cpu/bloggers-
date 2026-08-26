@@ -42,6 +42,8 @@ jobs:
           db.close();
           if (!incident || incident.status !== 'closed' || !incident.resolved_at) throw new Error('AI budget incident did not recover');
           NODE
+      - name: Smoke test global AI budget home protection
+        run: ./node_modules/.bin/tsx scripts/ci/ai-budget-home-smoke.ts
       - name: Smoke test per-blog AI daily call cap
         run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-smoke.ts
       - name: Smoke test per-blog AI call cap overrides
