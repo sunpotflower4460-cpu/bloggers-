@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { aiEfficiencyPanel, type BlogAiEfficiencyObservation } from "@/lib/ai-efficiency";
 import { dashboard, experimentContext } from "@/lib/db";
 import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
 import { latestContentRefresh } from "@/lib/refresh-store";
@@ -39,14 +40,49 @@ function qualitySignal(value: "insufficient-sample" | "strong" | "mixed" | "weak
   return "サンプル不足";
 }
 
+function money(value: number, currency: string) {
+  const digits = Math.abs(value) < 1 ? 4 : 2;
+  return `${currency} ${value.toFixed(digits)}`;
+}
+
+function aiCostLabel(
+  observation: BlogAiEfficiencyObservation,
+  panel: ReturnType<typeof aiEfficiencyPanel>,
+) {
+  if (panel.priceError) return "設定エラー";
+  if (!panel.priceConfigured || observation.aiEstimatedCost7d === null) return "単価未設定";
+  return money(observation.aiEstimatedCost7d, panel.currency);
+}
+
+function aiCoverageLabel(
+  observation: BlogAiEfficiencyObservation,
+  panel: ReturnType<typeof aiEfficiencyPanel>,
+) {
+  if (panel.priceError) return `価格設定エラー: ${panel.priceError}`;
+  if (!panel.priceConfigured) return "AI_PRICE_TABLE_JSON未設定。callsは追跡しますが金額は推定しません。";
+  if (observation.aiCalls7d === 0) return "F-035以降の直近7日AI callはまだありません。";
+  if (observation.aiUsageComplete) return "このブログの価格・token usage coverageは完全です。";
+  const coverage = observation.aiPriceCoveragePercent === null ? "usageなし" : `${observation.aiPriceCoveragePercent.toFixed(1)}%`;
+  return `参考推定 · token価格coverage ${coverage}。欠損分を0円とは扱いません。`;
+}
+
+function searchWindowLabel(observation: BlogAiEfficiencyObservation) {
+  if (!observation.searchWindowEnd) return "確定Search Console窓はまだありません";
+  return `${observation.searchWindowStart}〜${observation.searchWindowEnd}`;
+}
+
 export default function Home() {
   const blogs = dashboard();
+  const efficiency = aiEfficiencyPanel(blogs);
   const fallbackReviews = fallbackReviewQueue(12);
   const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
   const fallbackQuality = fallbackQualitySummaries();
   const active = blogs.filter((b) => b.active).length;
   const views = blogs.reduce((n, b) => n + b.views7d, 0);
   const errors = blogs.reduce((n, b) => n + b.failedRuns, 0);
+  const attribution = efficiency.attributionCallCoveragePercent === null
+    ? "帰属データ蓄積中"
+    : `AI call帰属 ${efficiency.attributionCallCoveragePercent.toFixed(0)}%`;
   return (
     <main className="shell">
       <header className="hero">
@@ -144,6 +180,46 @@ export default function Home() {
         </>
       ) : null}
 
+      {blogs.length > 0 ? (
+        <>
+          <section className="sectionHead"><div><p className="eyebrow">COST × OUTCOME OBSERVATION</p><h2>AI費用と最近の反応</h2></div><span>{attribution} · ROIではありません</span></section>
+          <section className="grid" aria-label="ブログ別AI費用と成果の参考観測">
+            {efficiency.observations.map((observation) => (
+              <article className="blogCard" key={`efficiency:${observation.blogId}`}>
+                <div className="cardTop"><div>参考観測</div><span className="platform">7 days</span></div>
+                <h3>{observation.blogName}</h3>
+                <p className="muted">AI費用と反応を同じ場所で確認します。自動ROI判定やランキングは行いません。</p>
+                <div className="miniStats four">
+                  <div><span>AI推定 7d</span><strong>{aiCostLabel(observation, efficiency)}</strong></div>
+                  <div><span>AI calls</span><strong>{observation.aiCalls7d}</strong></div>
+                  <div><span>新規記事 7d</span><strong>{observation.publications7d}</strong></div>
+                  <div><span>PV 7d</span><strong>{observation.views7d.toLocaleString()}</strong></div>
+                </div>
+                <div className="latest">
+                  <span>AI費用の観測品質</span>
+                  <p>{aiCoverageLabel(observation, efficiency)}</p>
+                  <small>F-035導入前などの帰属不能usageはブログへ推測配分しません。</small>
+                </div>
+                <div className="latest">
+                  <span>Search Console · 確定7日窓</span>
+                  {observation.searchWindowEnd ? (
+                    <>
+                      <p>{observation.searchImpressions.toLocaleString()} impressions · {observation.searchClicks.toLocaleString()} clicks · CTR {observation.searchCtrPercent === null ? "—" : `${observation.searchCtrPercent}%`} · 平均 {observation.searchPosition ?? "—"}位</p>
+                      <small>{searchWindowLabel(observation)}。同じsnapshot_dateだけを合算し、異なる検索窓を混ぜません。</small>
+                    </>
+                  ) : <p>確定Search Consoleデータはまだありません。</p>}
+                </div>
+                <div className="latest">
+                  <span>補助シグナル</span>
+                  <p>sessions 7d {observation.sessions7d.toLocaleString()} · engaged {observation.engagementRate === null ? "—" : `${observation.engagementRate}%`} · comments {observation.nativeComments}</p>
+                  <small>AI費用は現在までの直近7日、Search Consoleは3日遅れの確定7日窓です。期間も因果も一致しないため「費用対効果」「1クリック単価」として解釈しません。</small>
+                </div>
+              </article>
+            ))}
+          </section>
+        </>
+      ) : null}
+
       <section className="sectionHead"><div><p className="eyebrow">YOUR GARDEN</p><h2>育っているブログ</h2></div><span>{blogs.length} plots</span></section>
       {blogs.length === 0 ? (
         <section className="empty"><h3>最初の土はまだ空です。</h3><p>ブログを1つ登録すると、情報収集から育成ループが始まります。</p><Link className="button" href="/setup">最初のブログを設定</Link></section>
@@ -165,7 +241,7 @@ export default function Home() {
                 <div className="latest">
                   <span>検索シグナル</span>
                   {blog.searchConsoleSiteUrl ? (
-                    <><p>{blog.searchImpressions.toLocaleString()} impressions · {blog.searchClicks.toLocaleString()} clicks · CTR {blog.searchCtrPercent === null ? "—" : `${blog.searchCtrPercent}%`} · 平均 {blog.searchPosition ?? "—"}位</p><small>{blog.topSearchQuery ? `強い検索語: ${blog.topSearchQuery}` : "Search Consoleの学習データを蓄積中"}</small></>
+                    <><p>{blog.searchImpressions.toLocaleString()} impressions · {blog.searchClicks.toLocaleString()} clicks · CTR {blog.searchCtrPercent === null ? "—" : `${blog.searchCtrPercent}%`} · 平均 {blog.searchPosition ?? "—"}位</p><small>{blog.searchWindowEnd ? `確定窓 ${blog.searchWindowEnd} 終了 · ` : ""}{blog.topSearchQuery ? `強い検索語: ${blog.topSearchQuery}` : "Search Consoleの学習データを蓄積中"}</small></>
                   ) : <p>Search Console未設定</p>}
                 </div>
                 <div className="latest"><span>学習中の実験</span><p>{experiment || "最初の記事から実験記憶を開始します"}</p></div>
