@@ -29,7 +29,7 @@ reserveAiCall("primary:model-a");
 recordAiUsage({ input_tokens: 100_000, output_tokens: 50_000, total_tokens: 150_000 }, "primary:model-a");
 
 result = await reconcileAiCostThresholdIncident();
-if (!result.enabled || !result.exceeded || !result.observable) {
+if (!result.enabled || !result.exceeded || !result.observable || result.configError) {
   throw new Error(`daily cost threshold did not trigger: ${JSON.stringify(result)}`);
 }
 
@@ -93,9 +93,33 @@ if (!incident || incident.status !== "open" || incident.severity !== "warning") 
   throw new Error(`30-day projection did not reopen warning incident: ${JSON.stringify(incident)}`);
 }
 
-// Removing all thresholds explicitly disables monitoring and closes the incident
-// without claiming that spend itself became lower.
+// Invalid optional cost-alert configuration must fail closed for the feature but
+// must not throw out of the monitor loop and suppress unrelated monitoring.
+process.env.AI_ESTIMATED_30D_COST_WARN = "NaN";
+let invalidRejected = false;
+try {
+  aiCostThresholds();
+} catch (error) {
+  invalidRejected = String(error).includes("finite positive number");
+}
+if (!invalidRejected) throw new Error("non-finite cost warning threshold was accepted by strict parser");
+result = await reconcileAiCostThresholdIncident();
+if (!result.configError || result.observable || result.exceeded) {
+  throw new Error(`monitor-facing reconciliation did not isolate invalid threshold config: ${JSON.stringify(result)}`);
+}
+db = new Database(dbPath, { readonly: true });
+incident = db.prepare("SELECT status,detail FROM operational_incidents WHERE code='ai-estimated-cost-threshold' AND scope='system'").get() as
+  | { status: string; detail: string }
+  | undefined;
+db.close();
+if (!incident || incident.status !== "open" || !incident.detail.includes("設定が不正")) {
+  throw new Error(`bad config incorrectly resolved existing threshold incident: ${JSON.stringify(incident)}`);
+}
+
+// Restore a valid threshold, then explicitly disable monitoring. Removing all
+// thresholds closes the incident without claiming that spend itself became lower.
 delete process.env.AI_ESTIMATED_30D_COST_WARN;
+delete process.env.AI_ESTIMATED_DAILY_COST_WARN;
 result = await reconcileAiCostThresholdIncident();
 if (result.enabled) throw new Error("threshold monitoring did not disable after configuration removal");
 db = new Database(dbPath, { readonly: true });
@@ -107,23 +131,17 @@ if (!incident || incident.status !== "closed" || !incident.detail.includes("無�
   throw new Error(`disabling threshold monitoring did not close explicitly: ${JSON.stringify(incident)}`);
 }
 
-// Invalid thresholds fail closed.
+// Negative values are also rejected by the strict parser while reconciliation
+// remains isolated from the rest of the monitor.
 process.env.AI_ESTIMATED_DAILY_COST_WARN = "-1";
-let invalidRejected = false;
-try {
-  aiCostThresholds();
-} catch (error) {
-  invalidRejected = String(error).includes("finite positive number");
-}
-if (!invalidRejected) throw new Error("negative cost warning threshold was accepted");
-
-process.env.AI_ESTIMATED_DAILY_COST_WARN = "NaN";
 invalidRejected = false;
 try {
   aiCostThresholds();
 } catch (error) {
   invalidRejected = String(error).includes("finite positive number");
 }
-if (!invalidRejected) throw new Error("non-finite cost warning threshold was accepted");
+if (!invalidRejected) throw new Error("negative cost warning threshold was accepted");
+result = await reconcileAiCostThresholdIncident();
+if (!result.configError || result.observable) throw new Error("negative threshold escaped monitor isolation");
 
-console.log(JSON.stringify({ ok: true, finalIncident: incident }));
+console.log(JSON.stringify({ ok: true, finalIncident: incident, isolatedConfigError: result.configError }));
