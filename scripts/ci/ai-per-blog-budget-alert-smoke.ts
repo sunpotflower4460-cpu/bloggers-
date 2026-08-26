@@ -40,24 +40,32 @@ process.env.ALERT_WEBHOOK_URL = `http://127.0.0.1:${address.port}/webhook`;
 
 try {
   const { blogAiUsageScope, withAiUsageScope } = await import("../../src/lib/ai-usage-context");
-  const { setBlogAiDailyCallLimitOverride } = await import("../../src/lib/ai-budget-overrides");
+  const { applyBlogAiDailyCallLimitOverride } = await import("../../src/lib/ai-budget-operator");
   const { reserveAiCall } = await import("../../src/lib/ai-budget");
   const { reconcileAiPerBlogBudgetIncidents } = await import("../../src/lib/ai-per-blog-budget-alert");
   const { openOperationalIncidentsByCode } = await import("../../src/lib/incidents");
 
   const scope = blogAiUsageScope("alert-blog", "Alert Garden");
-  setBlogAiDailyCallLimitOverride("alert-blog", 2);
+
+  // Start under the shared default (5) and consume two calls. The blog is not
+  // exhausted yet, so there is no incident before the operator changes config.
   await withAiUsageScope(scope, async () => {
     reserveAiCall("primary:model-a");
     reserveAiCall("fallback:model-b");
   });
+  if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").length !== 0) {
+    throw new Error("budget incident existed before F-042 settings change");
+  }
 
-  const first = await reconcileAiPerBlogBudgetIncidents();
-  if (!first.configured || first.exhaustedScopes !== 1 || first.notifications !== 1 || first.notificationFailures !== 0) {
-    throw new Error(`first exhaustion reconciliation is wrong: ${JSON.stringify(first)}`);
+  // F-042: lowering this blog's override to the already-consumed call count
+  // must persist the override AND immediately run the same F-039 reconciliation.
+  // No monitor invocation is allowed between the setting change and assertions.
+  const first = await applyBlogAiDailyCallLimitOverride("alert-blog", 2);
+  if (!first.reconciled || first.exhaustedScopes !== 1 || first.notifications !== 1 || first.notificationFailures !== 0) {
+    throw new Error(`immediate exhaustion reconciliation is wrong: ${JSON.stringify(first)}`);
   }
   if (notifications.length !== 1 || notifications[0].severity !== "warning") {
-    throw new Error(`initial warning webhook missing: ${JSON.stringify(notifications)}`);
+    throw new Error(`initial immediate warning webhook missing: ${JSON.stringify(notifications)}`);
   }
 
   const db = new Database(dbPath);
@@ -90,41 +98,39 @@ try {
 
   const duplicate = await reconcileAiPerBlogBudgetIncidents();
   if (duplicate.notifications !== 0 || notifications.length !== 1 || countRows() !== 1) {
-    throw new Error(`persistent warning was duplicated: ${JSON.stringify({ duplicate, notifications: notifications.length, rows: countRows() })}`);
+    throw new Error(`persistent warning was duplicated by monitor reconciliation: ${JSON.stringify({ duplicate, notifications: notifications.length, rows: countRows() })}`);
   }
 
-  // Raising THIS BLOG'S override clears the actual blocking condition even
-  // though the shared default stays at 5.
-  setBlogAiDailyCallLimitOverride("alert-blog", 3);
-  const recovered = await reconcileAiPerBlogBudgetIncidents();
+  // Raising THIS BLOG'S override must close the incident immediately from the
+  // operator save path, without waiting for monitor.
+  const recovered = await applyBlogAiDailyCallLimitOverride("alert-blog", 3);
   const closed = incident();
-  if (recovered.exhaustedScopes !== 0 || recovered.notifications !== 1 || !closed || closed.status !== "closed" || !closed.resolved_at) {
-    throw new Error(`override increase did not close the incident: ${JSON.stringify({ recovered, closed })}`);
+  if (!recovered.reconciled || recovered.exhaustedScopes !== 0 || recovered.notifications !== 1 || !closed || closed.status !== "closed" || !closed.resolved_at) {
+    throw new Error(`immediate override increase did not close the incident: ${JSON.stringify({ recovered, closed })}`);
   }
   if (notifications.length !== 2 || notifications[1].severity !== "recovery") {
-    throw new Error(`recovery webhook missing after override increase: ${JSON.stringify(notifications)}`);
+    throw new Error(`immediate recovery webhook missing after override increase: ${JSON.stringify(notifications)}`);
   }
   if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted").length !== 0) {
     throw new Error("F-040 home lookup kept a CLOSED budget incident visible");
   }
 
-  // Lowering the override below already-consumed calls reopens the SAME row.
-  setBlogAiDailyCallLimitOverride("alert-blog", 1);
-  const reopened = await reconcileAiPerBlogBudgetIncidents();
+  // Lowering below already-consumed calls immediately reopens the SAME row.
+  const reopened = await applyBlogAiDailyCallLimitOverride("alert-blog", 1);
   const reopenedRow = incident();
-  if (reopened.exhaustedScopes !== 1 || reopened.notifications !== 1 || !reopenedRow || reopenedRow.status !== "open" || countRows() !== 1) {
-    throw new Error(`closed incident was not safely reopened by override: ${JSON.stringify({ reopened, reopenedRow, rows: countRows() })}`);
+  if (!reopened.reconciled || reopened.exhaustedScopes !== 1 || reopened.notifications !== 1 || !reopenedRow || reopenedRow.status !== "open" || countRows() !== 1) {
+    throw new Error(`closed incident was not immediately reopened by override: ${JSON.stringify({ reopened, reopenedRow, rows: countRows() })}`);
   }
   if (notifications.length !== 3 || notifications[2].severity !== "warning") {
-    throw new Error(`reopen warning webhook missing: ${JSON.stringify(notifications)}`);
+    throw new Error(`immediate reopen warning webhook missing: ${JSON.stringify(notifications)}`);
   }
   if (openOperationalIncidentsByCode("ai-per-blog-budget-exhausted")[0]?.scope !== "blog:alert-blog") {
     throw new Error("F-040 home lookup did not restore the reopened budget incident");
   }
 
   // A malformed shared default must not crash the whole monitor or falsely
-  // close an existing incident. aiPerBlogBudgetStatus validates global config
-  // before producing a complete status snapshot.
+  // close an existing incident. The persistent override remains saved, while
+  // reconciliation reports a conservative configuration error.
   process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "abc";
   const invalid = await reconcileAiPerBlogBudgetIncidents();
   if (!invalid.configError || invalid.notifications !== 0 || incident()?.status !== "open" || notifications.length !== 3) {
@@ -132,31 +138,28 @@ try {
   }
 
   // Removing this override while restoring the valid shared default makes the
-  // blog inherit 5; its 2 calls are no longer exhausted and the incident closes.
+  // blog inherit 5 and immediately closes the incident through F-042.
   process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "5";
-  setBlogAiDailyCallLimitOverride("alert-blog", null);
-  const inherited = await reconcileAiPerBlogBudgetIncidents();
+  const inherited = await applyBlogAiDailyCallLimitOverride("alert-blog", null);
   const inheritedRow = incident();
-  if (!inherited.configured || inherited.exhaustedScopes !== 0 || inherited.notifications !== 1 || !inheritedRow || inheritedRow.status !== "closed") {
-    throw new Error(`override removal did not recover onto the shared default: ${JSON.stringify({ inherited, inheritedRow })}`);
+  if (!inherited.reconciled || inherited.exhaustedScopes !== 0 || inherited.notifications !== 1 || !inheritedRow || inheritedRow.status !== "closed") {
+    throw new Error(`immediate override removal did not recover onto the shared default: ${JSON.stringify({ inherited, inheritedRow })}`);
   }
   if (notifications.length !== 4 || notifications[3].severity !== "recovery") {
     throw new Error(`inheritance recovery webhook missing: ${JSON.stringify(notifications)}`);
   }
 
   // Reopen under an override, then explicitly disable both layers. Recovery
-  // must not pretend observed AI usage itself fell.
-  setBlogAiDailyCallLimitOverride("alert-blog", 1);
-  const reopenedAgain = await reconcileAiPerBlogBudgetIncidents();
-  if (reopenedAgain.exhaustedScopes !== 1 || notifications.length !== 5 || notifications[4].severity !== "warning") {
-    throw new Error(`override did not reopen before explicit disable: ${JSON.stringify({ reopenedAgain, notifications })}`);
+  // from the settings path must not pretend observed AI usage itself fell.
+  const reopenedAgain = await applyBlogAiDailyCallLimitOverride("alert-blog", 1);
+  if (!reopenedAgain.reconciled || reopenedAgain.exhaustedScopes !== 1 || notifications.length !== 5 || notifications[4].severity !== "warning") {
+    throw new Error(`override did not immediately reopen before explicit disable: ${JSON.stringify({ reopenedAgain, notifications })}`);
   }
-  setBlogAiDailyCallLimitOverride("alert-blog", null);
   process.env.AI_PER_BLOG_DAILY_CALL_LIMIT = "";
-  const disabled = await reconcileAiPerBlogBudgetIncidents();
+  const disabled = await applyBlogAiDailyCallLimitOverride("alert-blog", null);
   const disabledRow = incident();
-  if (disabled.configured || disabled.notifications !== 1 || !disabledRow || disabledRow.status !== "closed") {
-    throw new Error(`explicit disable did not close the incident: ${JSON.stringify({ disabled, disabledRow })}`);
+  if (!disabled.reconciled || disabled.exhaustedScopes !== 0 || disabled.notifications !== 1 || !disabledRow || disabledRow.status !== "closed") {
+    throw new Error(`explicit disable did not immediately close the incident: ${JSON.stringify({ disabled, disabledRow })}`);
   }
   if (!disabledRow.detail.includes("無効化") || !disabledRow.detail.includes("使用量が減少したことを確認した復旧ではありません")) {
     throw new Error(`disable recovery detail overclaims usage recovery: ${disabledRow.detail}`);
@@ -174,9 +177,11 @@ try {
     ok: true,
     notifications: notifications.map((item) => item.severity),
     onePersistentIncidentRow: true,
-    overrideOpensAndRecoversIncident: true,
+    settingsChangeOpensIncidentImmediately: true,
+    settingsChangeRecoversIncidentImmediately: true,
+    monitorAfterImmediateReconcileDoesNotDuplicate: true,
     invalidConfigPreservesOpenIncident: true,
-    clearedOverrideInheritsSharedDefault: true,
+    clearedOverrideInheritsSharedDefaultImmediately: true,
     explicitDisableRecoveryDoesNotClaimSpendDrop: true,
     homeLookupIgnoresUnrelatedIncidentVolume: true,
     closedIncidentsHiddenFromHome: true,
