@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { parseBlogAiDailyCallLimit, setBlogAiDailyCallLimitOverride } from "@/lib/ai-budget-overrides";
+import { parseBlogAiDailyCallLimit } from "@/lib/ai-budget-overrides";
+import { applyBlogAiDailyCallLimitOverride } from "@/lib/ai-budget-operator";
 import { credentialsFromForm, hasCredentialInput } from "@/lib/credentials";
 import { encryptJson } from "@/lib/crypto";
 import { getBlog, updateBlog } from "@/lib/db";
@@ -64,7 +65,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!updated) return new NextResponse("Blog not found", { status: 404 });
 
   try {
-    setBlogAiDailyCallLimitOverride(id, aiDailyCallLimitOverride);
+    const result = await applyBlogAiDailyCallLimitOverride(id, aiDailyCallLimitOverride);
+    if (!result.reconciled) {
+      console.warn(`[blog-settings] AI budget override saved with deferred incident reconciliation for blog ${id}: ${result.configError || result.reconcileError || "unknown"}`);
+    }
   } catch (error) {
     return new NextResponse(error instanceof Error ? error.message : String(error), { status: 500 });
   }
