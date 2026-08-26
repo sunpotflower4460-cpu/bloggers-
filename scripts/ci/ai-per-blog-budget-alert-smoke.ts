@@ -211,22 +211,26 @@ try {
     throw new Error("per-blog budget incidents remained open after explicit cap disable");
   }
 
-  // Static wiring regression: the home must read the persistent near-limit code,
-  // suppress the advisory when exhausted exists, and never include the advisory
-  // in the protected-state calculation.
+  // Static wiring regression: F-050 now derives current card state from the
+  // live per-blog budget snapshot when valid, while F-048 incidents remain
+  // durable history/Webhook and safe fallback when the live snapshot is invalid.
   const homeSource = readFileSync("src/app/page.tsx", "utf8");
   for (const required of [
+    'perBlogBudgetHomeSnapshot',
     'openOperationalIncidentsByCode("ai-per-blog-budget-near-limit")',
-    "const budgetWarning = budgetIncident ? undefined : budgetWarnings.get(`blog:${blog.id}`);",
-    "const aiProtected = Boolean(globalBudget || budgetIncident);",
-    "AI日次call上限が近い · 事前warning",
-    "まだ保護停止ではないため自動運転は継続中です",
-    "上限設定を確認",
+    'const currentBudgetState = livePerBlogBudget.configError',
+    'liveBudgetScope?.state ?? null',
+    'currentBudgetState === "exhausted" ? persistentBudgetIncident : undefined',
+    'currentBudgetState === "near-limit" ? persistentBudgetWarning : undefined',
+    'Boolean(globalBudget || currentBudgetState === "exhausted")',
+    'AI日次call上限が近い · 事前warning',
+    'まだ保護停止ではないため自動運転は継続中です',
+    '上限設定を確認',
   ]) {
-    if (!homeSource.includes(required)) throw new Error(`F-049 home wiring missing: ${required}`);
+    if (!homeSource.includes(required)) throw new Error(`F-048/F-050 home wiring missing: ${required}`);
   }
-  if (homeSource.includes("Boolean(globalBudget || budgetIncident || budgetWarning)")) {
-    throw new Error("F-049 advisory was incorrectly added to the protected-state calculation");
+  if (homeSource.includes('Boolean(globalBudget || currentBudgetState === "near-limit")')) {
+    throw new Error("near-limit advisory was incorrectly added to the protected-state calculation");
   }
 
   db.close();
@@ -243,6 +247,8 @@ try {
     invalidConfigPreservesOpenIncident: true,
     settingsChangesReconcileImmediately: true,
     stableIncidentRows: true,
+    liveSnapshotIsCurrentHomeAuthority: true,
+    incidentsRemainFallbackAndEnrichment: true,
     explicitDisableRecoveryDoesNotClaimSpendDrop: true,
   }));
 } finally {
