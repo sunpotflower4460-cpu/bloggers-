@@ -24,6 +24,8 @@ jobs:
         run: ./node_modules/.bin/tsx scripts/ci/ai-cost-smoke.ts
       - name: Smoke test per-blog AI cost attribution
         run: ./node_modules/.bin/tsx scripts/ci/ai-cost-attribution-smoke.ts
+      - name: Smoke test AI cost outcome observations
+        run: ./node_modules/.bin/tsx scripts/ci/ai-efficiency-observation-smoke.ts
       - name: Smoke test estimated AI cost threshold alerts
         run: ./node_modules/.bin/tsx scripts/ci/ai-cost-alert-smoke.ts
       - name: Smoke test fallback content publication policy
