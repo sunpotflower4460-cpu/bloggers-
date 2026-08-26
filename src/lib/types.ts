@@ -13,7 +13,6 @@ export interface Blog {
   publishMode: PublishMode;
   cadenceHours: number;
   dailyLimit: number;
-  aiDailyCallLimit: number | null;
   language: string;
   timezone: string;
   ga4PropertyId: string | null;
