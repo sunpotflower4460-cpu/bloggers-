@@ -20,3 +20,5 @@ jobs:
         run: ./node_modules/.bin/tsx scripts/ci/ai-failover-smoke.ts
       - name: Smoke test fallback content publication policy
         run: ./node_modules/.bin/tsx scripts/ci/fallback-content-policy-smoke.ts
+      - name: Smoke test fallback review queue
+        run: ./node_modules/.bin/tsx scripts/ci/fallback-review-smoke.ts
