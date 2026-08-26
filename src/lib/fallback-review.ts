@@ -19,6 +19,10 @@ export interface FallbackReviewItem {
   createdAt: string;
 }
 
+export interface FallbackPublishItem extends FallbackReviewItem {
+  reviewedAt: string;
+}
+
 export interface FallbackQualitySummary {
   providerLabel: string;
   model: string;
@@ -28,6 +32,14 @@ export interface FallbackQualitySummary {
   approvalRate: number | null;
   signal: "insufficient-sample" | "strong" | "mixed" | "weak";
 }
+
+export type FallbackPublishEligibilityReason =
+  | "eligible"
+  | "not-found"
+  | "not-draft"
+  | "not-reviewed"
+  | "not-quality-ok"
+  | "not-forced-fallback";
 
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
 mkdirSync(dirname(path), { recursive: true });
@@ -108,6 +120,124 @@ export function fallbackReviewQueue(limit = 20): FallbackReviewItem[] {
     bypassedPrimary: Boolean(row.bypassed_primary),
     createdAt: row.created_at,
   }));
+}
+
+export function fallbackApprovedPublishQueue(limit = 20): FallbackPublishItem[] {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = db.prepare(`
+    SELECT
+      p.id publication_id,
+      p.blog_id,
+      b.name blog_name,
+      b.platform,
+      p.title,
+      p.url,
+      p.status,
+      s.reviewed_at,
+      COALESCE((SELECT json_extract(r.meta_json, '$.aiRoute.label')
+        FROM run_logs r
+        WHERE r.blog_id=p.blog_id
+          AND r.kind='editorial'
+          AND r.status='ok'
+          AND COALESCE(json_extract(r.meta_json, '$.fallbackForcedReview'), 0)=1
+          AND CAST(json_extract(r.meta_json, '$.result.platformPostId') AS TEXT)=p.platform_post_id
+        ORDER BY r.finished_at DESC LIMIT 1), 'fallback') provider_label,
+      COALESCE((SELECT json_extract(r.meta_json, '$.aiRoute.model')
+        FROM run_logs r
+        WHERE r.blog_id=p.blog_id
+          AND r.kind='editorial'
+          AND r.status='ok'
+          AND COALESCE(json_extract(r.meta_json, '$.fallbackForcedReview'), 0)=1
+          AND CAST(json_extract(r.meta_json, '$.result.platformPostId') AS TEXT)=p.platform_post_id
+        ORDER BY r.finished_at DESC LIMIT 1), 'unknown') model,
+      COALESCE((SELECT json_extract(r.meta_json, '$.aiRoute.bypassedPrimary')
+        FROM run_logs r
+        WHERE r.blog_id=p.blog_id
+          AND r.kind='editorial'
+          AND r.status='ok'
+          AND COALESCE(json_extract(r.meta_json, '$.fallbackForcedReview'), 0)=1
+          AND CAST(json_extract(r.meta_json, '$.result.platformPostId') AS TEXT)=p.platform_post_id
+        ORDER BY r.finished_at DESC LIMIT 1), 0) bypassed_primary,
+      p.created_at
+    FROM fallback_review_state s
+    JOIN publications p ON p.id=s.publication_id
+    JOIN blogs b ON b.id=p.blog_id
+    WHERE s.outcome='quality-ok'
+      AND p.status='draft'
+      AND EXISTS (
+        SELECT 1 FROM run_logs r
+        WHERE r.blog_id=p.blog_id
+          AND r.kind='editorial'
+          AND r.status='ok'
+          AND COALESCE(json_extract(r.meta_json, '$.fallbackForcedReview'), 0)=1
+          AND CAST(json_extract(r.meta_json, '$.result.platformPostId') AS TEXT)=p.platform_post_id
+      )
+    ORDER BY s.reviewed_at ASC
+    LIMIT ?
+  `).all(safeLimit) as Array<{
+    publication_id: number;
+    blog_id: string;
+    blog_name: string;
+    platform: string;
+    title: string;
+    url: string;
+    status: string;
+    reviewed_at: string;
+    provider_label: string;
+    model: string;
+    bypassed_primary: number;
+    created_at: string;
+  }>;
+  return rows.map((row) => ({
+    publicationId: Number(row.publication_id),
+    blogId: row.blog_id,
+    blogName: row.blog_name,
+    platform: row.platform,
+    title: row.title,
+    url: row.url,
+    status: row.status,
+    providerLabel: row.provider_label,
+    model: row.model,
+    bypassedPrimary: Boolean(row.bypassed_primary),
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at,
+  }));
+}
+
+export function fallbackPublishEligibility(publicationId: number): {
+  eligible: boolean;
+  reason: FallbackPublishEligibilityReason;
+} {
+  const id = positivePublicationId(publicationId);
+  const row = db.prepare(`
+    SELECT
+      p.status,
+      s.reviewed_at,
+      s.outcome,
+      EXISTS (
+        SELECT 1 FROM run_logs r
+        WHERE r.blog_id=p.blog_id
+          AND r.kind='editorial'
+          AND r.status='ok'
+          AND COALESCE(json_extract(r.meta_json, '$.fallbackForcedReview'), 0)=1
+          AND CAST(json_extract(r.meta_json, '$.result.platformPostId') AS TEXT)=p.platform_post_id
+      ) forced_fallback
+    FROM publications p
+    LEFT JOIN fallback_review_state s ON s.publication_id=p.id
+    WHERE p.id=?
+  `).get(id) as {
+    status: string;
+    reviewed_at: string | null;
+    outcome: string | null;
+    forced_fallback: number;
+  } | undefined;
+
+  if (!row) return { eligible: false, reason: "not-found" };
+  if (row.status !== "draft") return { eligible: false, reason: "not-draft" };
+  if (!row.reviewed_at) return { eligible: false, reason: "not-reviewed" };
+  if (row.outcome !== "quality-ok") return { eligible: false, reason: "not-quality-ok" };
+  if (!row.forced_fallback) return { eligible: false, reason: "not-forced-fallback" };
+  return { eligible: true, reason: "eligible" };
 }
 
 export function recordFallbackReviewOutcome(publicationId: number, outcome: FallbackReviewOutcome): void {
