@@ -34,3 +34,4 @@
 | F-028 | fallback要レビュー待ちキュー | 承認 | fallback品質ポリシーでdraftへ降格した記事を統合HPで見失わず、どのprovider/model由来か確認して人間レビューにつなげる | 2026-08-26 | 有: `/` |
 | F-029 | fallback人間品質評価・provider別学習 | 承認 | fallback draftへの品質OK/要改善判断をprovider/model別に蓄積し、allow-auto判断を推測ではなく実レビュー実績に基づける | 2026-08-26 | 有: `/` |
 | F-030 | 品質OK fallback draftの明示公開 | 承認 | 人間が品質OKと判断したdraftだけを統合HPから明示操作で公開し、レビューと公開の最後の手動工程を一元化する | 2026-08-26 | 有: `/` |
+| F-031 | タスク別AI economy route | 承認 | 読者向け品質権限を維持したまま、企画など低リスク内部処理だけを明示設定された低コストmodelへ逃がし、API費用を抑える | 2026-08-26 | 有: `/diagnostics` |
