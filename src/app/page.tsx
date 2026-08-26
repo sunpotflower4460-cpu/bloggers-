@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { dashboard, experimentContext } from "@/lib/db";
-import { fallbackReviewQueue } from "@/lib/fallback-review";
+import { fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
 import { latestContentRefresh } from "@/lib/refresh-store";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
 import { FallbackReviewButton } from "@/components/fallback-review-button";
@@ -31,9 +31,17 @@ function refreshResult(outcome: string | null) {
   return "観測中";
 }
 
+function qualitySignal(value: "insufficient-sample" | "strong" | "mixed" | "weak") {
+  if (value === "strong") return "高評価傾向";
+  if (value === "mixed") return "評価が混在";
+  if (value === "weak") return "要改善傾向";
+  return "サンプル不足";
+}
+
 export default function Home() {
   const blogs = dashboard();
   const fallbackReviews = fallbackReviewQueue(12);
+  const fallbackQuality = fallbackQualitySummaries();
   const active = blogs.filter((b) => b.active).length;
   const views = blogs.reduce((n, b) => n + b.views7d, 0);
   const errors = blogs.reduce((n, b) => n + b.failedRuns, 0);
@@ -69,11 +77,37 @@ export default function Home() {
                   <small>{item.bypassedPrimary ? "primary circuitを迂回してfallback生成" : "primary失敗後にfallback生成"} · {date(item.createdAt)}</small>
                 </div>
                 <div className="cardFoot">
-                  <span>自動公開せずdraftへ安全降格</span>
+                  <span>下書きを確認して品質を記録</span>
                   <div className="actions">
-                    {item.url ? <a className="button" href={item.url} target="_blank" rel="noreferrer">下書きを確認</a> : null}
+                    {item.url ? <a className="button secondary" href={item.url} target="_blank" rel="noreferrer">下書きを確認</a> : null}
                     <FallbackReviewButton publicationId={item.publicationId} />
                   </div>
+                </div>
+              </article>
+            ))}
+          </section>
+        </>
+      ) : null}
+
+      {fallbackQuality.length > 0 ? (
+        <>
+          <section className="sectionHead"><div><p className="eyebrow">HUMAN QUALITY SIGNAL</p><h2>fallback品質実績</h2></div><span>人間レビューのみ</span></section>
+          <section className="grid" aria-label="fallback provider別品質実績">
+            {fallbackQuality.map((item) => (
+              <article className="blogCard" key={`${item.providerLabel}:${item.model}`}>
+                <div className="cardTop"><div>{qualitySignal(item.signal)}</div><span className="platform">fallback</span></div>
+                <h3>{item.providerLabel}</h3>
+                <p className="muted">{item.model}</p>
+                <div className="miniStats four">
+                  <div><span>reviews</span><strong>{item.reviewed}</strong></div>
+                  <div><span>品質OK</span><strong>{item.qualityOk}</strong></div>
+                  <div><span>要改善</span><strong>{item.needsImprovement}</strong></div>
+                  <div><span>OK率</span><strong>{item.approvalRate === null ? "—" : `${Math.round(item.approvalRate * 100)}%`}</strong></div>
+                </div>
+                <div className="latest">
+                  <span>運用判断</span>
+                  <p>{item.reviewed < 10 ? "10件まではサンプル不足として扱います。" : `${qualitySignal(item.signal)}。実績を見て人間がallow-auto可否を判断します。`}</p>
+                  <small>評価が高くてもBlog Gardenが自動でAI_FALLBACK_CONTENT_POLICYを変更することはありません。</small>
                 </div>
               </article>
             ))}
