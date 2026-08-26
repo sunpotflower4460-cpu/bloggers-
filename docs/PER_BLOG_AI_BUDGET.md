@@ -83,6 +83,44 @@ F-037's observation flags only help a human notice unusual activity. They never 
 
 F-038 is different: it is an explicit operator-configured safety boundary. Reaching it prevents the **next AI outbound call for that blog** until the budget day changes or the operator changes/disables the cap. It does not automatically toggle the blog's `active` state, change publish mode, or reroute to another provider.
 
+## F-039: persistent exhaustion incident
+
+A hard cap that silently blocks one blog is safe for cost control but weak for unattended operations. F-039 therefore reconciles a persistent incident for every exhausted `blog:<id>` scope.
+
+Incident code:
+
+```text
+ai-per-blog-budget-exhausted
+```
+
+Behavior:
+
+- first detected exhaustion opens one `warning` incident for that stable blog scope
+- Slack / Discord / generic webhook receives one WARNING when configured
+- repeated monitor runs reuse the same `(code, scope)` row and do not create duplicates
+- a continuing warning is eligible for the normal 48-hour reminder cadence
+- if the condition clears, the same row becomes CLOSED and one RECOVERY is sent
+- if the same blog later exhausts again, that same row is reopened rather than inserted again
+
+### Recovery cases
+
+The incident closes when the current budget state is no longer exhausted. This can happen because:
+
+- the `AI_BUDGET_TIMEZONE` day changed and the new day's blog counter is below the cap
+- the operator raised `AI_PER_BLOG_DAILY_CALL_LIMIT`
+- the scope has no calls in the current budget day
+- the operator explicitly disabled the per-blog cap
+
+When monitoring is explicitly disabled, the recovery detail says that monitoring was disabled and **does not claim AI usage itself fell**.
+
+### Invalid configuration is not recovery
+
+If `AI_PER_BLOG_DAILY_CALL_LIMIT` becomes malformed while an incident is OPEN, F-039 does not close it and does not emit a false RECOVERY. The per-blog reconcile step reports the configuration error while unrelated monitor checks continue.
+
+### Stable incident scope
+
+The incident uses `blog:<id>` rather than the display name as its primary scope. This avoids collisions when two blogs share the same name or a blog is renamed. Human-readable blog labels remain in the incident detail.
+
 ## Why there is no per-blog token hard cap yet
 
 A reliable token amount is normally known only after the provider returns the response. Pre-reserving an unknown per-blog token quantity would either under-protect or reject legitimate work using an arbitrary guess.
