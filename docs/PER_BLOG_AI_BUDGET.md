@@ -100,12 +100,14 @@ Behavior:
 - Slack / Discord / generic webhook receives one WARNING when configured
 - repeated monitor runs reuse the same `(code, scope)` row and do not create duplicates
 - a continuing warning is eligible for the normal 48-hour reminder cadence
-- if the condition clears, the same row becomes CLOSED and one RECOVERY is sent
+- if the condition clears below the advisory boundary, the same row becomes CLOSED and one RECOVERY is sent
 - if the same blog later exhausts again, that same row is reopened rather than inserted again
 
 ### Recovery cases
 
-The incident closes when the current effective budget state is no longer exhausted. This can happen because:
+The exhausted incident closes when the current effective budget state is no longer at the hard cap. With F-048, an operator change that leaves utilization at 80–99% is a **downgrade to near-limit WARNING**, not a full recovery. A genuine RECOVERY is emitted only after utilization is below 80% or monitoring is explicitly disabled.
+
+This can happen because:
 
 - the `AI_BUDGET_TIMEZONE` day changed and the new day's blog counter is below the cap
 - the operator raised the shared limit
@@ -118,7 +120,7 @@ When monitoring is fully disabled, the recovery detail says that monitoring was 
 
 ### Invalid configuration is not recovery
 
-If the shared setting or a persisted override becomes malformed while an incident is OPEN, F-039 does not close it and does not emit a false RECOVERY. The per-blog reconcile step reports the configuration error while unrelated monitor checks continue.
+If the shared setting or a persisted override becomes malformed while an incident is OPEN, F-039/F-048 do not close it and do not emit a false RECOVERY. The per-blog reconcile step reports the configuration error while unrelated monitor checks continue.
 
 ### Stable incident scope
 
@@ -140,7 +142,7 @@ Webhook通知を使わない運用でも、F-039で保護停止しているブ�
 - CLOSED incidentはホームへ表示しません
 - unrelated incidentが多数あっても、直近N件の汎用一覧に依存せず対象codeを全件取得するため、停止ブログが押し出されません
 - 表示のためにブログの`active`値を変更しません
-- ホームはpersistent incidentを表示する層で、独自の別判定ロジックを持ちません
+- ホームはpersistent exhausted incidentを表示する層で、near-limit WARNINGを保護停止として扱いません
 - F-039がincidentをCLOSEDへ更新すると、次のホーム表示から通常状態へ戻ります
 
 ## F-041: per-blog override
@@ -166,36 +168,60 @@ per-blog cap disabled for that blog
 - 個別値も1〜100000の整数だけです
 - 保存先はAI予算専用の`blog_ai_budget_overrides`で、記事/ブログ本体の編集設定と分離します
 - persisted overrideが壊れている場合はfail-closedで、暗黙の無制限にはしません
-- diagnosticsとF-039 incidentは同じ実効上限を使います
+- diagnosticsとF-039/F-048 incidentは同じ実効上限を使います
 - incident detailには上限が`個別override`か`共通上限`かを残します
 
 設定画面で個別値を変えてもブログの`active`、公開方針、AI routeは変更しません。
 
 ## F-042: settings-save immediate incident reconciliation
 
-F-041の実効上限はAI call時点では即時に効きますが、F-039 incidentだけ次回monitorまで待つと、設定直後にホーム表示やWebhookが古いまま残る時間が生まれます。F-042はこのずれをなくします。
+F-041の実効上限はAI call時点では即時に効きますが、persistent incidentだけ次回monitorまで待つと、設定直後にホーム表示やWebhookが古いまま残る時間が生まれます。F-042はこのずれをなくします。
 
 ブログ設定保存時の順序:
 
 1. 個別overrideを永続化する
-2. 同じF-039 `reconcileAiPerBlogBudgetIncidents()` をその場で実行する
-3. 新しい実効上限でWARNING / RECOVERY / reopenを即時反映する
-4. ホームはF-040の同じpersistent incidentを読むため、次の表示から同期した状態になる
-
-例:
-
-- すでに2 calls使ったブログへoverride `2`を保存 → その保存処理内でWARNINGをOPEN
-- override `3`へ引き上げ → その場でRECOVERY
-- override `1`へ下げる → 同じincident行をその場で再OPEN
-- overrideを空欄へ戻し共通値`5`を継承 → その場でRECOVERY
+2. 同じ `reconcileAiPerBlogBudgetIncidents()` をその場で実行する
+3. 新しい実効上限で near-limit WARNING / exhausted WARNING / RECOVERY / reopen を即時反映する
+4. ホームはF-040のexhausted incidentだけを読むため、80–99%では停止扱いせず、100%到達時だけ保護停止表示になる
 
 安全境界:
 
-- 即時reconcileは新しい判定方式ではなく、monitorと同じF-039関数を再利用します
+- 即時reconcileは新しい判定方式ではなく、monitorと同じ関数を再利用します
 - monitorが直後に走ってもincident/通知は重複しません
 - Webhook送信失敗はSQLite incidentを失わせません
 - overrideの永続化に成功した後、予期しないreconcile障害が起きても安全設定そのものは巻き戻しません。monitorが後続の再評価を引き継ぎます
 - malformed共有設定などで完全なbudget snapshotを作れない場合は、既存OPEN incidentを誤ってRECOVERYにしません
+
+## F-048: 80% per-blog pre-exhaustion warning
+
+F-038/F-041の実効call上限に到達してから初めて気づくと、そのブログのAI工程はすでに保護停止しています。F-048は同じdiagnostics基準の80%で事前WARNINGを永続化し、修正余地を残します。
+
+Stable incident codes:
+
+```text
+ai-per-blog-budget-near-limit   # WARNING, 80% to below 100%
+ai-per-blog-budget-exhausted    # existing F-039 protection incident, 100%+
+```
+
+ブログごとの状態は排他的です。
+
+```text
+< 80%       neither OPEN
+80%..<100%  near-limit OPEN
+>= 100%     exhausted OPEN
+```
+
+遷移ルール:
+
+- 80%到達でnear-limit WARNINGを1回通知し、継続中は48時間まで重複通知しません
+- 80–99% → 100%は**昇格**です。near-limitをsilent closeしてexhaustedへ引き継ぎ、RECOVERYは出しません
+- 100% → 80–99%は**降格**です。exhaustedをsilent closeしてnear-limitへ戻し、RECOVERYは出しません
+- 80%未満になった時だけ、現在OPENのnear-limit/exhaustedに対して本当のRECOVERYを送ります
+- 共通値/個別overrideの設定変更もF-042経由でこの遷移を即時reconcileします
+- malformed設定ではOPEN状態を維持し、復旧を推測しません
+- 完全無効化時のRECOVERY detailは「使用量が減った」と主張せず、監視が無効化された事実を残します
+
+near-limit WARNINGは**保護停止ではありません**。AI outbound call、ブログの`active`、publish mode、provider routeを変更しません。F-040ホームカードも`ai-per-blog-budget-exhausted`だけを停止表示に使うため、80–99%のブログを誤って停止中とは表示しません。
 
 ## Why there is no per-blog token hard cap yet
 
