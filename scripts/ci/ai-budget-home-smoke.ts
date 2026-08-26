@@ -70,11 +70,11 @@ for (const required of [
   "まだhard capには到達していないため、ブログは停止していません。",
   "庭全体AI上限で保護停止",
   "AI予算を健康診断で確認",
-  "const aiProtected = Boolean(globalBudget || budgetIncident);",
+  'const aiProtected = Boolean(globalBudget || currentBudgetState === "exhausted");',
 ]) {
   if (!homeSource.includes(required)) throw new Error(`home is not wired to F-045/F-047: missing ${required}`);
 }
-if (homeSource.includes("Boolean(globalBudget || globalBudgetWarning || budgetIncident)")) {
+if (homeSource.includes("Boolean(globalBudget || globalBudgetWarning")) {
   throw new Error("F-047 warning must not make blog cards look protected/stopped");
 }
 
