@@ -8,6 +8,7 @@ export interface AiModelPrice {
 export interface AiModelCostSummary {
   modelKey: string;
   calls: number;
+  meteredCalls: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -88,11 +89,13 @@ function aggregate(rows: AiModelUsageDaily[]): Map<string, AiModelUsageDaily> {
       dayKey: row.dayKey,
       modelKey: row.modelKey,
       calls: 0,
+      meteredCalls: 0,
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
     };
     current.calls += row.calls;
+    current.meteredCalls += row.meteredCalls;
     current.inputTokens += row.inputTokens;
     current.outputTokens += row.outputTokens;
     current.totalTokens += Math.max(row.totalTokens, row.inputTokens + row.outputTokens);
@@ -118,13 +121,15 @@ function estimateRows(rows: AiModelUsageDaily[], prices: Map<string, AiModelPric
     const knownTokens = row.inputTokens + row.outputTokens;
     const totalTokens = Math.max(row.totalTokens, knownTokens);
     reportedTokens += totalTokens;
-    if (row.calls > 0 && totalTokens === 0) unmeteredCalls += row.calls;
+    unmeteredCalls += Math.max(0, row.calls - row.meteredCalls);
     const price = prices.get(row.modelKey);
     if (!price) {
       if (row.calls > 0 || totalTokens > 0) unpricedModelKeys.add(row.modelKey);
       continue;
     }
     estimatedCost += modelCost(row, price);
+    // Only input/output token categories can be priced by this operator table.
+    // Any extra provider-reported total tokens remain outside the estimate.
     pricedTokens += knownTokens;
   }
 
@@ -147,6 +152,7 @@ export function aiCostEstimate(): AiCostEstimate {
     return {
       modelKey: row.modelKey,
       calls: row.calls,
+      meteredCalls: row.meteredCalls,
       inputTokens: row.inputTokens,
       outputTokens: row.outputTokens,
       totalTokens: row.totalTokens,
