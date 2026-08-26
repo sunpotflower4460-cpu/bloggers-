@@ -126,18 +126,20 @@ function aiBudgetDiagnostic(): DiagnosticItem {
 function aiPerBlogBudgetDiagnostic(): DiagnosticItem | null {
   try {
     const budget = aiPerBlogBudgetStatus();
-    if (!budget.configured || budget.limit === null) return null;
+    if (!budget.configured) return null;
     const worst = budget.scopes.reduce((max, row) => Math.max(max, row.utilization), 0);
     const exhausted = budget.scopes.some((row) => row.exhausted);
     const status: DiagnosticStatus = exhausted ? "error" : worst >= 0.8 ? "warn" : "ok";
+    const defaultText = budget.limit === null ? "共通上限なし" : `共通 ${budget.limit} calls/日`;
+    const overrideText = budget.overrideCount > 0 ? ` · 個別override ${budget.overrideCount}件` : "";
     const top = budget.scopes.slice(0, 6).map((row) =>
-      `${row.scopeLabel} ${row.calls}/${row.limit}${row.exhausted ? " 上限到達" : ""}`,
+      `${row.scopeLabel} ${row.calls}/${row.limit} ${row.limitSource === "override" ? "個別" : "共通"}${row.exhausted ? " 上限到達" : ""}`,
     ).join(" | ");
     return {
       scope: "system",
       label: "AIブログ別日次call上限",
       status,
-      detail: `${budget.dayKey} (${budget.timezone}) · 1ブログ ${budget.limit} calls/日${top ? ` · ${top}` : " · 本日のblog scope callはまだありません"} · system/unattributedはこの上限の対象外`,
+      detail: `${budget.dayKey} (${budget.timezone}) · ${defaultText}${overrideText}${top ? ` · ${top}` : " · 有効なblog scopeはまだありません"} · 空欄overrideは共通上限を継承 · system/unattributedは対象外`,
     };
   } catch (error) {
     return {
