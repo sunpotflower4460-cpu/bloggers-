@@ -46,6 +46,8 @@ jobs:
         run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-smoke.ts
       - name: Smoke test per-blog AI call cap overrides
         run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-override-smoke.ts
+      - name: Smoke test protected AI budget preflight
+        run: ./node_modules/.bin/tsx scripts/ci/ai-budget-preflight-smoke.ts
       - name: Smoke test per-blog AI budget incident lifecycle
         run: ./node_modules/.bin/tsx scripts/ci/ai-per-blog-budget-alert-smoke.ts
       - name: Smoke test backup and restore
