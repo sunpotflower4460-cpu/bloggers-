@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { dashboard, experimentContext } from "@/lib/db";
-import { fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
+import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
 import { latestContentRefresh } from "@/lib/refresh-store";
 import { BlogToggleButton } from "@/components/blog-toggle-button";
+import { FallbackPublishButton } from "@/components/fallback-publish-button";
 import { FallbackReviewButton } from "@/components/fallback-review-button";
 import { RunButton } from "@/components/run-button";
 
@@ -41,6 +42,7 @@ function qualitySignal(value: "insufficient-sample" | "strong" | "mixed" | "weak
 export default function Home() {
   const blogs = dashboard();
   const fallbackReviews = fallbackReviewQueue(12);
+  const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
   const fallbackQuality = fallbackQualitySummaries();
   const active = blogs.filter((b) => b.active).length;
   const views = blogs.reduce((n, b) => n + b.views7d, 0);
@@ -81,6 +83,33 @@ export default function Home() {
                   <div className="actions">
                     {item.url ? <a className="button secondary" href={item.url} target="_blank" rel="noreferrer">下書きを確認</a> : null}
                     <FallbackReviewButton publicationId={item.publicationId} />
+                  </div>
+                </div>
+              </article>
+            ))}
+          </section>
+        </>
+      ) : null}
+
+      {fallbackPublishQueue.length > 0 ? (
+        <>
+          <section className="sectionHead"><div><p className="eyebrow">APPROVED DRAFTS</p><h2>品質OK · 公開待ち</h2></div><span>{fallbackPublishQueue.length} ready</span></section>
+          <section className="grid" aria-label="品質OK fallback draft公開待ち">
+            {fallbackPublishQueue.map((item) => (
+              <article className="blogCard" key={item.publicationId}>
+                <div className="cardTop"><div><span className="dot on" />品質OK</div><span className="platform">{item.platform}</span></div>
+                <h3>{item.title}</h3>
+                <p className="muted">{item.blogName}</p>
+                <div className="latest">
+                  <span>承認済み生成経路</span>
+                  <p>{item.providerLabel} / {item.model}</p>
+                  <small>{date(item.reviewedAt)} に人間が品質OK · 公開操作はまだ未実行</small>
+                </div>
+                <div className="cardFoot">
+                  <span>「公開する」を押した時だけ外部ブログを公開</span>
+                  <div className="actions">
+                    {item.url ? <a className="button secondary" href={item.url} target="_blank" rel="noreferrer">下書きを再確認</a> : null}
+                    <FallbackPublishButton publicationId={item.publicationId} />
                   </div>
                 </div>
               </article>
