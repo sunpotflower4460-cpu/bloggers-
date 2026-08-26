@@ -17,6 +17,15 @@ export interface AiCostThresholds {
   projected30d: number | null;
 }
 
+export interface AiCostThresholdIncidentResult {
+  enabled: boolean;
+  exceeded: boolean;
+  observable: boolean;
+  notified: boolean;
+  notificationFailure: boolean;
+  configError: string | null;
+}
+
 const code = "ai-estimated-cost-threshold";
 const scope = "system";
 const path = resolve(process.env.DATABASE_PATH || "./data/blog-garden.sqlite");
@@ -112,21 +121,34 @@ function money(value: number, currency: string): string {
   return `${currency} ${value.toFixed(value < 10 ? 4 : 2)}`;
 }
 
-export async function reconcileAiCostThresholdIncident(): Promise<{
-  enabled: boolean;
-  exceeded: boolean;
-  observable: boolean;
-  notified: boolean;
-  notificationFailure: boolean;
-}> {
-  const thresholds = aiCostThresholds();
-  const enabled = thresholds.daily !== null || thresholds.projected30d !== null;
-  const existing = db.prepare("SELECT status,detail,last_notified_at FROM operational_incidents WHERE code=? AND scope=?")
+function existingIncident(): IncidentRow | undefined {
+  return db.prepare("SELECT status,detail,last_notified_at FROM operational_incidents WHERE code=? AND scope=?")
     .get(code, scope) as IncidentRow | undefined;
+}
+
+function retainOpenAsUnobservable(existing: IncidentRow | undefined, detail: string): void {
+  if (existing?.status !== "open") return;
+  db.prepare("UPDATE operational_incidents SET detail=?,updated_at=? WHERE code=? AND scope=?")
+    .run(detail, now(), code, scope);
+}
+
+export async function reconcileAiCostThresholdIncident(): Promise<AiCostThresholdIncidentResult> {
+  const existing = existingIncident();
   const timestamp = now();
   let notified = false;
   let notificationFailure = false;
+  let thresholds: AiCostThresholds;
 
+  try {
+    thresholds = aiCostThresholds();
+  } catch (error) {
+    const configError = safe(error instanceof Error ? error.message : error);
+    retainOpenAsUnobservable(existing, `AI推定コスト閾値設定が不正なため復旧可否を確認できません: ${configError}. incidentをOPENのまま維持します。`);
+    console.error(`[ai-cost-alert] threshold configuration invalid: ${configError}`);
+    return { enabled: true, exceeded: false, observable: false, notified: false, notificationFailure: false, configError };
+  }
+
+  const enabled = thresholds.daily !== null || thresholds.projected30d !== null;
   if (!enabled) {
     if (existing?.status === "open") {
       const detail = "AI推定コスト閾値監視が設定から無効化されました。これはコストが閾値未満になったことを意味しません。";
@@ -140,21 +162,26 @@ export async function reconcileAiCostThresholdIncident(): Promise<{
         console.error(`[ai-cost-alert] disabled notification failed: ${safe(error instanceof Error ? error.message : error)}`);
       }
     }
-    return { enabled: false, exceeded: false, observable: false, notified, notificationFailure };
+    return { enabled: false, exceeded: false, observable: false, notified, notificationFailure, configError: null };
   }
 
-  const estimate = aiCostEstimate();
+  let estimate;
+  try {
+    estimate = aiCostEstimate();
+  } catch (error) {
+    const configError = safe(error instanceof Error ? error.message : error);
+    retainOpenAsUnobservable(existing, `AI推定コスト設定を評価できないため復旧可否を確認できません: ${configError}. incidentをOPENのまま維持します。`);
+    console.error(`[ai-cost-alert] price/usage configuration invalid: ${configError}`);
+    return { enabled: true, exceeded: false, observable: false, notified: false, notificationFailure: false, configError };
+  }
+
   const observable = estimate.configured;
   if (!observable) {
     // Never manufacture a low-cost recovery when pricing is unavailable. An
     // already-open threshold incident remains open until observability returns
     // or the operator explicitly disables threshold monitoring.
-    if (existing?.status === "open") {
-      const detail = "AI推定コスト閾値は有効ですが、単価表が未設定のため現在の復旧可否を確認できません。incidentをOPENのまま維持します。";
-      db.prepare("UPDATE operational_incidents SET detail=?,updated_at=? WHERE code=? AND scope=?")
-        .run(detail, timestamp, code, scope);
-    }
-    return { enabled: true, exceeded: false, observable: false, notified: false, notificationFailure: false };
+    retainOpenAsUnobservable(existing, "AI推定コスト閾値は有効ですが、単価表が未設定のため現在の復旧可否を確認できません。incidentをOPENのまま維持します。");
+    return { enabled: true, exceeded: false, observable: false, notified: false, notificationFailure: false, configError: null };
   }
 
   const dailyExceeded = thresholds.daily !== null && estimate.todayEstimatedCost >= thresholds.daily;
@@ -190,7 +217,7 @@ export async function reconcileAiCostThresholdIncident(): Promise<{
         console.error(`[ai-cost-alert] notification failed: ${safe(error instanceof Error ? error.message : error)}`);
       }
     }
-    return { enabled: true, exceeded: true, observable: true, notified, notificationFailure };
+    return { enabled: true, exceeded: true, observable: true, notified, notificationFailure, configError: null };
   }
 
   if (existing?.status === "open") {
@@ -198,7 +225,7 @@ export async function reconcileAiCostThresholdIncident(): Promise<{
       const detail = `観測済みAI推定コストはwarning閾値未満ですが、推定coverageが不完全なため復旧を確定できません: ${estimateText}; ${thresholdText}; ${coverageText}. incidentをOPENのまま維持します。`;
       db.prepare("UPDATE operational_incidents SET detail=?,updated_at=? WHERE code=? AND scope=?")
         .run(detail, timestamp, code, scope);
-      return { enabled: true, exceeded: false, observable: true, notified: false, notificationFailure: false };
+      return { enabled: true, exceeded: false, observable: true, notified: false, notificationFailure: false, configError: null };
     }
 
     const detail = `AI推定コストが完全なcoverageでwarning閾値未満へ復旧しました: ${estimateText}; ${thresholdText}; ${coverageText}`;
@@ -213,5 +240,5 @@ export async function reconcileAiCostThresholdIncident(): Promise<{
     }
   }
 
-  return { enabled: true, exceeded: false, observable: true, notified, notificationFailure };
+  return { enabled: true, exceeded: false, observable: true, notified, notificationFailure, configError: null };
 }
