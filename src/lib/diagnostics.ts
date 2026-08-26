@@ -166,6 +166,41 @@ function aiCostDiagnostic(): DiagnosticItem {
   }
 }
 
+function aiCostAttributionDiagnostic(): DiagnosticItem {
+  try {
+    const estimate = aiCostEstimate();
+    const callCoverage = estimate.attributionCallCoveragePercent === null
+      ? "callsなし"
+      : `${estimate.attributionCallCoveragePercent.toFixed(1)}%`;
+    const tokenCoverage = estimate.attributionTokenCoveragePercent === null
+      ? "tokensなし"
+      : `${estimate.attributionTokenCoveragePercent.toFixed(1)}%`;
+    const legacyGap = [
+      estimate.unattributedHistoricalCalls > 0 ? `帰属不能calls=${estimate.unattributedHistoricalCalls}` : "",
+      estimate.unattributedHistoricalTokens > 0 ? `帰属不能tokens=${estimate.unattributedHistoricalTokens.toLocaleString()}` : "",
+    ].filter(Boolean).join(" · ");
+    const scopes = estimate.scopes.slice(0, 5).map((item) => {
+      const amount = estimate.configured ? cost(item.last7dEstimatedCost, estimate.currency) : "金額未推定";
+      const coverage = item.coveragePercent === null ? "usageなし" : `${item.coveragePercent.toFixed(1)}%`;
+      return `${item.scopeLabel}: 7d ${amount}, calls ${item.calls}, token価格coverage ${coverage}`;
+    }).join(" | ");
+    const fullyAttributed = estimate.unattributedHistoricalCalls === 0 && estimate.unattributedHistoricalTokens === 0;
+    return {
+      scope: "system",
+      label: "AIブログ別帰属",
+      status: fullyAttributed ? "ok" : "warn",
+      detail: `帰属coverage calls ${callCoverage} · tokens ${tokenCoverage}${legacyGap ? ` · ${legacyGap}` : ""}${scopes ? ` · ${scopes}` : " · F-035以降のAI usageはまだありません"} · system/unattributedはブログ外処理として明示的に残します`,
+    };
+  } catch (error) {
+    return {
+      scope: "system",
+      label: "AIブログ別帰属",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function aiCostThresholdDiagnostic(): DiagnosticItem | null {
   try {
     const thresholds = aiCostThresholds();
@@ -327,6 +362,7 @@ export async function runDiagnostics(): Promise<DiagnosticItem[]> {
   try {
     items.push(aiBudgetDiagnostic());
     items.push(aiCostDiagnostic());
+    items.push(aiCostAttributionDiagnostic());
     const costThreshold = aiCostThresholdDiagnostic();
     if (costThreshold) items.push(costThreshold);
   } catch (error) {
