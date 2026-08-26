@@ -2,7 +2,7 @@ import Link from "next/link";
 import { perBlogBudgetHomeSnapshot, type PerBlogBudgetHomeScope } from "@/lib/ai-per-blog-budget-home";
 import { globalAiBudgetProtection, globalAiBudgetWarning } from "@/lib/ai-budget-home";
 import { aiEfficiencyPanel, type BlogAiEfficiencyObservation } from "@/lib/ai-efficiency";
-import { rollbackRevisionQueue } from "@/lib/content-revisions";
+import { revisionAttentionQueue, rollbackRevisionQueue } from "@/lib/content-revisions";
 import { dashboard, experimentContext } from "@/lib/db";
 import { fallbackApprovedPublishQueue, fallbackQualitySummaries, fallbackReviewQueue } from "@/lib/fallback-review";
 import { openOperationalIncidentsByCode } from "@/lib/incidents";
@@ -81,6 +81,7 @@ function liveBudgetDetail(scope: PerBlogBudgetHomeScope): string {
 export default function Home() {
   const blogs = dashboard();
   const efficiency = aiEfficiencyPanel(blogs);
+  const revisionAttention = revisionAttentionQueue(12, 15);
   const rollbackQueue = rollbackRevisionQueue(12);
   const fallbackReviews = fallbackReviewQueue(12);
   const fallbackPublishQueue = fallbackApprovedPublishQueue(12);
@@ -129,6 +130,11 @@ export default function Home() {
         <article className="stat"><span>7日間エラー</span><strong>{errors}</strong></article>
         <article className="stat"><span>AI保護停止</span><strong>{globalBudget ? "全体" : livePerBlogBudget.configError ? budgetIncidents.size : livePerBlogBudget.scopes.filter((scope) => scope.state === "exhausted").length}</strong></article>
       </section>
+
+      {revisionAttention.length > 0 ? <><section className="sectionHead"><div><p className="eyebrow">REVISION ATTENTION</p><h2>自動改善 · 要確認revision</h2></div><span>{revisionAttention.length} attention</span></section><section className="grid" aria-label="自動既存記事変更の要確認revision">{revisionAttention.map((revision) => {
+        const uncertain = revision.status === "prepared";
+        return <article className="blogCard" key={`revision-attention:${revision.id}`}><div className="cardTop"><div><span className="dot" />{uncertain ? "状態未確定" : "外部更新失敗"}</div><span className="platform">{revision.platform}</span></div><h3>{revision.after.title || revision.before.title}</h3><p className="muted">{revision.blogName}</p><div className="latest"><span>{uncertain ? "stale prepared" : "failed revision"}</span><p>{revision.before.title} → {revision.after.title}</p><small>{date(revision.createdAt)} · {revision.mutationKind} · revision #{revision.id}</small></div><div className="latest"><span>安全な扱い</span><p>{uncertain ? "独立monitorが外部CMSを読み取り、変更前または予定変更後と一致するかだけを照合します。どちらにも一致しなければ自動操作せずCRITICALとして残します。" : "外部更新は成功扱いになっていません。rollback対象ではなく、失敗理由を確認するための監査履歴です。"}</p><small>{uncertain ? "monitorから再POST/PATCH/PUTや自動rollbackは行いません。" : (revision.error || "失敗理由は記録されていません")}</small></div><div className="cardFoot"><span>{uncertain ? "外部CMSへの変更操作なし" : "再実行は次の通常育成判断に任せます"}</span><div className="actions">{revision.publicationUrl ? <a className="button secondary" href={revision.publicationUrl} target="_blank" rel="noreferrer">現在の記事を確認</a> : null}<Link className="button secondary" href="/diagnostics">健康診断で確認</Link></div></div></article>;
+      })}</section></> : null}
 
       {rollbackQueue.length > 0 ? <><section className="sectionHead"><div><p className="eyebrow">REVISION SAFETY</p><h2>自動改善 · 戻せる変更</h2></div><span>{rollbackQueue.length} rollback ready</span></section><section className="grid" aria-label="自動既存記事変更のrollback候補">{rollbackQueue.map((revision) => <article className="blogCard" key={`revision:${revision.id}`}><div className="cardTop"><div><span className="dot on" />rollback可能</div><span className="platform">{revision.platform}</span></div><h3>{revision.after.title}</h3><p className="muted">{revision.blogName}</p><div className="latest"><span>自動変更</span><p>{revision.before.title} → {revision.after.title}</p><small>{date(revision.appliedAt)} · {revision.mutationKind} · 変更前snapshot保存済み</small></div><div className="latest"><span>安全な戻し方</span><p>現在の外部記事がこの自動変更後の状態と一致する場合だけ、変更した項目を元へ戻します。</p><small>人間がその後headlineを編集していた場合は衝突として中止し、上書きしません。</small></div><div className="cardFoot"><span>rollbackは自動実行されません</span><div className="actions">{revision.publicationUrl ? <a className="button secondary" href={revision.publicationUrl} target="_blank" rel="noreferrer">現在の記事を確認</a> : null}<ContentRollbackButton revisionId={revision.id} /></div></div></article>)}</section></> : null}
 
