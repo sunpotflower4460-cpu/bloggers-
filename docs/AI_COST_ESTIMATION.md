@@ -115,9 +115,40 @@ coverageが不完全でも、価格を付けられた観測済み部分だけで
 
 運用者が両方の閾値を削除した場合は監視を明示的に無効化したものとして、既存の閾値incidentをCLOSEDにします。この場合のdetailには「コスト低下を確認したわけではない」ことを残します。
 
+## F-035: ブログ別AI使用量・推定コスト帰属
+
+複数ブログを自律運用すると、全体金額だけでは「どの庭が費用を使っているか」が分かりません。F-035では各ブログ実行をNode.jsの`AsyncLocalStorage` scopeで包み、実際のAI outbound callを次のscopeへ同時集計します。
+
+```text
+blog:<blog-id>
+system/unattributed
+```
+
+ブログscopeには表示用としてその時点のブログ名も保存します。ブログ外で実行されたAI callを最も近いブログへ推測配分することはせず、必ず`system/unattributed`として明示します。
+
+保存は`scope + model + day`単位なので、同じブログ内でもprimary / fallback / economyの各model単価を正しく使って推定できます。
+
+`/diagnostics`の`AIブログ別帰属`では次を表示します。
+
+- scope別の直近7日calls
+- scope別の直近7日推定額（単価表がある場合）
+- scope別token価格coverage
+- calls / tokens の帰属coverage
+- F-035導入前など、全体usageには存在するがscope履歴が無い帰属不能calls/tokens
+
+### 並列実行での分離
+
+単純なprocess-global変数ではなく`AsyncLocalStorage.run()`を使うため、将来複数ブログを同時実行しても、各非同期処理は自分のブログscopeを保持します。F-035のCIでは意図的に複数scopeを並列・交互実行して混線しないことを確認します。
+
+### 過去履歴を逆算しない
+
+F-035より前のmodel別usageにはブログ情報がありません。その履歴を投稿数やブログ比率から推測して各ブログへ配ると、正確に見えて実際は捏造された内訳になります。
+
+そのため過去の未帰属usageはそのまま`帰属不能`として残し、calls/tokenの帰属coverageを100%未満で表示します。F-035以降の新しいcallが蓄積するにつれて直近7日の帰属coverageは自然に100%へ近づきます。
+
 ## 安全境界
 
-F-032/F-034は可視化・警告機能です。推定コストが高い・低いことを理由に、Blog Gardenが自動で次を変更することはありません。
+F-032/F-034/F-035は可視化・警告・帰属機能です。推定コストが高い・低いことを理由に、Blog Gardenが自動で次を変更することはありません。
 
 - primary / fallback provider
 - `AI_INTERNAL_ROUTE_POLICY`
