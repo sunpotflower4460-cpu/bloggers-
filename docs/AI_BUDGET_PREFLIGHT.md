@@ -65,7 +65,26 @@ When a preflight is healthy, Blog Garden clears that blog's episode marker befor
 
 The transition claim uses a SQLite `IMMEDIATE` transaction. The blog lease already serializes ordinary same-blog worker/manual execution, while the transaction prevents duplicate claims if future callers race outside that lease.
 
-## What F-043/F-044 deliberately do not do
+## F-045: current global protection on the home dashboard
+
+A global call/token cap affects every garden, so waiting for an operator to open `/diagnostics` makes a whole-garden protection event too easy to misread as ordinary inactivity.
+
+The home page therefore derives a banner directly from the same `aiBudgetStatus()` snapshot used by F-043. It does not maintain a second budget counter or wait for the monitor incident lifecycle.
+
+When the current global hard cap is reached, the top of `/` shows:
+
+- `庭全体のAI生成を保護停止`
+- whether the reason is the call cap, token cap, or both
+- current calls / call limit
+- current total tokens / token limit
+- budget day and `AI_BUDGET_TIMEZONE`
+- a direct link to `/diagnostics`
+
+The per-blog cards also stop saying `自動運転` while the global cap is active and instead show `庭全体AI上限で保護停止`. This is display-only: F-045 never changes the blog's stored `active` value or publish mode.
+
+When neither global limit is reached, the banner is absent and normal card state returns immediately from the current budget snapshot. Per-blog F-039/F-040 incidents remain independent and can still be displayed for individual cap exhaustion.
+
+## What F-043/F-044/F-045 deliberately do not do
 
 The preflight is advisory and does not replace the authoritative reservation inside `reserveAiCall()`.
 
