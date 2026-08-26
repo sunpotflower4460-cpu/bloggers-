@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS ai_usage_model_daily (
   day_key TEXT NOT NULL,
   model_key TEXT NOT NULL,
   calls INTEGER NOT NULL DEFAULT 0,
+  metered_calls INTEGER NOT NULL DEFAULT 0,
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -33,6 +34,15 @@ CREATE TABLE IF NOT EXISTS ai_usage_model_daily (
 CREATE INDEX IF NOT EXISTS idx_ai_usage_model_daily_day
   ON ai_usage_model_daily(day_key DESC);
 `);
+
+// F-032 is additive for databases that already created the model-usage table
+// before metered_calls existed. We intentionally do not backfill historical
+// rows as fully metered because a daily aggregate cannot prove that every call
+// in that row returned usage. Conservative unknowns are safer than fake cost precision.
+const modelUsageColumns = db.prepare("PRAGMA table_info(ai_usage_model_daily)").all() as Array<{ name: string }>;
+if (!modelUsageColumns.some((column) => column.name === "metered_calls")) {
+  db.exec("ALTER TABLE ai_usage_model_daily ADD COLUMN metered_calls INTEGER NOT NULL DEFAULT 0");
+}
 
 export interface AiBudgetStatus {
   dayKey: string;
@@ -51,6 +61,7 @@ export interface AiModelUsageDaily {
   dayKey: string;
   modelKey: string;
   calls: number;
+  meteredCalls: number;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -136,11 +147,12 @@ export function aiBudgetStatus(): AiBudgetStatus {
 export function aiUsageByModel(days = 7): AiModelUsageDaily[] {
   const keys = recentDayKeys(days);
   const placeholders = keys.map(() => "?").join(",");
-  const rows = db.prepare(`SELECT day_key,model_key,calls,input_tokens,output_tokens,total_tokens
+  const rows = db.prepare(`SELECT day_key,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens
     FROM ai_usage_model_daily WHERE day_key IN (${placeholders}) ORDER BY day_key DESC,model_key ASC`).all(...keys) as Array<{
       day_key: string;
       model_key: string;
       calls: number;
+      metered_calls: number;
       input_tokens: number;
       output_tokens: number;
       total_tokens: number;
@@ -149,6 +161,7 @@ export function aiUsageByModel(days = 7): AiModelUsageDaily[] {
     dayKey: row.day_key,
     modelKey: row.model_key,
     calls: Number(row.calls || 0),
+    meteredCalls: Number(row.metered_calls || 0),
     inputTokens: Number(row.input_tokens || 0),
     outputTokens: Number(row.output_tokens || 0),
     totalTokens: Number(row.total_tokens || 0),
@@ -178,8 +191,8 @@ export function reserveAiCall(model: string): AiBudgetStatus {
         updated_at=excluded.updated_at`)
       .run(day, modelKey.slice(0, 160), now);
     db.prepare(`INSERT INTO ai_usage_model_daily
-      (day_key,model_key,calls,input_tokens,output_tokens,total_tokens,updated_at)
-      VALUES (?,?,1,0,0,0,?)
+      (day_key,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens,updated_at)
+      VALUES (?,?,1,0,0,0,0,?)
       ON CONFLICT(day_key,model_key) DO UPDATE SET
         calls=ai_usage_model_daily.calls+1,
         updated_at=excluded.updated_at`)
@@ -213,9 +226,10 @@ export function recordAiUsage(usage: unknown, model: string): void {
         updated_at=excluded.updated_at`)
       .run(day, Math.floor(input), Math.floor(output), Math.floor(total), modelKey.slice(0, 160), now);
     db.prepare(`INSERT INTO ai_usage_model_daily
-      (day_key,model_key,calls,input_tokens,output_tokens,total_tokens,updated_at)
-      VALUES (?,?,0,?,?,?,?)
+      (day_key,model_key,calls,metered_calls,input_tokens,output_tokens,total_tokens,updated_at)
+      VALUES (?,?,0,1,?,?,?,?)
       ON CONFLICT(day_key,model_key) DO UPDATE SET
+        metered_calls=ai_usage_model_daily.metered_calls+1,
         input_tokens=ai_usage_model_daily.input_tokens+excluded.input_tokens,
         output_tokens=ai_usage_model_daily.output_tokens+excluded.output_tokens,
         total_tokens=ai_usage_model_daily.total_tokens+excluded.total_tokens,
