@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { JsonStore } from '../src/store.js'
+import { publicSystemView } from '../src/system-store.js'
 import {
   oidcSessionFingerprint,
   oidcSessionIsActive,
@@ -60,6 +61,10 @@ test('server-side OIDC registry requires explicit login registration before a si
 
     const summary = await oidcSessionRegistrySummary(store, { clock })
     assert.deepEqual(summary, { generation: 1, active: 1, revoked: 0 })
+
+    const state = await store.read()
+    assert.ok(state.system.oidcSessions)
+    assert.equal(publicSystemView(state.system).oidcSessions, undefined)
   })
 })
 
