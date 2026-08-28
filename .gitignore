@@ -1,0 +1,6 @@
+.env
+.env.*
+!.env.example
+data/state.json
+data/*.tmp
+.DS_Store
