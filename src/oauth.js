@@ -1,12 +1,8 @@
 // @feature F-007
 // @feature F-012
+import { resolveSecret } from './secrets.js'
 
 const googleTokenCache = new Map()
-
-function envValue(name) {
-  if (!name) return null
-  return String(process.env[name] || '').trim() || null
-}
 
 function normalizedAuth(auth = {}) {
   return {
@@ -23,10 +19,10 @@ function cacheKey(auth) {
 
 export async function resolveGoogleAccessToken(input = {}, { fetchImpl = fetch, now = () => Date.now() } = {}) {
   const auth = normalizedAuth(input)
-  const direct = envValue(auth.accessTokenEnv)
-  const refreshToken = envValue(auth.refreshTokenEnv)
-  const clientId = envValue(auth.clientIdEnv)
-  const clientSecret = envValue(auth.clientSecretEnv)
+  const direct = resolveSecret(auth.accessTokenEnv, { label: 'Google access token' })
+  const refreshToken = resolveSecret(auth.refreshTokenEnv, { label: 'Google refresh token' })
+  const clientId = resolveSecret(auth.clientIdEnv, { label: 'Google OAuth client ID' })
+  const clientSecret = resolveSecret(auth.clientSecretEnv, { label: 'Google OAuth client secret' })
 
   if (!refreshToken || !clientId) {
     if (direct) return { accessToken: direct, source: 'access-token-env', expiresAt: null }
