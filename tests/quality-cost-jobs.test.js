@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { budgetStatus } from '../src/cost.js'
+import { AiBudgetReserveReachedError, budgetStatus, recordAiUsage } from '../src/cost.js'
 import { enqueueJob, leaseDueJobs } from '../src/jobs.js'
 import { addBlog, runBlogCycle } from '../src/orchestrator.js'
 import { assertPublicHttpUrl, buildInternalLinkCandidates, evaluateContentQuality } from '../src/quality.js'
@@ -107,6 +107,36 @@ test('AI cost governor records usage and stops extra generation after per-cycle 
     assert.equal(result.article, null)
     assert.equal(state.aiUsage.length, 1)
     assert.equal(budgetStatus(state).usage.totalUsd, 0.02)
+  })
+})
+
+test('monthly reserve is enforced immediately after the call that crosses it', async () => {
+  await withStore(async (store) => {
+    await store.mutate((state) => {
+      state.system.aiBudget = { enabled: true, monthlyUsd: 1, perCycleUsd: 1, reserveUsd: 0.1 }
+      state.aiUsage = [{
+        id: 'usage_existing',
+        createdAt: new Date().toISOString(),
+        estimatedCostUsd: 0.88,
+        inputTokens: 1,
+        outputTokens: 1,
+      }]
+    })
+
+    await assert.rejects(
+      () => recordAiUsage(store, [{
+        operation: 'decide',
+        provider: 'test',
+        model: 'director',
+        estimatedCostUsd: 0.03,
+      }]),
+      (error) => error instanceof AiBudgetReserveReachedError && error.code === 'AI_BUDGET_RESERVE_REACHED',
+    )
+
+    const state = await store.read()
+    const status = budgetStatus(state)
+    assert.equal(Number(status.usage.totalUsd.toFixed(2)), 0.91)
+    assert.equal(status.blocked, true)
   })
 })
 
