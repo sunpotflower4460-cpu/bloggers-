@@ -1,5 +1,6 @@
 // @feature F-003
 import { createHmac } from 'node:crypto'
+import { beforeExternalWrite } from './execution-context.js'
 import { resolveSecret } from './secrets.js'
 import { createId, nowIso } from './store.js'
 
@@ -111,6 +112,7 @@ class MemoryConnector extends BaseConnector {
   }
 
   async createDraft(article) {
+    await beforeExternalWrite({ connector: 'memory', operation: 'create-draft', blogId: this.blog.id, articleId: article.id })
     return this.store.mutate((state) => {
       const blog = state.blogs.find((item) => item.id === this.blog.id)
       if (!blog) throw new Error('Blog not found')
@@ -133,6 +135,7 @@ class MemoryConnector extends BaseConnector {
   }
 
   async updatePost(postId, changes) {
+    await beforeExternalWrite({ connector: 'memory', operation: 'update-post', blogId: this.blog.id, postId })
     return this.store.mutate((state) => {
       const blog = state.blogs.find((item) => item.id === this.blog.id)
       const post = blog?.remotePosts?.find((item) => item.id === postId)
@@ -169,6 +172,10 @@ class WordPressConnector extends BaseConnector {
   }
 
   async #request(path, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase()
+    if (!['GET', 'HEAD'].includes(method)) {
+      await beforeExternalWrite({ connector: 'wordpress', operation: 'http-write', method, path, blogId: this.blog.id })
+    }
     const headers = { Accept: 'application/json', ...(options.headers ?? {}) }
     if (this.username && this.password) {
       headers.Authorization = `Basic ${Buffer.from(`${this.username}:${this.password}`).toString('base64')}`
@@ -247,6 +254,10 @@ class GhostConnector extends BaseConnector {
   }
 
   async #request(path, options = {}) {
+    const method = String(options.method || 'GET').toUpperCase()
+    if (!['GET', 'HEAD'].includes(method)) {
+      await beforeExternalWrite({ connector: 'ghost', operation: 'http-write', method, path, blogId: this.blog.id })
+    }
     const token = createGhostAdminToken(this.adminKey)
     const headers = {
       Accept: 'application/json',
