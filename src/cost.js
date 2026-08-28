@@ -1,5 +1,6 @@
 // @feature F-005
 // @feature F-012
+import { appendAiUsageEntries } from './ai-usage-store.js'
 import { createId, nowIso } from './store.js'
 
 function number(value, fallback = 0) {
@@ -67,18 +68,13 @@ export async function recordAiUsage(store, entries = [], context = {}) {
   }))
   if (normalized.length === 0) return []
 
-  let status
-  await store.mutate((state) => {
-    state.aiUsage ??= []
-    state.aiUsage.unshift(...normalized)
-    state.aiUsage = state.aiUsage.slice(0, 10_000)
-    status = budgetStatus(state)
-  })
+  await appendAiUsageEntries(store, normalized, { limit: 10_000 })
+  const status = budgetStatus(await store.read())
 
   // The API call has already happened, so its usage must remain recorded. If that
   // call crosses the configured reserve, fail immediately before another model
   // operation can run in the same workflow.
-  if (status?.blocked && context.enforceBudget !== false) {
+  if (status.blocked && context.enforceBudget !== false) {
     throw new AiBudgetReserveReachedError(status)
   }
   return normalized
