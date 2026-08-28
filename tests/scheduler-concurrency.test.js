@@ -17,6 +17,12 @@ async function withStore(fn) {
   }
 }
 
+function deferred() {
+  let resolve
+  const promise = new Promise((done) => { resolve = done })
+  return { promise, resolve }
+}
+
 test('worker concurrency is bounded and configurable', () => {
   assert.equal(workerConcurrency({}), 4)
   assert.equal(workerConcurrency({ BLOGGERS_WORKER_CONCURRENCY: '2' }), 2)
@@ -46,28 +52,44 @@ test('scheduler leases only the jobs it can actively process', async () => {
 
       let active = 0
       let maxActive = 0
+      let entered = 0
+      const bothEntered = deferred()
+      const release = deferred()
+      const seenKeys = []
       const scheduler = createScheduler({
         store,
         clock: () => Date.parse('2026-08-28T02:00:00.000Z'),
         runPortfolioCycle: async () => ({ skipped: false, results: [] }),
-        runBlogCycle: async () => {
+        runBlogCycle: async (_store, blogId, options = {}) => {
+          seenKeys.push({ blogId, key: options.idempotencyKey, trigger: options.trigger })
           active += 1
+          entered += 1
           maxActive = Math.max(maxActive, active)
-          await new Promise((resolve) => setTimeout(resolve, 20))
+          if (entered === 2) bothEntered.resolve()
+          await release.promise
           active -= 1
           return { workflowId: 'ok' }
         },
         recordActivity: async () => undefined,
       })
 
-      const first = await scheduler.tick()
+      const firstPromise = scheduler.tick()
+      await Promise.race([
+        bothEntered.promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('two leased jobs did not enter processing concurrently')), 1000)),
+      ])
+      assert.equal(maxActive, 2)
+      release.resolve()
+
+      const first = await firstPromise
       const afterFirst = await store.read()
       assert.equal(first.concurrency, 2)
       assert.equal(first.jobs.length, 2)
-      assert.equal(maxActive, 2)
       assert.equal(afterFirst.jobs.filter((job) => job.status === 'completed').length, 2)
       assert.equal(afterFirst.jobs.filter((job) => job.status === 'queued').length, 1)
       assert.equal(afterFirst.jobs.filter((job) => job.status === 'running').length, 0)
+      assert.equal(new Set(seenKeys.slice(0, 2).map((item) => item.key)).size, 2)
+      assert.ok(seenKeys.slice(0, 2).every((item) => item.key?.startsWith('job:')))
 
       const second = await scheduler.tick()
       const afterSecond = await store.read()
