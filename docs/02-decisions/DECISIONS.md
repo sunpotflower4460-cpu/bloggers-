@@ -162,3 +162,24 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: driverを勝手に追加せず実運用への接続点を作りつつ、旧processのlease ownershipを新環境へ持ち込む危険を避けるため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: pgを無断で依存追加する、running leaseをそのままコピーする、起動時に暗黙の破壊的migrationを行う方式。
+
+### D-024
+- 日付: 2026-08-28
+- 決定: Secret Referenceは従来のENV_NAME / env:ENV_NAMEに加えてmanaged:logical/keyを許可し、BLOGGERS_SECRET_PROVIDER_MODULEからmanaged resolverを起動時に初期化する。providerは起動時に非同期preloadしてよいが、実行中resolve(key)は同期・memory-cache型とする。
+- 理由: 複数ホストで秘密値を各processの環境変数へ複製せず、WordPress / Ghost / Google OAuth / Analytics / AI / RBACの既存同期呼び出しを壊さずmanaged Vault等へ差し替えるため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 各ConnectorがAWS/GCP/Vault APIを個別に非同期呼び出しする、または取得したsecretをstateへ永続化する方式。
+
+### D-025
+- 日付: 2026-08-28
+- 決定: Job leaseとblog/approval operation leaseはheartbeatで延長し、Connectorの外部書き込み直前に両方のownerを再検証する。AsyncLocalStorageで実行contextを伝播し、Scheduler配下ではJob fence + Operation fence、手動操作ではOperation fenceを適用する。ownership喪失はnon-retryableとする。
+- 理由: 長時間AI/Research中にleaseが別Workerへ移った古いprocessが、最終completeだけ拒否されてもCMS副作用だけ実行してしまう競合を防ぐため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: Job完了時だけownerを確認する、固定TTLだけで30分超cycleを安全とみなす、Connectorごとに独立した競合判定を実装する方式。
+
+### D-026
+- 日付: 2026-08-28
+- 決定: CREATEのremote draftにはBloggers article ID由来の決定的slugを使い、WordPressはslug検索、GhostはAdmin APIのslug lookupで既存postを確認してから作成する。同一articleのretryでは既存remote postを再利用する。
+- 理由: CMS側で作成が成功した直後に通信切断・process終了が起き、ローカルへremote IDを保存できなかった場合でも、再試行で同一draftを増殖させないため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 毎retryで無条件にPOSTする、タイトル文字列だけで既存記事を推測する方式。
