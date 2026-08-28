@@ -14,6 +14,7 @@ import { collectAnalytics } from './analytics.js'
 import { appendAnalyticsSnapshot } from './analytics-store.js'
 import { appendActivity } from './activity-store.js'
 import { resolveApprovalAndArticle, saveApproval, saveArticle } from './article-approval-store.js'
+import { createBlogRecord, mutateBlogRecord } from './blog-store.js'
 import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
@@ -161,18 +162,13 @@ export async function addBlog(store, input) {
     createdAt: nowIso(),
     updatedAt: nowIso(),
   }
-  await store.mutate((state) => {
-    if (state.blogs.some((item) => item.slug === blog.slug)) throw new Error('A blog with this slug already exists')
-    state.blogs.push(blog)
-  })
+  await createBlogRecord(store, blog)
   await recordActivity(store, { blogId: blog.id, agent: 'system', type: 'blog.connected', message: `${blog.name} をBloggers HQへ登録しました。` })
   return blog
 }
 
 export async function updateBlog(store, blogId, changes) {
-  return store.mutate((state) => {
-    const blog = state.blogs.find((item) => item.id === blogId)
-    if (!blog) throw new Error('Blog not found')
+  return mutateBlogRecord(store, blogId, (blog) => {
     if (changes.brain) blog.brain = { ...blog.brain, ...changes.brain }
     if (changes.analytics) blog.analytics = sanitizeAnalytics({ ...blog.analytics, ...changes.analytics })
     if (changes.research) blog.research = sanitizeResearch({ ...blog.research, ...changes.research })
