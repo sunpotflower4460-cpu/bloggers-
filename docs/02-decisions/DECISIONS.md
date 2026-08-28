@@ -260,3 +260,17 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: Session signing keyを定期rotationするとき、全利用者の即時ログアウトや認証callback失敗を避けつつ、新規Cookieが旧鍵へ逆戻りすることを防ぐため。server-side revocationとのAND条件を維持することで、旧鍵を残しても失効済みSessionを復活させない。
 - 根拠（Q-ID）: Q-002
 - 却下した案: 1鍵だけを即時差し替えて全Session/flowを切断する、旧鍵でも新規Cookieを発行する、旧鍵が一致すればregistry失効状態を無視する方式。
+
+### D-038
+- 日付: 2026-08-28
+- 決定: AI Budget / Schedulerの人間によるSettings保存はbackend-neutralなoptimistic concurrency tokenを必須境界として扱う。JSONではsection内容のcanonical SHA-256 hash、PostgreSQLでは`bloggers_system_settings.revision`をtoken化し、読込後に他画面・他管理者が更新していた場合は`409 SYSTEM_VERSION_CONFLICT`で古い保存を拒否して最新値を再読込する。Worker/Schedulerの内部runtime更新は従来のsection mutationを使い、管理画面のstale-write検出と分離する。
+- 理由: 複数タブや複数adminで同じSettingsを開いた際、古い画面からの保存が新しいAI予算やScheduler設定を黙って巻き戻すlost updateを防ぐため。JSON/PostgreSQLでUI契約を同一に保つため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 最後に保存した画面を常に優先するlast-write-wins、PostgreSQLだけrevisionを使ってJSONでは競合を無視する方式。
+
+### D-039
+- 日付: 2026-08-28
+- 決定: PostgreSQLではOIDC Session registryをSystem coreから分離し、`bloggers_oidc_sessions`と`bloggers_oidc_session_control`へ正規化する。register / active判定 / revoke / revoke-all / generation更新をnative capabilityとして実装し、旧`core.oidcSessions`が存在する場合は起動時またはJSON→PostgreSQL移行時に専用tableへ昇格してcoreから除去する。永続化するのはCookie fingerprintとprincipal/expiry/revocation metadataだけで、Session Cookie値・ID token・access tokenは保存しない。
+- 理由: ログイン・API認証・logoutのたびにSystem core rowを競合させず、複数Web process / 複数利用者でもSession lifecycleだけを独立して処理するため。実PostgreSQL検証で`null` revocation stateが数値0へ誤変換される不具合も検出できたため、`revoked_at IS NULL OR revoked_at >= issued_at`等のDB制約を加え、同種の状態破損をfail-closedにする。
+- 根拠（Q-ID）: Q-002
+- 却下した案: PostgreSQLでもSession一覧を`core` JSON document内に残す、Cookie値そのものをDBへ保存する、型変換だけを信頼してDB側の状態制約を持たない方式。
