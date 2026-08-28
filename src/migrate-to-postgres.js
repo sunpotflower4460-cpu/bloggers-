@@ -1,3 +1,4 @@
+// @feature F-007
 // @feature F-012
 import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -29,6 +30,7 @@ export async function migrateJsonToPostgres({
   const source = await new JsonStore(absoluteSource).init()
   const sourceState = await source.read()
   const sourceJobs = structuredClone(sourceState.jobs ?? [])
+  const sourceAnalytics = structuredClone(sourceState.analytics ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -42,10 +44,21 @@ export async function migrateJsonToPostgres({
   if (target.backend !== 'postgres') throw new Error('Migration target must be PostgreSQL')
   if (typeof target.jobEnqueue !== 'function') throw new Error('Migration target does not support native PostgreSQL jobs')
 
+  const nativeAnalytics = typeof target.analyticsAppend === 'function'
+  if (nativeAnalytics) portableState.analytics = []
+
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
     Object.assign(state, structuredClone(portableState))
   })
+
+  let migratedAnalytics = 0
+  if (nativeAnalytics) {
+    for (const snapshot of sourceAnalytics) {
+      await target.analyticsAppend(snapshot, { limit: 5000 })
+      migratedAnalytics += 1
+    }
+  }
 
   const existing = await target.read()
   const existingJobIds = new Set((existing.jobs ?? []).map((job) => job.id))
@@ -69,6 +82,8 @@ export async function migrateJsonToPostgres({
     source: absoluteSource,
     blogs: portableState.blogs?.length ?? 0,
     articles: portableState.articles?.length ?? 0,
+    migratedAnalytics,
+    analyticsKeptInStateDocument: nativeAnalytics ? 0 : sourceAnalytics.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
