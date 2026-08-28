@@ -18,14 +18,26 @@ async function withTempDir(fn) {
 function fakePostgresTarget() {
   let document = null
   const nativeJobs = []
+  const nativeAnalytics = []
   return {
     backend: 'postgres',
     async transaction(mutator) {
-      document ??= { system: {}, blogs: [], jobs: [], locks: [] }
+      document ??= { system: {}, blogs: [], analytics: [], jobs: [], locks: [] }
       return mutator(document)
     },
     async read() {
-      return { ...structuredClone(document), jobs: structuredClone(nativeJobs), locks: [] }
+      return {
+        ...structuredClone(document),
+        analytics: structuredClone(nativeAnalytics),
+        jobs: structuredClone(nativeJobs),
+        locks: [],
+      }
+    },
+    async analyticsAppend(snapshot) {
+      const index = nativeAnalytics.findIndex((item) => item.id === snapshot.id)
+      if (index >= 0) nativeAnalytics.splice(index, 1)
+      nativeAnalytics.unshift(structuredClone(snapshot))
+      return structuredClone(snapshot)
     },
     async jobEnqueue(job, dedupeKey) {
       const existing = nativeJobs.find((item) => item.id === job.id || (dedupeKey && ['queued', 'running'].includes(item.status) && item.payload?.dedupeKey === dedupeKey))
@@ -35,16 +47,26 @@ function fakePostgresTarget() {
       nativeJobs.push(saved)
       return structuredClone(saved)
     },
+    stateDocument() {
+      return structuredClone(document)
+    },
   }
 }
 
-test('JSON to PostgreSQL migration recovers running jobs and discards old operation leases', async () => {
+test('JSON to PostgreSQL migration promotes analytics, recovers running jobs, and discards old operation leases', async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, 'state.json')
     const source = await new JsonStore(path).init()
     await source.mutate((state) => {
       state.blogs.push({ id: 'blog_1', name: 'Migrated Blog' })
       state.articles.push({ id: 'article_1', blogId: 'blog_1', title: 'Hello' })
+      state.analytics.push({
+        id: 'metric_1',
+        blogId: 'blog_1',
+        capturedAt: '2026-08-28T00:02:00.000Z',
+        clicks: 42,
+        source: 'search-console',
+      })
       state.system.scheduler.running = true
       state.jobs.push({
         id: 'job_running',
@@ -96,14 +118,21 @@ test('JSON to PostgreSQL migration recovers running jobs and discards old operat
     const target = fakePostgresTarget()
     const result = await migrateJsonToPostgres({ sourcePath: path, targetStore: target })
     const migrated = await target.read()
+    const document = target.stateDocument()
 
     assert.equal(result.blogs, 1)
     assert.equal(result.articles, 1)
+    assert.equal(result.migratedAnalytics, 1)
+    assert.equal(result.analyticsKeptInStateDocument, 0)
     assert.equal(result.migratedJobs, 2)
     assert.equal(result.recoveredRunningJobs, 1)
     assert.equal(result.discardedOperationLeases, 1)
     assert.equal(migrated.system.scheduler.running, false)
     assert.equal(migrated.locks.length, 0)
+    assert.equal(document.analytics.length, 0, 'normalized analytics should not remain in the global state document')
+    assert.equal(migrated.analytics.length, 1)
+    assert.equal(migrated.analytics[0].id, 'metric_1')
+    assert.equal(migrated.analytics[0].clicks, 42)
 
     const recovered = migrated.jobs.find((job) => job.id === 'job_running')
     assert.equal(recovered.status, 'queued')
