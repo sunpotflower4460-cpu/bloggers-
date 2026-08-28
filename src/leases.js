@@ -7,6 +7,12 @@ function expired(lease, now) {
   return !lease.expiresAt || new Date(lease.expiresAt).getTime() <= now
 }
 
+function leaseLostError(key) {
+  const error = new Error(`Operation lease ownership was lost: ${key}`)
+  error.code = 'OPERATION_LEASE_LOST'
+  return error
+}
+
 export async function acquireLease(store, key, { ttlMs = DEFAULT_TTL_MS, owner = createId('lease-owner'), now = Date.now() } = {}) {
   const acquiredAt = new Date(now).toISOString()
   const expiresAt = new Date(now + Math.max(1000, ttlMs)).toISOString()
@@ -32,6 +38,22 @@ export async function acquireLease(store, key, { ttlMs = DEFAULT_TTL_MS, owner =
     }
     state.locks.push(lease)
     return { acquired: true, lease: structuredClone(lease), owner }
+  })
+}
+
+export async function renewLease(store, key, owner, { ttlMs = DEFAULT_TTL_MS, now = Date.now() } = {}) {
+  if (!owner) throw new Error('Operation lease renewal requires an owner')
+  if (store.capabilities?.nativeLeaseRenew && typeof store.leaseRenew === 'function') {
+    return store.leaseRenew(key, owner, { ttlMs, now })
+  }
+
+  return store.mutate((state) => {
+    state.locks ??= []
+    const lease = state.locks.find((item) => item.key === key)
+    if (!lease || lease.owner !== owner || expired(lease, now)) throw leaseLostError(key)
+    lease.expiresAt = new Date(now + Math.max(1000, ttlMs)).toISOString()
+    lease.updatedAt = nowIso()
+    return structuredClone(lease)
   })
 }
 
