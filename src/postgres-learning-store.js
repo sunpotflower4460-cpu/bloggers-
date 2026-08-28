@@ -221,6 +221,10 @@ export class PostgresLearningStore extends PostgresEditorialStore {
     const client = await this.#learningPool.connect()
     try {
       await client.query('BEGIN')
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtext($1)::bigint)',
+        [`bloggers-learning:${blogId}`],
+      )
       const experimentRows = await client.query(
         `SELECT id, blog_id, article_id, action, status, created_at, completed_at, document
          FROM bloggers_experiments
@@ -243,8 +247,8 @@ export class PostgresLearningStore extends PostgresEditorialStore {
 
       for (const experiment of experiments) await this.#upsertExperiment(client, experiment)
       for (const memory of memories) await this.#upsertMemory(client, memory)
-      await this.#trim(client, 'bloggers_experiments', safeLimit(5000, 5000, 50_000))
-      await this.#trim(client, 'bloggers_memories', safeLimit(2000, 2000, 20_000))
+      await this.#trim(client, 'bloggers_experiments', 5000)
+      await this.#trim(client, 'bloggers_memories', 2000)
       await client.query('COMMIT')
       return value
     } catch (error) {
