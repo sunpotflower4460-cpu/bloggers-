@@ -16,8 +16,10 @@ const ROLES = new Set(['viewer', 'editor', 'admin'])
 const DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
 const FLOW_TTL_SECONDS = 10 * 60
 const DEFAULT_TIMEOUT_MS = 12_000
-const SESSION_COOKIE = '__Host-bloggers_session'
-const FLOW_COOKIE = '__Host-bloggers_oidc_flow'
+const SECURE_SESSION_COOKIE = '__Host-bloggers_session'
+const SECURE_FLOW_COOKIE = '__Host-bloggers_oidc_flow'
+const LOCAL_SESSION_COOKIE = 'bloggers_session'
+const LOCAL_FLOW_COOKIE = 'bloggers_oidc_flow'
 
 function clean(value) {
   return String(value ?? '').trim()
@@ -264,6 +266,8 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
   let discoveryCachedAt = 0
   let jwksCache = null
   let jwksCachedAt = 0
+  const sessionCookieName = config.enabled && config.secureCookies ? SECURE_SESSION_COOKIE : LOCAL_SESSION_COOKIE
+  const flowCookieName = config.enabled && config.secureCookies ? SECURE_FLOW_COOKIE : LOCAL_FLOW_COOKIE
 
   function cookie(name, value, options) {
     return serializeCookie(name, value, { secure: Boolean(config.secureCookies), ...options })
@@ -401,7 +405,7 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
 
     return {
       redirectUrl: authorizationUrl.toString(),
-      setCookies: [cookie(FLOW_COOKIE, flow, { maxAge: FLOW_TTL_SECONDS, sameSite: 'Lax' })],
+      setCookies: [cookie(flowCookieName, flow, { maxAge: FLOW_TTL_SECONDS, sameSite: 'Lax' })],
     }
   }
 
@@ -413,7 +417,7 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
     if (!code || !state) throw fail('OIDC_CALLBACK_INVALID', 'OIDC callback is missing code or state', 400)
 
     const cookies = parseCookies(cookieHeader)
-    const flow = verifyEnvelope(cookies[FLOW_COOKIE], config.sessionSecret, { kind: 'oidc-flow', now: clock() })
+    const flow = verifyEnvelope(cookies[flowCookieName], config.sessionSecret, { kind: 'oidc-flow', now: clock() })
     if (!safeEqual(flow.state, state)) throw fail('OIDC_STATE_MISMATCH', 'OIDC state validation failed', 401)
 
     const metadata = await discovery()
@@ -461,8 +465,8 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
       principal,
       returnTo: safeReturnTo(flow.returnTo),
       setCookies: [
-        cookie(SESSION_COOKIE, session, { maxAge: config.sessionTtlSeconds, sameSite: 'Strict' }),
-        clearCookie(FLOW_COOKIE, 'Lax'),
+        cookie(sessionCookieName, session, { maxAge: config.sessionTtlSeconds, sameSite: 'Strict' }),
+        clearCookie(flowCookieName, 'Lax'),
       ],
     }
   }
@@ -470,9 +474,9 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
   function sessionPrincipal(cookieHeader) {
     if (!config.enabled) return null
     const cookies = parseCookies(cookieHeader)
-    if (!cookies[SESSION_COOKIE]) return null
+    if (!cookies[sessionCookieName]) return null
     try {
-      const session = verifyEnvelope(cookies[SESSION_COOKIE], config.sessionSecret, { kind: 'oidc-session', now: clock() })
+      const session = verifyEnvelope(cookies[sessionCookieName], config.sessionSecret, { kind: 'oidc-session', now: clock() })
       if (!ROLES.has(session.role) || !session.id || !session.name) return null
       return {
         id: session.id,
@@ -498,7 +502,7 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
   }
 
   function logoutCookies() {
-    return [clearCookie(SESSION_COOKIE, 'Strict'), clearCookie(FLOW_COOKIE, 'Lax')]
+    return [clearCookie(sessionCookieName, 'Strict'), clearCookie(flowCookieName, 'Lax')]
   }
 
   return {
