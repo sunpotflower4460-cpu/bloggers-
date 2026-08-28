@@ -1,4 +1,5 @@
 // @feature F-007
+// @feature F-009
 // @feature F-012
 import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -31,6 +32,7 @@ export async function migrateJsonToPostgres({
   const sourceState = await source.read()
   const sourceJobs = structuredClone(sourceState.jobs ?? [])
   const sourceAnalytics = structuredClone(sourceState.analytics ?? [])
+  const sourceActivities = structuredClone(sourceState.activities ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -45,7 +47,9 @@ export async function migrateJsonToPostgres({
   if (typeof target.jobEnqueue !== 'function') throw new Error('Migration target does not support native PostgreSQL jobs')
 
   const nativeAnalytics = typeof target.analyticsAppend === 'function'
+  const nativeActivities = typeof target.activityAppend === 'function'
   if (nativeAnalytics) portableState.analytics = []
+  if (nativeActivities) portableState.activities = []
 
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
@@ -57,6 +61,14 @@ export async function migrateJsonToPostgres({
     for (const snapshot of sourceAnalytics) {
       await target.analyticsAppend(snapshot, { limit: 5000 })
       migratedAnalytics += 1
+    }
+  }
+
+  let migratedActivities = 0
+  if (nativeActivities) {
+    for (const activity of sourceActivities) {
+      await target.activityAppend(activity, { limit: 1000 })
+      migratedActivities += 1
     }
   }
 
@@ -84,6 +96,8 @@ export async function migrateJsonToPostgres({
     articles: portableState.articles?.length ?? 0,
     migratedAnalytics,
     analyticsKeptInStateDocument: nativeAnalytics ? 0 : sourceAnalytics.length,
+    migratedActivities,
+    activitiesKeptInStateDocument: nativeActivities ? 0 : sourceActivities.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
