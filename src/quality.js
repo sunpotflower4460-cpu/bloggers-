@@ -171,10 +171,20 @@ function citedIds(body) {
 }
 
 function claimSegments(body) {
-  return String(body || '')
-    .split(/(?:\r?\n)+|(?<=[。！？!?])\s*/u)
-    .map((item) => cleanText(item.replace(/^#{1,6}\s*/, '').replace(/^[-*+]\s+/, '')))
-    .filter((item) => item && !/^https?:\/\//i.test(item))
+  const segments = []
+  for (const paragraph of String(body || '').split(/(?:\r?\n)+/)) {
+    const cleaned = cleanText(paragraph.replace(/^#{1,6}\s*/, '').replace(/^[-*+]\s+/, ''))
+    if (!cleaned || /^https?:\/\//i.test(cleaned)) continue
+
+    // Keep citations written immediately after Japanese/English sentence punctuation
+    // attached to the sentence they support: `主張です。[S1]` is one claim, not two.
+    const sentences = cleaned.match(/[^。！？!?]+(?:[。！？!?]+|$)(?:\s*\[S\d+\])*/gu) ?? [cleaned]
+    for (const sentence of sentences) {
+      const text = cleanText(sentence)
+      if (text) segments.push(text)
+    }
+  }
+  return segments
 }
 
 function claimNumbers(text) {
