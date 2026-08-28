@@ -32,7 +32,7 @@ function h(value) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;')
+    .replaceAll("'", '&#39;')
 }
 
 function fmtDate(value) {
