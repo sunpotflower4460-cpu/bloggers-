@@ -38,8 +38,8 @@ export async function createStore({ env = process.env, postgresPool = null, impo
     const pool = postgresPool
       ? assertPostgresPool(postgresPool)
       : await loadConfiguredPostgresPool({ env, importer })
-    const { PostgresSystemStore } = await import('./postgres-system-store.js')
-    return new PostgresSystemStore(pool).init()
+    const { PostgresSessionStore } = await import('./postgres-session-store.js')
+    return new PostgresSessionStore(pool).init()
   }
   throw new Error(`Unsupported BLOGGERS_STORAGE_DRIVER: ${mode.driver}`)
 }
