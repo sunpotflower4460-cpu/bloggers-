@@ -34,10 +34,12 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 - JSON Storeのcross-process transaction lock + atomic write
 - PostgreSQL state adapter + normalized jobs / operation leases
 - PostgreSQL native Blog Brain / analytics / activities / AI usage / workflows / ideas / articles / approvals / experiments / memories
+- PostgreSQL native system sections（core / aiBudget / scheduler）+ revision
 - Blog単位のrow-lock mutation（Memory Connectorのlocal remotePostsを含む）
 - Article + Approval paired transaction
 - Experiment completion + Blog Memory promotion paired transaction
 - Learning transactionのper-blog advisory lock
+- Scheduler section単位の`FOR UPDATE` mutation
 - `FOR UPDATE SKIP LOCKED` worker leasing
 - JSON → PostgreSQL migration command
 - deployment-provided PostgreSQL pool module hook
@@ -101,7 +103,8 @@ Worker B ────┘
 
 実装済み:
 
-- `bloggers_state` — 主にsystem runtime/settingsを保持する一般state document
+- `bloggers_state` — legacy state shape / versionを保つcompatibility document
+- `bloggers_system_settings` — `core / aiBudget / scheduler` の独立settings/runtime rows + revision
 - `bloggers_blogs` — Blog Brain / connector refs / autonomy / research / Memory Connector local state
 - `bloggers_jobs` — normalized durable jobs
 - `bloggers_operation_leases` — normalized operation leases
@@ -120,9 +123,11 @@ Worker B ────┘
 
 高頻度・独立履歴はglobal `bloggers_state`行をロックせず専用tableへ直接書き込みます。Blog Brainは`bloggers_blogs`の**1 blog rowだけを`FOR UPDATE`**して更新するため、別ブログの設定変更やMemory Connectorのlocal post更新同士がglobal rowを奪い合いません。Article/ApprovalとExperiment/Memoryのように意味的原子性が必要な組はpaired native transactionで同時確定します。
 
-`PostgresRuntimeStore` → `PostgresEditorialStore` → `PostgresLearningStore` → `PostgresConfigStore` の `read()` は専用tableを従来のstate配列へ透過hydrateするため、Portfolio Brain / HQ / Orchestratorはbackend差を意識しません。
+Systemも`bloggers_system_settings`へ分離し、`core / aiBudget / scheduler`を別rowとして管理します。Schedulerの通常更新は`scheduler` rowだけを`FOR UPDATE`するため、Emergency PauseやAI Budget設定を巻き込みません。既存`store.mutate(state.system...)`向けの互換経路はnative rowsへ書き戻し、normalizedな非system collectionを書こうとした場合はfail-closedします。
 
-現時点でglobal `bloggers_state`に残る主要な可変領域は`system`です。Scheduler設定、Emergency Pause、AI budget等を含むため、ここは設定versioningと同時に次段の正規化対象とします。
+`PostgresRuntimeStore` → `PostgresEditorialStore` → `PostgresLearningStore` → `PostgresConfigStore` → `PostgresSystemStore` の `read()` は専用tableを従来のstate shapeへ透過hydrateするため、Portfolio Brain / HQ / Orchestratorはbackend差を意識しません。
+
+現在の`bloggers_state`は互換shape・versionと将来の未正規化fieldを受ける基底documentとして残しますが、既知の主要可変domainは専用tableへ移行済みです。
 
 現PRは「新規npm依存0」を守るため `pg` 等を同梱していません。デプロイ環境側のESM pool moduleを読み込みます。
 
@@ -143,7 +148,7 @@ export BLOGGERS_MIGRATION_JSON_FILE=./data/state.json
 npm run migrate:postgres
 ```
 
-移行時に`running`だったJobは`queued`へ戻して旧ownerを破棄し、旧operation leaseも引き継ぎません。native capabilityを持つBlog / Analytics / Activity / AI Usage / Workflow / Idea / Article / Approval / Experiment / Memoryはglobal documentへ二重保持せず専用tableへ直接移します。
+移行時に`running`だったJobは`queued`へ戻して旧ownerを破棄し、旧operation leaseも引き継ぎません。Systemは`core / aiBudget / scheduler`へ分割し、移行時の`scheduler.running`は必ず`false`へ戻します。native capabilityを持つBlog / Analytics / Activity / AI Usage / Workflow / Idea / Article / Approval / Experiment / Memoryもglobal documentへ二重保持せず専用tableへ直接移します。
 
 ## Durable execution / side-effect fencing
 
@@ -357,9 +362,10 @@ OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin f
           JsonStore + fs lock      PostgreSQL layered stores
                     |              /                    \
                state.json    bloggers_state      normalized tables
-                                            blogs / jobs / leases
-                                            analytics / activities
-                                            AI usage / workflows / ideas
+                                            system settings / blogs
+                                            jobs / leases / analytics
+                                            activities / AI usage
+                                            workflows / ideas
                                             articles / approvals
                                             experiments / memories
                      \                   /
@@ -393,6 +399,8 @@ Secrets: env / managed resolver → no literal credential persistence
 - `src/postgres-editorial-store.js` — PostgreSQL native ideas / articles / approvals
 - `src/postgres-learning-store.js` — PostgreSQL native experiments / memories + atomic learning transaction
 - `src/postgres-config-store.js` — PostgreSQL native Blog Brain + row-lock mutation
+- `src/postgres-system-store.js` — PostgreSQL native system sections + revision / section row locks
+- `src/system-store.js` — backend-neutral system section split/merge/mutation contract
 - `src/migrate-to-postgres.js` — JSON → PostgreSQL staged migration
 - `src/jobs.js` — leased Job Queue
 - `src/leases.js` / `src/runtime.js` — operation lease / exclusive runtime
@@ -414,9 +422,9 @@ Secrets: env / managed resolver → no literal credential persistence
 
 ## 次のproduction-hardening候補
 
-- PostgreSQL driverの正式依存化（guard制約変更の承認後）
-- `system` settings/runtime stateのPostgreSQL正規化とversioned configuration
 - PostgreSQL実インスタンスを使うintegration / migration CI
+- PostgreSQL driverの正式依存化（guard制約変更の承認後）
+- system schema migration / revisionを使った管理UI上の競合検出
 - OIDC Sessionのserver-side revocation / key rotation grace window
 - AWS Secrets Manager / GCP Secret Manager / Vault等の具体provider module
 - microCMS / Contentful等の追加Connector
