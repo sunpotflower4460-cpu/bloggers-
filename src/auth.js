@@ -2,7 +2,9 @@
 // @feature F-009
 // @feature F-012
 import { timingSafeEqual } from 'node:crypto'
-import { resolveSecret } from './secrets.js'
+import { initializeSecretResolver, resolveSecret } from './secrets.js'
+
+await initializeSecretResolver()
 
 const ROLE_RANK = { viewer: 1, editor: 2, admin: 3 }
 
