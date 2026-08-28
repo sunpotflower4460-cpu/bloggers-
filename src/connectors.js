@@ -1,5 +1,6 @@
 // @feature F-003
 import { createHmac } from 'node:crypto'
+import { mutateBlogRecord } from './blog-store.js'
 import { beforeExternalWrite } from './execution-context.js'
 import { resolveSecret } from './secrets.js'
 import { createId, nowIso } from './store.js'
@@ -121,9 +122,7 @@ class MemoryConnector extends BaseConnector {
 
   async createDraft(article) {
     await beforeExternalWrite({ connector: 'memory', operation: 'create-draft', blogId: this.blog.id, articleId: article.id })
-    return this.store.mutate((state) => {
-      const blog = state.blogs.find((item) => item.id === this.blog.id)
-      if (!blog) throw new Error('Blog not found')
+    return mutateBlogRecord(this.store, this.blog.id, (blog) => {
       blog.remotePosts ??= []
       const existing = blog.remotePosts.find((item) => item.sourceArticleId === article.id)
       if (existing) return structuredClone(existing)
@@ -138,17 +137,18 @@ class MemoryConnector extends BaseConnector {
         updatedAt: nowIso(),
       }
       blog.remotePosts.push(post)
+      blog.updatedAt = nowIso()
       return structuredClone(post)
     })
   }
 
   async updatePost(postId, changes) {
     await beforeExternalWrite({ connector: 'memory', operation: 'update-post', blogId: this.blog.id, postId })
-    return this.store.mutate((state) => {
-      const blog = state.blogs.find((item) => item.id === this.blog.id)
-      const post = blog?.remotePosts?.find((item) => item.id === postId)
+    return mutateBlogRecord(this.store, this.blog.id, (blog) => {
+      const post = blog.remotePosts?.find((item) => item.id === postId)
       if (!post) throw new Error('Remote post not found')
       Object.assign(post, changes, { updatedAt: nowIso() })
+      blog.updatedAt = nowIso()
       return structuredClone(post)
     })
   }
