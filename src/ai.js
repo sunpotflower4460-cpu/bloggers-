@@ -257,7 +257,8 @@ export class OpenAICompatibleProvider {
 
 export function createAIProvider() {
   const baseUrl = process.env.BLOGGERS_AI_BASE_URL
-  const apiKey = resolveSecret('BLOGGERS_AI_API_KEY', { label: 'AI API key' })
+  const apiKeyReference = process.env.BLOGGERS_AI_API_KEY_REF || 'BLOGGERS_AI_API_KEY'
+  const apiKey = resolveSecret(apiKeyReference, { label: 'AI API key' })
   const fallback = process.env.BLOGGERS_AI_MODEL
   const models = {
     default: fallback,
