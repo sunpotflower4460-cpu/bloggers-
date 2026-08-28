@@ -1,8 +1,8 @@
 // @feature F-004
 // @feature F-005
 // @feature F-012
-import { completeJob, enqueueJob, failJob, leaseDueJobs } from './jobs.js'
-import { nowIso } from './store.js'
+import { completeJob, DEFAULT_JOB_LEASE_MS, enqueueJob, failJob, leaseDueJobs, renewJobLease } from './jobs.js'
+import { createId, nowIso } from './store.js'
 
 const MIN_INTERVAL_MINUTES = 15
 const MAX_INTERVAL_MINUTES = 7 * 24 * 60
@@ -11,6 +11,12 @@ function clampInteger(value, fallback, min, max) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.max(min, Math.min(max, Math.round(parsed)))
+}
+
+function jobLeaseMs() {
+  const parsed = Number(process.env.BLOGGERS_JOB_LEASE_MS || DEFAULT_JOB_LEASE_MS)
+  if (!Number.isFinite(parsed)) return DEFAULT_JOB_LEASE_MS
+  return Math.max(60_000, Math.min(60 * 60 * 1000, Math.round(parsed)))
 }
 
 export function normalizeSchedulerConfig(value = {}) {
@@ -51,9 +57,11 @@ function isDue(config, now) {
 function isRetryableFailure(errorOrMessage) {
   const code = errorOrMessage?.code
   const message = String(errorOrMessage?.message ?? errorOrMessage ?? '')
-  if (code === 'AI_BUDGET_RESERVE_REACHED') return false
+  if (code === 'AI_BUDGET_RESERVE_REACHED' || code === 'JOB_LEASE_LOST') return false
   if (/AI monthly budget reserve reached/i.test(message)) return false
   if (/operation lease is already active/i.test(message)) return false
+  if (/already has an editorial cycle in progress/i.test(message)) return false
+  if (/approval is already being processed/i.test(message)) return false
   return true
 }
 
@@ -79,6 +87,8 @@ async function migrateLegacyRetries(store, config) {
 export function createScheduler({ store, runPortfolioCycle, runBlogCycle, recordActivity, clock = () => Date.now() }) {
   let timer = null
   let running = false
+  const workerId = createId('worker')
+  const leaseMs = jobLeaseMs()
 
   async function schedulePortfolioIfDue(config, now) {
     if (!isDue(config, now)) return null
@@ -98,7 +108,38 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     return job
   }
 
+  function startLeaseHeartbeat(job) {
+    const intervalMs = Math.max(10_000, Math.min(60_000, Math.floor(leaseMs / 3)))
+    const heartbeat = setInterval(() => {
+      renewJobLease(store, job.id, { owner: workerId, leaseMs }).catch((error) => {
+        if (error?.code !== 'JOB_LEASE_LOST') {
+          recordActivity(store, {
+            blogId: job.blogId,
+            agent: 'scheduler',
+            type: 'scheduler.lease-heartbeat-failed',
+            message: `Job lease heartbeatに失敗しました: ${error.message}`,
+            detail: { jobId: job.id, workerId },
+          }).catch(() => undefined)
+        }
+      })
+    }, intervalMs)
+    heartbeat.unref?.()
+    return heartbeat
+  }
+
+  async function leaseLostResult(job, error) {
+    await recordActivity(store, {
+      blogId: job.blogId,
+      agent: 'scheduler',
+      type: 'scheduler.job-lease-lost',
+      message: `古いWorkerのJob確定を拒否しました: ${job.type}`,
+      detail: { jobId: job.id, workerId, error: error.message },
+    }).catch(() => undefined)
+    return { jobId: job.id, type: job.type, blogId: job.blogId, ok: false, error: error.message, status: 'lease-lost', retryable: false }
+  }
+
   async function processJob(job, config, now) {
+    const heartbeat = startLeaseHeartbeat(job)
     try {
       if (job.type === 'portfolio-cycle') {
         const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler' })
@@ -119,13 +160,14 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
           failedBlogs: failed.map((item) => item.blogId),
           retryableBlogs: retryable.map((item) => item.blogId),
           nonRetryableBlogs: nonRetryable.map((item) => item.blogId),
-        })
+        }, { owner: workerId })
         await recordActivity(store, {
           agent: 'scheduler',
           type: 'scheduler.cycle',
           message: `定時Portfolio cycleを実行しました。${retryable.length > 0 ? ` ${retryable.length}件をdurable job queueへ追加しました。` : ''}${nonRetryable.length > 0 ? ` ${nonRetryable.length}件はnon-retryableとして停止しました。` : ''}`,
           detail: {
             jobId: job.id,
+            workerId,
             failed: failed.map((item) => item.blogId),
             retryable: retryable.map((item) => item.blogId),
             nonRetryable: nonRetryable.map((item) => item.blogId),
@@ -136,26 +178,36 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
 
       if (job.type === 'blog-cycle') {
         const result = await runBlogCycle(store, job.blogId, { trigger: job.payload?.trigger || 'retry' })
-        await completeJob(store, job.id, { workflowId: result.workflowId ?? null })
+        await completeJob(store, job.id, { workflowId: result.workflowId ?? null }, { owner: workerId })
         return { jobId: job.id, type: job.type, blogId: job.blogId, ok: true, result }
       }
 
       throw new Error(`Unsupported job type: ${job.type}`)
     } catch (error) {
+      if (error?.code === 'JOB_LEASE_LOST') return leaseLostResult(job, error)
       const retryable = isRetryableFailure(error)
-      const failed = await failJob(store, job.id, error, {
-        retryDelayMinutes: config.retryDelayMinutes,
-        now,
-        retryable,
-      })
+      let failed
+      try {
+        failed = await failJob(store, job.id, error, {
+          retryDelayMinutes: config.retryDelayMinutes,
+          now,
+          retryable,
+          owner: workerId,
+        })
+      } catch (failureError) {
+        if (failureError?.code === 'JOB_LEASE_LOST') return leaseLostResult(job, failureError)
+        throw failureError
+      }
       await recordActivity(store, {
         blogId: job.blogId,
         agent: 'scheduler',
         type: retryable ? 'scheduler.job-failed' : 'scheduler.job-stopped',
         message: `${job.type} が失敗しました: ${error.message}`,
-        detail: { jobId: job.id, attempt: failed.attempt, status: failed.status, retryable },
+        detail: { jobId: job.id, workerId, attempt: failed.attempt, status: failed.status, retryable },
       })
       return { jobId: job.id, type: job.type, blogId: job.blogId, ok: false, error: error.message, status: failed.status, retryable }
+    } finally {
+      clearInterval(heartbeat)
     }
   }
 
@@ -169,7 +221,7 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
 
     await migrateLegacyRetries(store, config)
     const scheduled = await schedulePortfolioIfDue(config, now)
-    const jobs = await leaseDueJobs(store, { limit: 20, now })
+    const jobs = await leaseDueJobs(store, { limit: 20, leaseMs, now, owner: workerId })
     if (jobs.length === 0) return { skipped: true, reason: 'not-due' }
 
     running = true
@@ -184,6 +236,7 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
       const portfolioResult = results.find((item) => item.type === 'portfolio-cycle')?.portfolio ?? null
       return {
         skipped: false,
+        workerId,
         scheduledJobId: scheduled?.id ?? null,
         portfolio: portfolioResult,
         jobs: results,
@@ -202,7 +255,7 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     if (timer) return
     timer = setInterval(() => {
       tick().catch((error) => {
-        recordActivity(store, { agent: 'scheduler', type: 'scheduler.failed', message: error.message }).catch(() => undefined)
+        recordActivity(store, { agent: 'scheduler', type: 'scheduler.failed', message: error.message, detail: { workerId } }).catch(() => undefined)
       })
     }, 30_000)
     if (!keepAlive) timer.unref?.()
@@ -215,5 +268,5 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     timer = null
   }
 
-  return { start, stop, tick }
+  return { start, stop, tick, workerId }
 }
