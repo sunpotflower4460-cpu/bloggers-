@@ -159,7 +159,7 @@ function renderHQ() {
     : '<div class="empty-state"><strong>まだブログが接続されていません。</strong><p>Blogsから最初のBlog Brainを作成すると、AI編集部が動き始めます。</p></div>'
 
   const approvals = data.pendingApprovals.length
-    ? data.pendingApprovals.map((item) => `<div class="approval-row"><div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div><button class="button button-small" data-approve="${h(item.id)}" ${canEdit ? '' : 'disabled'}>承認</button></div>`).join('')
+    ? data.pendingApprovals.map((item) => `<div class="approval-row"><div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div><div class="inline-controls"><button class="button button-small button-ghost" data-reject="${h(item.id)}" ${canEdit ? '' : 'disabled'}>却下</button><button class="button button-small" data-approve="${h(item.id)}" ${canEdit ? '' : 'disabled'}>承認</button></div></div>`).join('')
     : '<p class="muted">承認待ちはありません。</p>'
 
   const ranking = data.portfolio?.ranking?.length
@@ -449,6 +449,15 @@ document.addEventListener('click', async (event) => {
       const result = await request(`/api/blogs/${encodeURIComponent(testBlog.dataset.testBlog)}/test-connection`, { method: 'POST', body: '{}' })
       const warnings = result.metrics?.warnings?.length || 0
       flash(`接続OK: ${result.connector} / ${result.samplePosts}件${warnings ? ` / Analytics警告 ${warnings}` : ''}`, 'success')
+    } catch (error) { flash(error.message, 'error') }
+    return
+  }
+  const reject = event.target.closest('[data-reject]')
+  if (reject) {
+    if (!window.confirm('このHuman Gateの提案を却下しますか？公開・更新は行われません。')) return
+    try {
+      await request(`/api/approvals/${encodeURIComponent(reject.dataset.reject)}/resolve`, { method: 'POST', body: JSON.stringify({ approved: false }) })
+      await refresh('提案を却下しました。公開・更新は行っていません。')
     } catch (error) { flash(error.message, 'error') }
     return
   }
