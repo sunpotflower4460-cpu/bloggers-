@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createConnector, createGhostAdminToken, markdownToBasicHtml } from '../src/connectors.js'
+import { createConnector, createGhostAdminToken, GhostConnector, markdownToBasicHtml } from '../src/connectors.js'
 import { addBlog } from '../src/orchestrator.js'
 import { JsonStore } from '../src/store.js'
 
@@ -97,6 +97,7 @@ test('Ghost connector creates HTML drafts and uses latest updated_at before edit
       const createCall = calls.find((item) => item.method === 'POST')
       assert.match(createCall.body.posts[0].html, /<h1>Draft<\/h1>/)
       assert.equal(createCall.body.posts[0].status, 'draft')
+      assert.equal(createCall.body.posts[0].slug, 'bloggers-article-1')
 
       await connector.updatePost('post-1', { title: 'New title', content: 'Updated **body**.' })
       const updateCall = calls.find((item) => item.method === 'PUT')
@@ -114,4 +115,40 @@ test('Ghost connector creates HTML drafts and uses latest updated_at before edit
       else process.env.GHOST_TEST_ADMIN_KEY = previousKey
     }
   })
+})
+
+test('GhostConnector reuses an existing draft with the deterministic article slug', async () => {
+  const previousKey = process.env.GHOST_IDEMPOTENT_KEY
+  process.env.GHOST_IDEMPOTENT_KEY = 'key-id:0123456789abcdef'
+  const originalFetch = globalThis.fetch
+  let postCalls = 0
+  const urls = []
+
+  globalThis.fetch = async (url, options = {}) => {
+    urls.push(String(url))
+    const method = String(options.method || 'GET').toUpperCase()
+    if (method === 'POST') postCalls += 1
+    if (method === 'GET' && String(url).includes('/posts/slug/bloggers-article-retry-safe/')) {
+      return new Response(JSON.stringify({ posts: [{ id: 'existing-post', slug: 'bloggers-article-retry-safe', status: 'draft', updated_at: '2026-08-28T00:00:00.000Z' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    throw new Error(`Unexpected request: ${method} ${url}`)
+  }
+
+  try {
+    const connector = new GhostConnector({
+      blog: { id: 'ghost-idempotent', connector: { type: 'ghost', endpoint: 'https://ghost.example.com', adminKeyEnv: 'GHOST_IDEMPOTENT_KEY', apiVersion: 'v6.0' } },
+      store: null,
+    })
+    const draft = await connector.createDraft({ id: 'article-retry-safe', title: 'Retry safe', body: 'body' })
+    assert.equal(draft.id, 'existing-post')
+    assert.equal(postCalls, 0)
+    assert.ok(urls.some((url) => url.includes('/posts/slug/bloggers-article-retry-safe/')))
+  } finally {
+    globalThis.fetch = originalFetch
+    if (previousKey === undefined) delete process.env.GHOST_IDEMPOTENT_KEY
+    else process.env.GHOST_IDEMPOTENT_KEY = previousKey
+  }
 })
