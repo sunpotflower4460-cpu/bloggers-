@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 const DEFAULT_STATE = {
-  version: 3,
+  version: 4,
   system: {
     paused: false,
     pausedAt: null,
@@ -37,6 +37,7 @@ const DEFAULT_STATE = {
   memories: [],
   jobs: [],
   aiUsage: [],
+  locks: [],
 }
 
 function clone(value) {
@@ -72,6 +73,7 @@ function mergeDefaults(value = {}) {
     memories: value.memories ?? [],
     jobs: value.jobs ?? [],
     aiUsage: value.aiUsage ?? [],
+    locks: value.locks ?? [],
   }
 }
 
