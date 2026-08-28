@@ -122,6 +122,11 @@ function parsePricing() {
   }
 }
 
+function aiTimeoutMs() {
+  const value = Number(process.env.BLOGGERS_AI_TIMEOUT_MS || 120_000)
+  return Math.max(5_000, Math.min(300_000, Number.isFinite(value) ? value : 120_000))
+}
+
 export class OpenAICompatibleProvider {
   constructor({ baseUrl, apiKey, models, pricing = parsePricing() }) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
@@ -163,6 +168,8 @@ export class OpenAICompatibleProvider {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, messages, temperature }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(aiTimeoutMs()),
     })
     const payload = await response.json()
     if (!response.ok) throw new Error(payload?.error?.message || `AI provider HTTP ${response.status}`)
