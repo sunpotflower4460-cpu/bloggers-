@@ -11,6 +11,7 @@
 // @feature F-012
 import { createAIProvider } from './ai.js'
 import { collectAnalytics } from './analytics.js'
+import { appendAnalyticsSnapshot } from './analytics-store.js'
 import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
@@ -354,10 +355,7 @@ export async function runBlogCycle(store, blogId, options = {}) {
     const [posts, cmsMetrics] = await Promise.all([connector.listPosts(30), connector.getMetrics()])
     const metrics = await collectAnalytics(blog, cmsMetrics)
     const snapshot = { id: createId('metric'), blogId, capturedAt: nowIso(), ...metrics }
-    await store.mutate((state) => {
-      state.analytics.unshift(snapshot)
-      state.analytics = state.analytics.slice(0, 5000)
-    })
+    await appendAnalyticsSnapshot(store, snapshot, { limit: 5000 })
 
     if (metrics.warnings?.length) {
       await recordActivity(store, { blogId, agent: 'observer', type: 'analytics.partial', message: `${metrics.warnings.length}個のAnalytics sourceを取得できませんでしたが、利用可能なデータで継続します。`, detail: metrics.warnings })
