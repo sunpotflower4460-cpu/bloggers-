@@ -28,6 +28,7 @@ import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclu
 import { configureScheduler, createScheduler } from './scheduler.js'
 import { resolveSecret, secretResolverStatus } from './secrets.js'
 import { createStore, storageMode } from './storage.js'
+import { publicSystemView } from './system-store.js'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const publicDir = resolve(root, 'src/public')
@@ -172,7 +173,11 @@ function aiSettings() {
 async function api(request, response, url, auth) {
   const { pathname } = url
 
-  if (request.method === 'GET' && pathname === '/api/hq') return sendJson(response, 200, summarizeHQ(await store.read()))
+  if (request.method === 'GET' && pathname === '/api/hq') {
+    const hq = summarizeHQ(await store.read())
+    hq.system = publicSystemView(hq.system)
+    return sendJson(response, 200, hq)
+  }
   if (request.method === 'GET' && pathname === '/api/portfolio') return sendJson(response, 200, buildPortfolioPlan(await store.read()))
 
   if (request.method === 'GET' && pathname === '/api/blogs') {
@@ -229,7 +234,7 @@ async function api(request, response, url, auth) {
     const state = await store.read()
     const secretStatus = secretResolverStatus()
     return sendJson(response, 200, {
-      system: state.system,
+      system: publicSystemView(state.system),
       ai: aiSettings(),
       aiUsage: auth.role === 'viewer' ? [] : state.aiUsage.slice(0, 100),
       runtime: {
