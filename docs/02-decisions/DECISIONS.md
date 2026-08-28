@@ -197,3 +197,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: multi-worker時のglobal bloggers_state行ロック競合を実際に減らしながら、途中移行で意味的原子性や既存JSON運用を壊さないため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: 全collectionを一括正規化して大規模な書き換えを行う、またはexperimentsだけ先に分離してlearning昇格との原子性を失う方式。
+
+### D-029
+- 日付: 2026-08-28
+- 決定: Directorが生成するIdea履歴もappend-onlyな独立collectionとして`bloggers_ideas`へ正規化し、`PostgresEditorialStore`をPostgresRuntimeStoreの上に重ねる。既存`document.ideas`は起動時にtransaction内で昇格し、JSON→PostgreSQL明示migrationでも専用tableへ直接移す。
+- 理由: 各cycleで必ず発生する企画判断の保存をglobal `bloggers_state`行から外しつつ、Articles/ApprovalsやExperiment→Memoryのような複数entity transactionをまだ崩さないため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: Articles/Approvalsまで同時に正規化して公開承認の原子性を一度に変更する方式。
