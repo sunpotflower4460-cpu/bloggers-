@@ -3,12 +3,18 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 const DEFAULT_STATE = {
-  version: 2,
+  version: 3,
   system: {
     paused: false,
     pausedAt: null,
     lastCycleAt: null,
     defaultAutonomyLevel: 2,
+    aiBudget: {
+      enabled: true,
+      monthlyUsd: 20,
+      perCycleUsd: 2,
+      reserveUsd: 0.5,
+    },
     scheduler: {
       enabled: false,
       intervalMinutes: 360,
@@ -29,6 +35,8 @@ const DEFAULT_STATE = {
   experiments: [],
   workflows: [],
   memories: [],
+  jobs: [],
+  aiUsage: [],
 }
 
 function clone(value) {
@@ -43,6 +51,10 @@ function mergeDefaults(value = {}) {
     system: {
       ...DEFAULT_STATE.system,
       ...(value.system ?? {}),
+      aiBudget: {
+        ...DEFAULT_STATE.system.aiBudget,
+        ...(value.system?.aiBudget ?? {}),
+      },
       scheduler: {
         ...DEFAULT_STATE.system.scheduler,
         ...(value.system?.scheduler ?? {}),
@@ -58,6 +70,8 @@ function mergeDefaults(value = {}) {
     experiments: value.experiments ?? [],
     workflows: value.workflows ?? [],
     memories: value.memories ?? [],
+    jobs: value.jobs ?? [],
+    aiUsage: value.aiUsage ?? [],
   }
 }
 
