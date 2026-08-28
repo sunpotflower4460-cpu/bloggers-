@@ -2,6 +2,11 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PostgresSystemStore } from '../src/postgres-system-store.js'
 import { mutateSystemSection } from '../src/system-store.js'
+import {
+  configureAiBudgetVersioned,
+  configureSchedulerVersioned,
+  settingsVersions,
+} from '../src/settings-control.js'
 
 function fakePool({ legacySystem = {} } = {}) {
   let stateDocument = {
@@ -197,4 +202,44 @@ test('generic PostgresSystemStore mutate fails closed if code tries to alter a n
     /may only change state\.system/,
   )
   assert.deepEqual(pool.snapshot().stateDocument.blogs, [])
+})
+
+test('PostgreSQL system revision tokens reject stale AI budget and Scheduler writes without changing newer values', async () => {
+  const pool = fakePool({ legacySystem: { paused: false } })
+  const store = await new PostgresSystemStore(pool).init()
+  const initial = await settingsVersions(store)
+
+  assert.match(initial.aiBudget, /^r:\d+$/)
+  assert.match(initial.scheduler, /^r:\d+$/)
+
+  await configureAiBudgetVersioned(store, { monthlyUsd: 40 }, { expectedVersion: initial.aiBudget })
+  await configureSchedulerVersioned(store, {
+    enabled: true,
+    intervalMinutes: 45,
+  }, { expectedVersion: initial.scheduler, now: 1_800_000_000_000 })
+
+  const afterFirstSave = await settingsVersions(store)
+  assert.notEqual(afterFirstSave.aiBudget, initial.aiBudget)
+  assert.notEqual(afterFirstSave.scheduler, initial.scheduler)
+
+  await assert.rejects(
+    () => configureAiBudgetVersioned(store, { monthlyUsd: 90 }, { expectedVersion: initial.aiBudget }),
+    (error) => error?.code === 'SYSTEM_VERSION_CONFLICT'
+      && error?.status === 409
+      && error?.section === 'aiBudget',
+  )
+  await assert.rejects(
+    () => configureSchedulerVersioned(store, { intervalMinutes: 15 }, {
+      expectedVersion: initial.scheduler,
+      now: 1_800_000_100_000,
+    }),
+    (error) => error?.code === 'SYSTEM_VERSION_CONFLICT'
+      && error?.status === 409
+      && error?.section === 'scheduler',
+  )
+
+  const state = await store.read()
+  assert.equal(state.system.aiBudget.monthlyUsd, 40)
+  assert.equal(state.system.scheduler.intervalMinutes, 45)
+  assert.deepEqual(await settingsVersions(store), afterFirstSave)
 })
