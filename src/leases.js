@@ -8,6 +8,14 @@ function expired(lease, now) {
 }
 
 export async function acquireLease(store, key, { ttlMs = DEFAULT_TTL_MS, owner = createId('lease-owner'), now = Date.now() } = {}) {
+  const acquiredAt = new Date(now).toISOString()
+  const expiresAt = new Date(now + Math.max(1000, ttlMs)).toISOString()
+  const leaseId = createId('lease')
+
+  if (typeof store.leaseAcquire === 'function') {
+    return store.leaseAcquire({ key, leaseId, owner, acquiredAt, expiresAt, now })
+  }
+
   return store.mutate((state) => {
     state.locks ??= []
     state.locks = state.locks.filter((item) => !expired(item, now))
@@ -15,11 +23,11 @@ export async function acquireLease(store, key, { ttlMs = DEFAULT_TTL_MS, owner =
     if (existing) return { acquired: false, lease: structuredClone(existing), owner }
 
     const lease = {
-      id: createId('lease'),
+      id: leaseId,
       key,
       owner,
-      acquiredAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + Math.max(1000, ttlMs)).toISOString(),
+      acquiredAt,
+      expiresAt,
       updatedAt: nowIso(),
     }
     state.locks.push(lease)
@@ -28,6 +36,8 @@ export async function acquireLease(store, key, { ttlMs = DEFAULT_TTL_MS, owner =
 }
 
 export async function releaseLease(store, key, owner) {
+  if (typeof store.leaseRelease === 'function') return store.leaseRelease(key, owner)
+
   return store.mutate((state) => {
     state.locks ??= []
     const index = state.locks.findIndex((item) => item.key === key && item.owner === owner)
