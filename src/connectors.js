@@ -9,6 +9,14 @@ function timeoutMs(name, fallback) {
   return Math.max(1000, Math.min(300_000, Number.isFinite(value) ? value : fallback))
 }
 
+function articleDraftSlug(article) {
+  return `bloggers-${String(article?.id || 'article').replace(/[^a-zA-Z0-9-]+/g, '-')}`
+    .toLowerCase()
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 180)
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -197,7 +205,9 @@ class WordPressConnector extends BaseConnector {
     }
     if (!response.ok) {
       const message = typeof payload === 'object' && payload?.message ? payload.message : `WordPress HTTP ${response.status}`
-      throw new Error(message)
+      const error = new Error(message)
+      error.status = response.status
+      throw error
     }
     return { payload, response }
   }
@@ -208,13 +218,18 @@ class WordPressConnector extends BaseConnector {
   }
 
   async createDraft(article) {
+    const slug = articleDraftSlug(article)
+    const statuses = 'publish,future,draft,pending,private'
+    const { payload: existing } = await this.#request(`/posts?slug=${encodeURIComponent(slug)}&status=${encodeURIComponent(statuses)}&context=edit&per_page=1`)
+    if (Array.isArray(existing) && existing[0]) return existing[0]
+
     const { payload } = await this.#request('/posts', {
       method: 'POST',
       body: JSON.stringify({
         title: article.title,
         content: article.body,
         status: 'draft',
-        slug: `bloggers-${String(article.id).replace(/[^a-zA-Z0-9-]+/g, '-')}`.toLowerCase(),
+        slug,
       }),
     })
     return payload
@@ -281,7 +296,9 @@ class GhostConnector extends BaseConnector {
     }
     if (!response.ok) {
       const message = payload?.errors?.[0]?.message || `Ghost HTTP ${response.status}`
-      throw new Error(message)
+      const error = new Error(message)
+      error.status = response.status
+      throw error
     }
     return payload
   }
@@ -298,12 +315,27 @@ class GhostConnector extends BaseConnector {
     return post
   }
 
+  async #findPostBySlug(slug) {
+    try {
+      const payload = await this.#request(`/posts/slug/${encodeURIComponent(slug)}/?formats=html`)
+      return payload?.posts?.[0] ?? null
+    } catch (error) {
+      if (error?.status === 404) return null
+      throw error
+    }
+  }
+
   async createDraft(article) {
+    const slug = articleDraftSlug(article)
+    const existing = await this.#findPostBySlug(slug)
+    if (existing) return existing
+
     const payload = await this.#request('/posts/?source=html', {
       method: 'POST',
       body: JSON.stringify({
         posts: [{
           title: article.title,
+          slug,
           html: markdownToBasicHtml(article.body),
           status: 'draft',
         }],
