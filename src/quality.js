@@ -170,17 +170,74 @@ function citedIds(body) {
   return new Set(Array.from(String(body || '').matchAll(/\[(S\d+)\]/g), (match) => match[1]))
 }
 
+function claimSegments(body) {
+  return String(body || '')
+    .split(/(?:\r?\n)+|(?<=[。！？!?])\s*/u)
+    .map((item) => cleanText(item.replace(/^#{1,6}\s*/, '').replace(/^[-*+]\s+/, '')))
+    .filter((item) => item && !/^https?:\/\//i.test(item))
+}
+
+function claimNumbers(text) {
+  return [...String(text || '').matchAll(/(?<![A-Za-z])\d+(?:[.,]\d+)?(?:%|％|円|ドル|人|件|倍|年|月|日|GB|MB|TB)?/gu)]
+    .map((match) => match[0].replaceAll(',', '').replace('％', '%'))
+}
+
+function citationIdsIn(text) {
+  return Array.from(String(text || '').matchAll(/\[(S\d+)\]/g), (match) => match[1])
+}
+
+function normalizedEvidence(text) {
+  return cleanText(text).replaceAll(',', '').replaceAll('％', '%').toLowerCase()
+}
+
+export function evaluateClaimSupport(body, sources = [], { requireCitations = false } = {}) {
+  const byId = new Map(sources.map((source) => [source.id, source]))
+  const claims = []
+
+  for (const text of claimSegments(body)) {
+    const numbers = claimNumbers(text)
+    if (numbers.length === 0) continue
+
+    const citationIds = citationIdsIn(text)
+    const validCitationIds = citationIds.filter((id) => byId.has(id))
+    const evidence = validCitationIds.map((id) => normalizedEvidence(byId.get(id)?.excerpt || '')).join(' ')
+    const missingNumbers = numbers.filter((value) => !evidence.includes(value.toLowerCase()))
+    const status = validCitationIds.length === 0
+      ? 'uncited'
+      : missingNumbers.length > 0
+        ? 'citation-number-mismatch'
+        : 'supported'
+
+    claims.push({
+      text,
+      numbers,
+      citationIds,
+      validCitationIds,
+      missingNumbers,
+      status,
+      blocking: requireCitations && status === 'uncited',
+    })
+  }
+
+  return claims
+}
+
 export function evaluateContentQuality({ body, research = {}, sources = [], internalLinks = [] }) {
   const blocking = []
   const warnings = []
   const citations = citedIds(body)
   const validIds = new Set(sources.map((source) => source.id))
   const invalidCitations = [...citations].filter((id) => !validIds.has(id))
+  const claimChecks = evaluateClaimSupport(body, sources, { requireCitations: Boolean(research.requireCitations) })
+  const uncitedClaims = claimChecks.filter((claim) => claim.status === 'uncited')
+  const numberMismatches = claimChecks.filter((claim) => claim.status === 'citation-number-mismatch')
 
   if (invalidCitations.length > 0) blocking.push(`存在しない出典IDが引用されています: ${invalidCitations.join(', ')}`)
   if (research.requireCitations && sources.length === 0) blocking.push('出典必須ですが、利用可能なResearch Sourceを取得できませんでした。')
   if (research.requireCitations && sources.length > 0 && citations.size === 0) blocking.push('出典必須の記事ですが、本文に[S1]形式の引用がありません。')
+  if (research.requireCitations && uncitedClaims.length > 0) blocking.push(`数値・日付を含む検証可能な主張 ${uncitedClaims.length}件に文単位の出典がありません。`)
   if (sources.length > 0 && citations.size === 0) warnings.push('Research Sourceは取得できましたが、本文では引用されていません。')
+  if (numberMismatches.length > 0) warnings.push(`引用された出典抜粋で本文中の数値を確認できない主張が ${numberMismatches.length}件あります。人間または強いFact Checkerで再確認してください。`)
 
   const linked = internalLinks.filter((item) => item.url && String(body || '').includes(item.url))
   if (internalLinks.length > 0 && linked.length === 0) warnings.push('関連する既存記事がありますが、内部リンクが本文にありません。')
@@ -192,5 +249,6 @@ export function evaluateContentQuality({ body, research = {}, sources = [], inte
     citations: [...citations],
     citedSources: sources.filter((source) => citations.has(source.id)),
     linkedInternalPosts: linked,
+    claimChecks,
   }
 }
