@@ -81,11 +81,14 @@ test('PostgresRuntimeStore promotes legacy document analytics during init and cl
   })
   const store = await new PostgresRuntimeStore(pool).init()
   const snapshot = pool.snapshot()
+  const hydrated = await store.read()
 
   assert.equal(store.capabilities.nativeAnalytics, true)
   assert.equal(snapshot.analytics.length, 1)
   assert.equal(snapshot.analytics[0].id, 'metric-old')
   assert.equal(snapshot.stateDocument.analytics.length, 0)
+  assert.equal(hydrated.analytics.length, 1)
+  assert.equal(hydrated.analytics[0].clicks, 12)
   assert.ok(snapshot.queries.some((item) => item.text.includes('CREATE TABLE IF NOT EXISTS bloggers_analytics')))
   assert.ok(snapshot.queries.some((item) => item.text.includes('FOR UPDATE')))
 })
@@ -101,10 +104,12 @@ test('native analytics append/list preserves full snapshots and backend-neutral 
 
   const all = await listAnalyticsSnapshots(store, { limit: 10 })
   const blogOne = await listAnalyticsSnapshots(store, { blogId: 'blog-1', limit: 10 })
+  const hydrated = await store.read()
 
   assert.deepEqual(all.map((item) => item.id), ['metric-2', 'metric-1'])
   assert.equal(blogOne.length, 1)
   assert.equal(blogOne[0].clicks, 10)
   assert.deepEqual(blogOne[0].nested, { source: 'gsc' })
+  assert.deepEqual(hydrated.analytics.map((item) => item.id), ['metric-2', 'metric-1'])
   assert.ok(pool.snapshot().queries.some((item) => item.text.includes('DELETE FROM bloggers_analytics')))
 })
