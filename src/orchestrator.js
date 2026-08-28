@@ -8,7 +8,10 @@
 // @feature F-010
 // @feature F-011
 import { createAIProvider } from './ai.js'
+import { collectAnalytics } from './analytics.js'
 import { createConnector } from './connectors.js'
+import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
+import { buildPortfolioPlan } from './portfolio.js'
 import { createId, nowIso } from './store.js'
 
 const DEFAULT_AUTONOMY = {
@@ -19,17 +22,45 @@ const DEFAULT_AUTONOMY = {
   allowDelete: false,
 }
 
+function cleanString(value) {
+  return String(value ?? '').trim()
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback
+}
+
+function sanitizeAnalytics(input = {}) {
+  return {
+    searchConsole: {
+      siteUrl: cleanString(input.searchConsole?.siteUrl),
+      accessTokenEnv: cleanString(input.searchConsole?.accessTokenEnv),
+      lookbackDays: positiveInteger(input.searchConsole?.lookbackDays, 28),
+    },
+    ga4: {
+      propertyId: cleanString(input.ga4?.propertyId),
+      accessTokenEnv: cleanString(input.ga4?.accessTokenEnv),
+      lookbackDays: positiveInteger(input.ga4?.lookbackDays, 28),
+    },
+    http: {
+      endpoint: cleanString(input.http?.endpoint),
+      bearerTokenEnv: cleanString(input.http?.bearerTokenEnv),
+    },
+  }
+}
+
 export function sanitizeBlogInput(input = {}) {
-  const name = String(input.name ?? '').trim()
+  const name = cleanString(input.name)
   if (!name) throw new Error('Blog name is required')
 
   const connectorType = input.connector?.type === 'wordpress' ? 'wordpress' : 'memory'
   const connector = connectorType === 'wordpress'
     ? {
         type: 'wordpress',
-        endpoint: String(input.connector?.endpoint ?? '').trim(),
-        usernameEnv: String(input.connector?.usernameEnv ?? '').trim(),
-        passwordEnv: String(input.connector?.passwordEnv ?? '').trim(),
+        endpoint: cleanString(input.connector?.endpoint),
+        usernameEnv: cleanString(input.connector?.usernameEnv),
+        passwordEnv: cleanString(input.connector?.passwordEnv),
       }
     : { type: 'memory' }
 
@@ -47,12 +78,13 @@ export function sanitizeBlogInput(input = {}) {
       .replace(/^-|-$/g, ''),
     active: input.active !== false,
     connector,
+    analytics: sanitizeAnalytics(input.analytics),
     brain: {
-      purpose: String(input.brain?.purpose ?? '').trim(),
-      audience: String(input.brain?.audience ?? '').trim(),
-      voice: String(input.brain?.voice ?? '').trim(),
-      editorialPolicy: String(input.brain?.editorialPolicy ?? '').trim(),
-      monetization: String(input.brain?.monetization ?? '').trim(),
+      purpose: cleanString(input.brain?.purpose),
+      audience: cleanString(input.brain?.audience),
+      voice: cleanString(input.brain?.voice),
+      editorialPolicy: cleanString(input.brain?.editorialPolicy),
+      monetization: cleanString(input.brain?.monetization),
       topics: Array.isArray(input.brain?.topics)
         ? input.brain.topics.map((item) => String(item).trim()).filter(Boolean).slice(0, 30)
         : [],
@@ -96,6 +128,7 @@ export async function updateBlog(store, blogId, changes) {
     if (!blog) throw new Error('Blog not found')
 
     if (changes.brain) blog.brain = { ...blog.brain, ...changes.brain }
+    if (changes.analytics) blog.analytics = sanitizeAnalytics({ ...blog.analytics, ...changes.analytics })
     if (changes.autonomy) {
       const level = Math.max(0, Math.min(5, Number(changes.autonomy.level ?? blog.autonomy.level)))
       blog.autonomy = { ...blog.autonomy, ...changes.autonomy, level, allowDelete: false }
@@ -158,7 +191,8 @@ export async function testConnection(store, blogId) {
   const blog = state.blogs.find((item) => item.id === blogId)
   if (!blog) throw new Error('Blog not found')
   const connector = createConnector({ blog, store })
-  const [posts, metrics] = await Promise.all([connector.listPosts(3), connector.getMetrics()])
+  const [posts, cmsMetrics] = await Promise.all([connector.listPosts(3), connector.getMetrics()])
+  const metrics = await collectAnalytics(blog, cmsMetrics)
   return { ok: true, connector: blog.connector.type, samplePosts: posts.length, metrics }
 }
 
@@ -176,13 +210,18 @@ export async function runBlogCycle(store, blogId, options = {}) {
   const workflow = {
     id: createId('workflow'),
     blogId,
+    trigger: options.trigger || 'manual',
     status: 'running',
     startedAt,
     finishedAt: null,
     decision: null,
+    experimentId: null,
     error: null,
   }
-  await store.mutate((state) => state.workflows.unshift(workflow))
+  await store.mutate((state) => {
+    state.workflows.unshift(workflow)
+    state.workflows = state.workflows.slice(0, 2000)
+  })
 
   try {
     await recordActivity(store, {
@@ -190,21 +229,48 @@ export async function runBlogCycle(store, blogId, options = {}) {
       agent: 'observer',
       type: 'cycle.observe',
       message: `${blog.name} の状態観測を開始しました。`,
+      detail: { trigger: workflow.trigger },
     })
 
     const connector = createConnector({ blog, store })
-    const [posts, metrics] = await Promise.all([connector.listPosts(30), connector.getMetrics()])
+    const [posts, cmsMetrics] = await Promise.all([connector.listPosts(30), connector.getMetrics()])
+    const metrics = await collectAnalytics(blog, cmsMetrics)
     const snapshot = {
       id: createId('metric'),
       blogId,
       capturedAt: nowIso(),
-      source: metrics.source ?? blog.connector.type,
       ...metrics,
     }
-    await store.mutate((state) => state.analytics.unshift(snapshot))
+    await store.mutate((state) => {
+      state.analytics.unshift(snapshot)
+      state.analytics = state.analytics.slice(0, 5000)
+    })
 
+    if (metrics.warnings?.length) {
+      await recordActivity(store, {
+        blogId,
+        agent: 'observer',
+        type: 'analytics.partial',
+        message: `${metrics.warnings.length}個のAnalytics sourceを取得できませんでしたが、利用可能なデータで継続します。`,
+        detail: metrics.warnings,
+      })
+    }
+
+    const evaluation = await evaluateExperiments(store, blogId, snapshot)
+    for (const experiment of evaluation.completed) {
+      await recordActivity(store, {
+        blogId,
+        agent: 'learner',
+        type: 'experiment.completed',
+        message: `実験結果をBlog Memoryへ保存しました: ${experiment.result} / ${experiment.targetMetric} ${Number(experiment.deltaPct || 0).toFixed(1)}%`,
+        detail: { experimentId: experiment.id },
+      })
+    }
+
+    const stateWithLearning = await store.read()
+    const learnings = recentLearnings(stateWithLearning, blogId)
     const provider = options.provider ?? createAIProvider()
-    const decision = await provider.decide({ blog, posts, metrics })
+    const decision = await provider.decide({ blog, posts, metrics, learnings })
     workflow.decision = decision
 
     await recordActivity(store, {
@@ -212,7 +278,7 @@ export async function runBlogCycle(store, blogId, options = {}) {
       agent: 'director',
       type: 'cycle.decide',
       message: `${decision.action}: ${decision.rationale}`,
-      detail: decision,
+      detail: { ...decision, learningsUsed: learnings.length },
     })
 
     const idea = {
@@ -226,15 +292,19 @@ export async function runBlogCycle(store, blogId, options = {}) {
       status: decision.action === 'WAIT' ? 'observing' : 'proposed',
       createdAt: nowIso(),
     }
-    await store.mutate((state) => state.ideas.unshift(idea))
+    await store.mutate((state) => {
+      state.ideas.unshift(idea)
+      state.ideas = state.ideas.slice(0, 3000)
+    })
 
     let article = null
     let approval = null
     let published = null
+    let experiment = null
 
     if (decision.action === 'CREATE') {
       if (canExecute(blog, 'CREATE') && Number(blog.autonomy.level) >= 2) {
-        const draft = await provider.draft({ blog, decision })
+        const draft = await provider.draft({ blog, decision, learnings })
         article = {
           id: createId('article'),
           blogId,
@@ -287,6 +357,14 @@ export async function runBlogCycle(store, blogId, options = {}) {
             detail: { approvalId: approval.id },
           })
         }
+
+        experiment = await startExperiment(store, {
+          blog,
+          decision,
+          snapshot,
+          ideaId: idea.id,
+          articleId: article.id,
+        })
       } else {
         approval = await createApproval(store, {
           blogId,
@@ -298,7 +376,7 @@ export async function runBlogCycle(store, blogId, options = {}) {
       approval = await createApproval(store, {
         blogId,
         action: 'UPDATE',
-        reason: 'Foundation版では既存記事の自動改稿は承認キューへ送ります。',
+        reason: '既存記事の改稿は、対象記事と差分を明示する更新フロー実装まで承認キューで保護します。',
       })
     }
 
@@ -309,9 +387,20 @@ export async function runBlogCycle(store, blogId, options = {}) {
       saved.status = 'completed'
       saved.finishedAt = finishedAt
       saved.decision = decision
+      saved.experimentId = experiment?.id ?? null
     })
 
-    return { workflowId: workflow.id, decision, idea, article, approval, published, metrics }
+    return {
+      workflowId: workflow.id,
+      decision,
+      idea,
+      article,
+      approval,
+      published,
+      experiment,
+      evaluation,
+      metrics,
+    }
   } catch (error) {
     await store.mutate((state) => {
       const saved = state.workflows.find((item) => item.id === workflow.id)
@@ -326,25 +415,32 @@ export async function runBlogCycle(store, blogId, options = {}) {
       agent: 'system',
       type: 'cycle.failed',
       message: error.message,
+      detail: { trigger: workflow.trigger },
     })
     throw error
   }
 }
 
-export async function runPortfolioCycle(store) {
+export async function runPortfolioCycle(store, options = {}) {
   const state = await store.read()
   if (state.system.paused) return { skipped: true, reason: 'system-paused', results: [] }
 
-  const activeBlogs = state.blogs.filter((blog) => blog.active)
+  const plan = buildPortfolioPlan(state)
+  const byId = new Map(state.blogs.filter((blog) => blog.active).map((blog) => [blog.id, blog]))
+  const ordered = plan.ranking.map((item) => byId.get(item.blogId)).filter(Boolean)
   const results = []
-  for (const blog of activeBlogs) {
+  for (const blog of ordered) {
     try {
-      results.push({ blogId: blog.id, ok: true, result: await runBlogCycle(store, blog.id) })
+      results.push({
+        blogId: blog.id,
+        ok: true,
+        result: await runBlogCycle(store, blog.id, { trigger: options.trigger || 'portfolio' }),
+      })
     } catch (error) {
       results.push({ blogId: blog.id, ok: false, error: error.message })
     }
   }
-  return { skipped: false, results }
+  return { skipped: false, plan, results }
 }
 
 export async function resolveApproval(store, approvalId, approved) {
@@ -415,11 +511,13 @@ export function summarizeHQ(state) {
   const pendingApprovals = state.approvals.filter((item) => item.status === 'pending')
   const published = state.articles.filter((item) => item.status === 'published')
   const drafts = state.articles.filter((item) => item.status === 'draft')
+  const portfolio = buildPortfolioPlan(state)
 
   const blogs = state.blogs.map((blog) => {
     const latestMetric = state.analytics.find((item) => item.blogId === blog.id) ?? null
     const recentWorkflow = state.workflows.find((item) => item.blogId === blog.id) ?? null
     const blogApprovals = pendingApprovals.filter((item) => item.blogId === blog.id).length
+    const portfolioEntry = portfolio.ranking.find((item) => item.blogId === blog.id) ?? null
     return {
       id: blog.id,
       name: blog.name,
@@ -429,14 +527,10 @@ export function summarizeHQ(state) {
       latestMetric,
       lastWorkflow: recentWorkflow,
       pendingApprovals: blogApprovals,
+      portfolioScore: portfolioEntry?.score ?? null,
+      growthPct: portfolioEntry?.growthPct ?? null,
     }
   })
-
-  const portfolioRecommendation = blogs.length === 0
-    ? '最初のブログを接続すると、Portfolio Brainが横断判断を開始します。'
-    : pendingApprovals.length > 0
-      ? `まず${pendingApprovals.length}件の承認待ちを確認すると運用ループが前へ進みます。`
-      : '重大な承認待ちはありません。次の観測サイクルを実行できます。'
 
   return {
     system: state.system,
@@ -447,9 +541,12 @@ export function summarizeHQ(state) {
       published: published.length,
       pendingApprovals: pendingApprovals.length,
       activities: state.activities.length,
+      runningExperiments: state.experiments.filter((item) => item.status === 'running').length,
+      learnings: state.memories.filter((item) => item.type === 'experiment-learning').length,
     },
     blogs,
-    portfolioRecommendation,
+    portfolio,
+    portfolioRecommendation: portfolio.recommendation,
     recentActivity: state.activities.slice(0, 12),
     pendingApprovals: pendingApprovals.slice(0, 20),
   }
