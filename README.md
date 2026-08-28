@@ -1,82 +1,169 @@
-# Bloggers — 複数ブログ自動運用・統合HP
+# Bloggers — AI Editorial Operating System
 
-このリポジトリは、**複数のブログを1つのHP／管理画面からまとめて管理し、自動運用できる仕組み**を作るためのプロジェクトです。
+Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観測・判断・制作・公開・計測・学習を回すためのAI編集部OS**です。
 
-> 現在はまだ実装前の P0（受入・整理）段階です。ブログ統合HPとしてのアプリ本体や公開自動化機能は、現時点の `main` ブランチにはまだ実装されていません。
+単なる記事生成や一括投稿ではなく、各ブログに独立した `Blog Brain` を持たせ、ブログごとの読者・文体・目的・収益方針を混線させずに運用します。その上に `Portfolio Brain` を置き、ブログ群全体を横断して次の行動を考える構造を目指します。
 
-## 目指すもの
+## 現在の実装
 
-複数ブログを個別に開いて運用するのではなく、1つの統合環境からブログ群を扱える状態を目指します。
+Foundation版では、外部npm依存を追加せず Node.js 標準機能だけで起動できるところまで実装しています。
 
-中心となる方向性は次のとおりです。
+- Bloggers HQ 統合ダッシュボード
+- 複数ブログ登録
+- ブログごとの Blog Brain
+- Memory / WordPress Connector
+- AI Provider abstraction
+- ローカルのルールベースAI（APIキーなしでも動作）
+- OpenAI互換 Chat Completions API への切り替え
+- 観測 → 判断 → 企画 → 下書き → 承認/公開 → 記録 の運用サイクル
+- Autonomy Level 0〜5
+- 公開承認キュー
+- Emergency Pause / Resume
+- Analyticsスナップショット基盤
+- AI Activity / Workflow監査ログ
+- JSON永続化
+- Node標準テスト
 
-- 複数ブログを1か所で把握・管理する
-- ブログごとの運用をできるだけ自動化する
-- 記事作成から公開・運用までの状態を統合的に確認できるようにする
-- ブログが増えても、運用負荷がブログ数に比例して増えない構造にする
+## 起動
 
-詳細な機能・対応ブログサービス・自動化範囲・技術構成は、今後の要件整理と承認を経て確定します。
-
-## 現在の状態
-
-**Phase: P0**
-
-現時点のリポジトリは、開発時の逸脱を防ぐための guardrail テンプレートを土台として作成された直後の状態です。
-
-現在存在する主なもの:
-
-- `AGENTS.md` — 開発エージェント向けの基本ルール
-- `PHASE.md` — 現在の開発フェーズ
-- `docs/` — 要件・判断・設計を記録するための台帳
-- `craft/` — UI/UXや表現上の判断材料
-- `scripts/guard/` — guardrail の機械チェック
-- `.github/workflows/` — guardrail / human approval 用の GitHub Actions
-
-一方、現時点では以下はまだありません。
-
-- 統合HPのフロントエンド
-- ブログ管理用バックエンド/API
-- 複数ブログのアカウント・サイト管理
-- 記事生成・予約・公開などの自動運用処理
-- 運用状況を確認するダッシュボード
-
-つまり、**「複数ブログを自動運用できる統合HP」という目的には合っていますが、実装そのものはこれから始まる段階**です。
-
-## 開発の進め方
-
-このリポジトリでは、いきなり機能を増やすのではなく、目的・要件・承認範囲を確定してから実装へ進みます。
-
-大まかな流れ:
-
-1. **P0 — 受入・現状整理**
-   - 既存資材と目的を確認する
-2. **P1 — 要件確認**
-   - 未確定事項を質問し、ユーザー回答を記録する
-3. **P2 — 設計**
-   - 機能・制約・判断を明文化する
-4. **P3 — 実装**
-   - 承認済み機能だけを実装する
-5. **P4 — 自己監査**
-   - 差分と品質を確認して引き渡す
-
-## guardrail
-
-このプロジェクトには、AI/エージェントによる開発で意図しない機能追加や設計逸脱が起きにくくするための guardrail が含まれています。
+必要環境: Node.js 20+
 
 ```bash
-npm run status
+npm start
+```
+
+ブラウザで次を開きます。
+
+```text
+http://localhost:3000
+```
+
+開発中は:
+
+```bash
+npm run dev
+```
+
+テスト:
+
+```bash
+npm test
 npm run guard
 npm run guard:selftest
 ```
 
-`package.json` や guardrail 関連ファイルには、元テンプレート由来の名称・構成が一部残っています。これらはブログ統合HPの実装が進む中で、必要に応じてプロジェクト固有の内容へ整理していきます。
+## 最初の使い方
 
-## 現時点の結論
+1. `Blogs` を開く
+2. ブログ名・目的・読者・文体・主要テーマを入力する
+3. 最初は `Memory / Demo` Connector で登録してもよい
+4. `AI運用サイクル` を実行する
+5. `Content` でAIの企画と下書きを確認する
+6. `HQ` で承認待ちやPortfolio Brainの状態を見る
+7. 必要なら `PAUSE ALL AI` で全自動操作を即時停止する
 
-このリポジトリのプロジェクト目的は、
+## WordPress接続
 
-**「ブログ複数を自動運用できる統合HP」**
+ブログ登録時に Connector を `WordPress` にして以下を登録します。
 
-です。
+- WordPress URL
+- WordPressユーザー名を格納する環境変数名
+- Application Passwordを格納する環境変数名
 
-ただし、2026年8月28日時点の `main` はまだそのアプリを実装した状態ではなく、**開発ガードレールと設計台帳を配置した初期状態**です。READMEについては、元の `gpt-guardrail-template` の説明から、このプロジェクトの目的と実態が分かる内容へ更新しています。
+例:
+
+```bash
+export WP_MUSIC_USER="editor"
+export WP_MUSIC_PASSWORD="xxxx xxxx xxxx xxxx"
+```
+
+BloggersのJSONデータには資格情報そのものを保存しません。
+
+## AI Provider
+
+AI設定がない場合は `RuleBasedProvider` がローカルで動き、システム全体の動作を確認できます。
+
+外部AIを使用する場合:
+
+```bash
+export BLOGGERS_AI_BASE_URL="https://provider.example/v1"
+export BLOGGERS_AI_API_KEY="..."
+export BLOGGERS_AI_MODEL="model-name"
+```
+
+Foundation版の外部AI Adapter は OpenAI互換の `/chat/completions` を使用します。Provider層は分離されているため、Claude / Gemini / OpenAI固有Adapterなどを中核ロジックを変更せず追加できます。
+
+## Autonomy Level
+
+| Level | 動作 |
+|---|---|
+| 0 | 観測のみ |
+| 1 | AI提案のみ |
+| 2 | 下書きまで自動 |
+| 3 | 公開前に人間承認 |
+| 4 | 許可された記事を自動公開 |
+| 5 | 将来の完全自律運営用 |
+
+削除操作はFoundation版では常に禁止しています。
+
+## アーキテクチャ
+
+```text
+Portfolio Brain / HQ
+        |
+        +-- Blog Brain A
+        |      +-- Observer
+        |      +-- Director
+        |      +-- Writer
+        |      +-- Publisher
+        |
+        +-- Blog Brain B
+        |
+        +-- Blog Brain N
+
+AI Orchestrator
+        |
+Connector Layer
+        +-- Memory
+        +-- WordPress
+        +-- future: Ghost / microCMS / custom
+
+JsonStore
+        +-- blogs
+        +-- ideas
+        +-- articles
+        +-- approvals
+        +-- analytics
+        +-- workflows
+        +-- activities
+```
+
+主要コード:
+
+- `src/server.js` — HTTP/API/UI配信
+- `src/store.js` — 永続化
+- `src/connectors.js` — CMS Connector abstraction
+- `src/ai.js` — AI Provider abstraction
+- `src/orchestrator.js` — 自律運用ループ / Portfolio集計 / 承認 / Emergency Brake
+- `src/public/` — 統合HP
+
+## 次の拡張
+
+Foundationの次は、同じ境界を保ったまま以下を追加します。
+
+- Google Search Console / GA4
+- Ghost Connector
+- 記事リライト・統合・内部リンク改善
+- Source / citation管理とファクトチェック
+- Scheduler / durable queue
+- Experiment Engine
+- 検索・収益データを含むPortfolio Brain
+- AIモデルごとのRouting / cost governor
+- マルチユーザー認証と暗号化Secrets管理
+- PostgreSQLへの永続化移行
+
+## Guardrail
+
+このリポジトリでは、AI開発による意図しない仕様逸脱を防ぐため、`AGENTS.md` と `docs/` の台帳、GitHub Actionsのguardを残しています。
+
+現在の実装対象は `FEATURES.md` の承認済み機能IDに紐づいています。
