@@ -25,10 +25,12 @@ function fakePostgresTarget() {
   const nativeIdeas = []
   const nativeArticles = []
   const nativeApprovals = []
+  const nativeExperiments = []
+  const nativeMemories = []
   return {
     backend: 'postgres',
     async transaction(mutator) {
-      document ??= { system: {}, blogs: [], ideas: [], articles: [], approvals: [], analytics: [], activities: [], aiUsage: [], workflows: [], jobs: [], locks: [] }
+      document ??= { system: {}, blogs: [], ideas: [], articles: [], approvals: [], analytics: [], activities: [], aiUsage: [], workflows: [], experiments: [], memories: [], jobs: [], locks: [] }
       return mutator(document)
     },
     async read() {
@@ -41,6 +43,8 @@ function fakePostgresTarget() {
         activities: structuredClone(nativeActivities),
         aiUsage: structuredClone(nativeAiUsage),
         workflows: structuredClone(nativeWorkflows),
+        experiments: structuredClone(nativeExperiments),
+        memories: structuredClone(nativeMemories),
         jobs: structuredClone(nativeJobs),
         locks: [],
       }
@@ -88,6 +92,18 @@ function fakePostgresTarget() {
       if (index >= 0) nativeApprovals.splice(index, 1)
       nativeApprovals.unshift(structuredClone(approval))
       return structuredClone(approval)
+    },
+    async experimentUpsert(experiment) {
+      const index = nativeExperiments.findIndex((item) => item.id === experiment.id)
+      if (index >= 0) nativeExperiments.splice(index, 1)
+      nativeExperiments.unshift(structuredClone(experiment))
+      return structuredClone(experiment)
+    },
+    async memoryUpsert(memory) {
+      const index = nativeMemories.findIndex((item) => item.id === memory.id)
+      if (index >= 0) nativeMemories.splice(index, 1)
+      nativeMemories.unshift(structuredClone(memory))
+      return structuredClone(memory)
     },
     async jobEnqueue(job, dedupeKey) {
       const existing = nativeJobs.find((item) => item.id === job.id || (dedupeKey && ['queued', 'running'].includes(item.status) && item.payload?.dedupeKey === dedupeKey))
@@ -138,6 +154,33 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
         confidence: 0.8,
         status: 'proposed',
         createdAt: '2026-08-28T00:01:30.000Z',
+      })
+      state.experiments.push({
+        id: 'experiment_1',
+        blogId: 'blog_1',
+        articleId: 'article_1',
+        action: 'CREATE',
+        hypothesis: 'migration experiment',
+        targetMetric: 'clicks',
+        baselineValue: 40,
+        latestValue: 42,
+        deltaPct: 5,
+        observations: 3,
+        status: 'completed',
+        result: 'positive',
+        confidence: 0.6,
+        createdAt: '2026-08-28T00:01:55.000Z',
+        completedAt: '2026-08-28T00:04:00.000Z',
+      })
+      state.memories.push({
+        id: 'memory_1',
+        scope: 'blog',
+        blogId: 'blog_1',
+        type: 'experiment-learning',
+        createdAt: '2026-08-28T00:04:01.000Z',
+        confidence: 0.6,
+        text: 'migration learning',
+        sourceExperimentId: 'experiment_1',
       })
       state.analytics.push({
         id: 'metric_1',
@@ -231,12 +274,18 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(result.blogs, 1)
     assert.equal(result.articles, 1)
     assert.equal(result.approvals, 1)
+    assert.equal(result.experiments, 1)
+    assert.equal(result.memories, 1)
     assert.equal(result.migratedIdeas, 1)
     assert.equal(result.ideasKeptInStateDocument, 0)
     assert.equal(result.migratedArticles, 1)
     assert.equal(result.articlesKeptInStateDocument, 0)
     assert.equal(result.migratedApprovals, 1)
     assert.equal(result.approvalsKeptInStateDocument, 0)
+    assert.equal(result.migratedExperiments, 1)
+    assert.equal(result.experimentsKeptInStateDocument, 0)
+    assert.equal(result.migratedMemories, 1)
+    assert.equal(result.memoriesKeptInStateDocument, 0)
     assert.equal(result.migratedAnalytics, 1)
     assert.equal(result.analyticsKeptInStateDocument, 0)
     assert.equal(result.migratedActivities, 1)
@@ -253,6 +302,8 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(document.ideas.length, 0)
     assert.equal(document.articles.length, 0)
     assert.equal(document.approvals.length, 0)
+    assert.equal(document.experiments.length, 0)
+    assert.equal(document.memories.length, 0)
     assert.equal(document.analytics.length, 0)
     assert.equal(document.activities.length, 0)
     assert.equal(document.aiUsage.length, 0)
@@ -262,6 +313,10 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(migrated.articles[0].status, 'draft')
     assert.equal(migrated.approvals[0].id, 'approval_1')
     assert.equal(migrated.approvals[0].status, 'pending')
+    assert.equal(migrated.experiments[0].id, 'experiment_1')
+    assert.equal(migrated.experiments[0].result, 'positive')
+    assert.equal(migrated.memories[0].id, 'memory_1')
+    assert.equal(migrated.memories[0].sourceExperimentId, 'experiment_1')
     assert.equal(migrated.analytics[0].clicks, 42)
     assert.equal(migrated.activities[0].message, 'observed')
     assert.equal(migrated.aiUsage[0].estimatedCostUsd, 0.01)
