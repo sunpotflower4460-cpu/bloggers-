@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { authorizeApiAccess, loadAuthConfig, publicAuthSummary } from './auth.js'
+import { createOidcManager } from './oidc.js'
 import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, testConnection, updateBlog } from './orchestrator.js'
 import { buildPortfolioPlan } from './portfolio.js'
 import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
@@ -26,6 +27,7 @@ const publicDir = resolve(root, 'src/public')
 const tokensPath = resolve(root, 'docs/04-design/tokens.css')
 const port = Number(process.env.PORT || 3000)
 const authConfig = loadAuthConfig()
+const oidc = createOidcManager()
 const schedulerMode = String(process.env.BLOGGERS_SCHEDULER_MODE || 'embedded').toLowerCase() === 'external' ? 'external' : 'embedded'
 const store = await createStore()
 const scheduler = createScheduler({
@@ -43,6 +45,15 @@ function sendJson(response, status, payload, extraHeaders = {}) {
     ...extraHeaders,
   })
   response.end(`${JSON.stringify(payload)}\n`)
+}
+
+function sendRedirect(response, location, setCookies = []) {
+  response.writeHead(302, {
+    Location: location,
+    'Cache-Control': 'no-store',
+    ...(setCookies.length ? { 'Set-Cookie': setCookies } : {}),
+  })
+  response.end()
 }
 
 async function readJson(request) {
@@ -94,16 +105,28 @@ function presentedToken(request) {
   return String(request.headers['x-bloggers-token'] || '').trim()
 }
 
+function isMutation(method) {
+  return !['GET', 'HEAD', 'OPTIONS'].includes(String(method || 'GET').toUpperCase())
+}
+
 function authorizeApi(request, response, url) {
+  const token = presentedToken(request)
+  const sessionPrincipal = token ? null : oidc.sessionPrincipal(request.headers.cookie)
+  if (sessionPrincipal && isMutation(request.method) && !oidc.trustedMutationOrigin(request.headers.origin)) {
+    sendJson(response, 403, { error: 'Session-authenticated mutations require an exact same-origin Origin header.' })
+    return null
+  }
+
   const auth = authorizeApiAccess({
     method: request.method,
     pathname: url.pathname,
-    token: presentedToken(request),
-    loopback: isLoopback(request),
+    token,
+    principal: sessionPrincipal,
+    loopback: isLoopback(request) && !oidc.enabled,
     config: authConfig,
   })
   if (auth.ok) return auth
-  const headers = auth.status === 401 ? { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' } : {}
+  const headers = auth.status === 401 && token ? { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' } : {}
   sendJson(response, auth.status || 403, { error: auth.error, requiredRole: auth.requiredRole ?? null }, headers)
   return null
 }
@@ -192,7 +215,13 @@ async function api(request, response, url, auth) {
       },
       security: {
         ...publicAuthSummary(authConfig),
-        currentPrincipal: auth?.principal ? { id: auth.principal.id, name: auth.principal.name, role: auth.principal.role } : null,
+        oidc: oidc.status(request.headers.cookie),
+        currentPrincipal: auth?.principal ? {
+          id: auth.principal.id,
+          name: auth.principal.name,
+          role: auth.principal.role,
+          authType: auth.principal.authType ?? 'unknown',
+        } : null,
       },
     })
   }
@@ -234,9 +263,41 @@ async function api(request, response, url, auth) {
   return sendJson(response, 404, { error: 'API route not found' })
 }
 
+async function authRoute(request, response, url) {
+  if (request.method === 'GET' && url.pathname === '/auth/status') {
+    return sendJson(response, 200, oidc.status(request.headers.cookie))
+  }
+
+  if (request.method === 'GET' && url.pathname === '/auth/login') {
+    const login = await oidc.beginLogin({ returnTo: url.searchParams.get('returnTo') || '/' })
+    return sendRedirect(response, login.redirectUrl, login.setCookies)
+  }
+
+  if (request.method === 'GET' && url.pathname === '/auth/callback') {
+    const completed = await oidc.completeLogin({
+      query: Object.fromEntries(url.searchParams.entries()),
+      cookieHeader: request.headers.cookie,
+    })
+    return sendRedirect(response, completed.returnTo, completed.setCookies)
+  }
+
+  if (request.method === 'POST' && url.pathname === '/auth/logout') {
+    if (!oidc.enabled) return sendJson(response, 404, { error: 'OIDC is not configured.' })
+    if (!oidc.trustedMutationOrigin(request.headers.origin)) {
+      return sendJson(response, 403, { error: 'OIDC logout requires an exact same-origin Origin header.' })
+    }
+    return sendJson(response, 200, { ok: true }, { 'Set-Cookie': oidc.logoutCookies() })
+  }
+
+  return sendJson(response, 404, { error: 'Authentication route not found' })
+}
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
+
+    if (url.pathname.startsWith('/auth/')) return await authRoute(request, response, url)
+
     if (url.pathname === '/api/health' && request.method === 'GET') {
       const state = await store.read()
       return sendJson(response, 200, {
@@ -247,6 +308,7 @@ const server = createServer(async (request, response) => {
         schedulerMode,
         storageBackend: store.backend ?? 'unknown',
         managedSecrets: secretResolverStatus().managed,
+        oidc: oidc.enabled,
         queuedJobs: state.jobs.filter((item) => item.status === 'queued').length,
         activeLocks: state.locks.length,
       })
@@ -263,7 +325,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === '/tokens.css') return await sendFile(response, tokensPath, 'text/css; charset=utf-8')
     return sendJson(response, 404, { error: 'Not found' })
   } catch (error) {
-    sendJson(response, error instanceof SyntaxError ? 400 : 500, { error: error.message })
+    sendJson(response, error instanceof SyntaxError ? 400 : Number(error.status || 500), { error: error.message, code: error.code ?? null })
   }
 })
 
@@ -276,6 +338,6 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 server.listen(port, () => {
-  const security = authConfig.configured ? 'token RBAC enabled' : 'local-only API until auth tokens are configured'
+  const security = authConfig.configured || oidc.enabled ? 'authentication enabled' : 'local-only API until auth is configured'
   console.log(`Bloggers HQ running on http://localhost:${port} (${security}; scheduler=${schedulerMode}; storage=${store.backend ?? 'unknown'})`)
 })
