@@ -21,10 +21,11 @@ function fakePostgresTarget() {
   const nativeAnalytics = []
   const nativeActivities = []
   const nativeAiUsage = []
+  const nativeWorkflows = []
   return {
     backend: 'postgres',
     async transaction(mutator) {
-      document ??= { system: {}, blogs: [], analytics: [], activities: [], aiUsage: [], jobs: [], locks: [] }
+      document ??= { system: {}, blogs: [], analytics: [], activities: [], aiUsage: [], workflows: [], jobs: [], locks: [] }
       return mutator(document)
     },
     async read() {
@@ -33,6 +34,7 @@ function fakePostgresTarget() {
         analytics: structuredClone(nativeAnalytics),
         activities: structuredClone(nativeActivities),
         aiUsage: structuredClone(nativeAiUsage),
+        workflows: structuredClone(nativeWorkflows),
         jobs: structuredClone(nativeJobs),
         locks: [],
       }
@@ -57,6 +59,12 @@ function fakePostgresTarget() {
       }
       return entries.map((item) => structuredClone(item))
     },
+    async workflowUpsert(workflow) {
+      const index = nativeWorkflows.findIndex((item) => item.id === workflow.id)
+      if (index >= 0) nativeWorkflows.splice(index, 1)
+      nativeWorkflows.unshift(structuredClone(workflow))
+      return structuredClone(workflow)
+    },
     async jobEnqueue(job, dedupeKey) {
       const existing = nativeJobs.find((item) => item.id === job.id || (dedupeKey && ['queued', 'running'].includes(item.status) && item.payload?.dedupeKey === dedupeKey))
       if (existing) return structuredClone(existing)
@@ -71,7 +79,7 @@ function fakePostgresTarget() {
   }
 }
 
-test('JSON to PostgreSQL migration promotes analytics/activity/AI usage, recovers running jobs, and discards old operation leases', async () => {
+test('JSON to PostgreSQL migration promotes normalized collections, recovers running jobs, and discards old operation leases', async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, 'state.json')
     const source = await new JsonStore(path).init()
@@ -104,6 +112,15 @@ test('JSON to PostgreSQL migration promotes analytics/activity/AI usage, recover
         inputTokens: 100,
         outputTokens: 20,
         estimatedCostUsd: 0.01,
+      })
+      state.workflows.push({
+        id: 'workflow_1',
+        blogId: 'blog_1',
+        trigger: 'scheduler',
+        status: 'completed',
+        startedAt: '2026-08-28T00:01:00.000Z',
+        finishedAt: '2026-08-28T00:05:00.000Z',
+        aiCostUsd: 0.01,
       })
       state.system.scheduler.running = true
       state.jobs.push({
@@ -166,6 +183,8 @@ test('JSON to PostgreSQL migration promotes analytics/activity/AI usage, recover
     assert.equal(result.activitiesKeptInStateDocument, 0)
     assert.equal(result.migratedAiUsage, 1)
     assert.equal(result.aiUsageKeptInStateDocument, 0)
+    assert.equal(result.migratedWorkflows, 1)
+    assert.equal(result.workflowsKeptInStateDocument, 0)
     assert.equal(result.migratedJobs, 2)
     assert.equal(result.recoveredRunningJobs, 1)
     assert.equal(result.discardedOperationLeases, 1)
@@ -174,6 +193,7 @@ test('JSON to PostgreSQL migration promotes analytics/activity/AI usage, recover
     assert.equal(document.analytics.length, 0, 'normalized analytics should not remain in the global state document')
     assert.equal(document.activities.length, 0, 'normalized activities should not remain in the global state document')
     assert.equal(document.aiUsage.length, 0, 'normalized AI usage should not remain in the global state document')
+    assert.equal(document.workflows.length, 0, 'normalized workflows should not remain in the global state document')
     assert.equal(migrated.analytics.length, 1)
     assert.equal(migrated.analytics[0].id, 'metric_1')
     assert.equal(migrated.analytics[0].clicks, 42)
@@ -183,6 +203,9 @@ test('JSON to PostgreSQL migration promotes analytics/activity/AI usage, recover
     assert.equal(migrated.aiUsage.length, 1)
     assert.equal(migrated.aiUsage[0].id, 'usage_1')
     assert.equal(migrated.aiUsage[0].estimatedCostUsd, 0.01)
+    assert.equal(migrated.workflows.length, 1)
+    assert.equal(migrated.workflows[0].id, 'workflow_1')
+    assert.equal(migrated.workflows[0].status, 'completed')
 
     const recovered = migrated.jobs.find((job) => job.id === 'job_running')
     assert.equal(recovered.status, 'queued')
