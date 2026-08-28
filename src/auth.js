@@ -65,10 +65,10 @@ export function loadAuthConfig(env = process.env) {
 export function requiredRole(method, pathname) {
   const verb = String(method || 'GET').toUpperCase()
 
-  if (pathname.startsWith('/api/settings')) return 'admin'
   if (pathname === '/api/jobs') return 'editor'
   if (pathname === '/api/system/pause') return 'editor'
   if (pathname === '/api/system/resume') return 'admin'
+  if (pathname.startsWith('/api/settings') && verb !== 'GET' && verb !== 'HEAD') return 'admin'
 
   if (verb === 'GET' || verb === 'HEAD') return 'viewer'
 
