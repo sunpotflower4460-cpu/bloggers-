@@ -37,6 +37,7 @@ export async function migrateJsonToPostgres({
   const sourceActivities = structuredClone(sourceState.activities ?? [])
   const sourceAiUsage = structuredClone(sourceState.aiUsage ?? [])
   const sourceWorkflows = structuredClone(sourceState.workflows ?? [])
+  const sourceIdeas = structuredClone(sourceState.ideas ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -54,10 +55,12 @@ export async function migrateJsonToPostgres({
   const nativeActivities = typeof target.activityAppend === 'function'
   const nativeAiUsage = typeof target.aiUsageAppend === 'function'
   const nativeWorkflows = typeof target.workflowUpsert === 'function'
+  const nativeIdeas = typeof target.ideaAppend === 'function'
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
   if (nativeAiUsage) portableState.aiUsage = []
   if (nativeWorkflows) portableState.workflows = []
+  if (nativeIdeas) portableState.ideas = []
 
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
@@ -94,6 +97,14 @@ export async function migrateJsonToPostgres({
     }
   }
 
+  let migratedIdeas = 0
+  if (nativeIdeas) {
+    for (const idea of sourceIdeas) {
+      await target.ideaAppend(idea, { limit: 3000 })
+      migratedIdeas += 1
+    }
+  }
+
   const existing = await target.read()
   const existingJobIds = new Set((existing.jobs ?? []).map((job) => job.id))
   let migratedJobs = 0
@@ -124,6 +135,8 @@ export async function migrateJsonToPostgres({
     aiUsageKeptInStateDocument: nativeAiUsage ? 0 : sourceAiUsage.length,
     migratedWorkflows,
     workflowsKeptInStateDocument: nativeWorkflows ? 0 : sourceWorkflows.length,
+    migratedIdeas,
+    ideasKeptInStateDocument: nativeIdeas ? 0 : sourceIdeas.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
