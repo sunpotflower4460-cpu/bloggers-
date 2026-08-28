@@ -204,3 +204,24 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: 各cycleで必ず発生する企画判断の保存をglobal `bloggers_state`行から外しつつ、Articles/ApprovalsやExperiment→Memoryのような複数entity transactionをまだ崩さないため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: Articles/Approvalsまで同時に正規化して公開承認の原子性を一度に変更する方式。
+
+### D-030
+- 日付: 2026-08-28
+- 決定: Schedulerのdurable Job IDからcycle idempotency keyを作り、Portfolio childではblog IDを加え、そのkeyからWorkflow / Idea / Metric / Article / Approvalの安定IDを派生させる。完了済みWorkflowは再実行せず復帰し、途中retryは既存Idea/Article/Approvalを再利用する。
+- 理由: CMS側の決定的slugだけでは、cycle retryが新しいlocal article IDを作った場合に重複防止をすり抜けるため。AI生成・Human Gate・remote draftを同一durable operationへ束ねる必要がある。
+- 根拠（Q-ID）: Q-002
+- 却下した案: Connectorのslug dedupeだけに任せ、Scheduler retryごとに新しいeditorial entityを生成する方式。
+
+### D-031
+- 日付: 2026-08-28
+- 決定: ArticleとApprovalは`bloggers_articles` / `bloggers_approvals`へ同時に正規化し、draft＋approval保存および承認解決後のArticle status＋Approval status確定をpaired PostgreSQL transactionで扱う。
+- 理由: 片方だけnative tableへ分離すると「公開済みArticleなのにApproval pending」等の不整合を作り得るため。Human Gateの意味的原子性を保ったままglobal state rowから外す。
+- 根拠（Q-ID）: Q-002
+- 却下した案: ArticleとApprovalを別々の独立upsertだけで正規化する方式。
+
+### D-032
+- 日付: 2026-08-28
+- 決定: ExperimentとBlog Memoryは`bloggers_experiments` / `bloggers_memories`へ正規化し、Experimentの観測更新・completed確定・結果Memory追加を`PostgresLearningStore`の同一transactionでcommitする。上位ドメインはbackend-neutralなExperiment/Memory transaction境界だけを使う。
+- 理由: ExperimentだけcompletedになってLearning Memoryが保存されない中間状態を許さず、実測結果だけを次のDirector/Writer/Reviserへ戻す契約をDB境界でも維持するため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: ExperimentとMemoryを独立tableへ分けた後、それぞれ別transactionで更新する方式。
