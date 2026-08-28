@@ -68,21 +68,37 @@ function sanitizeResearch(input = {}) {
   }
 }
 
+function sanitizeConnector(input = {}) {
+  const type = ['wordpress', 'ghost'].includes(input.type) ? input.type : 'memory'
+  if (type === 'wordpress') {
+    const connector = {
+      type,
+      endpoint: cleanString(input.endpoint),
+      usernameEnv: cleanString(input.usernameEnv),
+      passwordEnv: cleanString(input.passwordEnv),
+    }
+    if (!connector.endpoint) throw new Error('WordPress endpoint is required')
+    return connector
+  }
+  if (type === 'ghost') {
+    const connector = {
+      type,
+      endpoint: cleanString(input.endpoint),
+      adminKeyEnv: cleanString(input.adminKeyEnv),
+      apiVersion: /^v\d+\.\d+$/.test(cleanString(input.apiVersion)) ? cleanString(input.apiVersion) : 'v6.0',
+    }
+    if (!connector.endpoint) throw new Error('Ghost admin endpoint is required')
+    if (!connector.adminKeyEnv) throw new Error('Ghost Admin API key environment-variable name is required')
+    return connector
+  }
+  return { type: 'memory' }
+}
+
 export function sanitizeBlogInput(input = {}) {
   const name = cleanString(input.name)
   if (!name) throw new Error('Blog name is required')
 
-  const connectorType = input.connector?.type === 'wordpress' ? 'wordpress' : 'memory'
-  const connector = connectorType === 'wordpress'
-    ? {
-        type: 'wordpress',
-        endpoint: cleanString(input.connector?.endpoint),
-        usernameEnv: cleanString(input.connector?.usernameEnv),
-        passwordEnv: cleanString(input.connector?.passwordEnv),
-      }
-    : { type: 'memory' }
-  if (connectorType === 'wordpress' && !connector.endpoint) throw new Error('WordPress endpoint is required')
-
+  const connector = sanitizeConnector(input.connector)
   const level = Math.max(0, Math.min(5, Number(input.autonomy?.level ?? 2)))
   return {
     name,
