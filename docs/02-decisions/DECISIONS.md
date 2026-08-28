@@ -239,3 +239,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: `blogs`がglobal state documentに残ると、別ブログ同士の独立した設定変更やMemory Connector検証まで同じ`bloggers_state`行をロックするため。Blog単位の隔離をDB transaction境界にも反映する。
 - 根拠（Q-ID）: Q-002
 - 却下した案: Blog Brainをglobal documentに残し続ける、またはMemory Connectorだけ例外的にglobal stateへ書き戻す方式。
+
+### D-035
+- 日付: 2026-08-28
+- 決定: PostgreSQLのSystem stateは単一rowへ移さず、`bloggers_system_settings`の`core / aiBudget / scheduler` 3 sectionへ分割し、各rowにrevisionを持たせる。Schedulerの通常更新は`scheduler` sectionだけを`FOR UPDATE`し、legacy `store.mutate(state.system...)`はnative rowsへ書き戻す互換境界とする。
+- 理由: Emergency Pause・AI Budget・Schedulerは更新頻度と責務が異なり、1つのglobal rowへ再集約すると正規化後も不要なlock競合が残るため。既存上位APIとの互換性を保ちつつ、最も高頻度なScheduler hot pathを独立させる。
+- 根拠（Q-ID）: Q-002
+- 却下した案: system全体を1つのPostgreSQL rowへ移す方式、または互換mutateでnormalizedな非system collectionの更新まで黙って許可する方式。
