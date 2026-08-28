@@ -90,8 +90,10 @@ test('OIDC login uses PKCE/state/nonce, verifies JWKS signature, and creates a s
   assert.ok(authorization.searchParams.get('code_challenge')?.length > 30)
   assert.ok(authorization.searchParams.get('state')?.length > 20)
   assert.ok(authorization.searchParams.get('nonce')?.length > 20)
+  assert.match(login.setCookies[0], /^__Host-bloggers_oidc_flow=/)
   assert.match(login.setCookies[0], /HttpOnly/)
   assert.match(login.setCookies[0], /SameSite=Lax/)
+  assert.match(login.setCookies[0], /Secure/)
   fixture.setExpectedNonce(authorization.searchParams.get('nonce'))
 
   const completed = await manager.completeLogin({
@@ -102,6 +104,7 @@ test('OIDC login uses PKCE/state/nonce, verifies JWKS signature, and creates a s
   assert.equal(completed.principal.role, 'admin')
   assert.equal(completed.principal.authType, 'oidc')
   assert.equal(completed.returnTo, '/settings?tab=auth')
+  assert.match(completed.setCookies[0], /^__Host-bloggers_session=/)
   assert.match(completed.setCookies[0], /HttpOnly/)
   assert.match(completed.setCookies[0], /SameSite=Strict/)
   assert.match(completed.setCookies[0], /Secure/)
@@ -121,6 +124,35 @@ test('OIDC login uses PKCE/state/nonce, verifies JWKS signature, and creates a s
   assert.equal(status.principal.name, 'Editorial Admin')
   assert.equal(manager.trustedMutationOrigin('https://bloggers.example.com'), true)
   assert.equal(manager.trustedMutationOrigin('https://evil.example.com'), false)
+})
+
+test('localhost HTTP OIDC uses non-__Host cookie names and never emits a misleading Secure prefix contract', async () => {
+  const fixture = createIssuerFixture()
+  const nowMs = 1_800_000_000_000
+  const manager = createOidcManager({
+    env: oidcEnv({
+      BLOGGERS_PUBLIC_BASE_URL: 'http://localhost:3000',
+      BLOGGERS_OIDC_ALLOW_INSECURE_LOCALHOST: 'true',
+    }),
+    fetchFn: fixture.fetchFn,
+    clock: () => nowMs,
+  })
+
+  const login = await manager.beginLogin()
+  const authorization = new URL(login.redirectUrl)
+  fixture.setExpectedNonce(authorization.searchParams.get('nonce'))
+  assert.match(login.setCookies[0], /^bloggers_oidc_flow=/)
+  assert.doesNotMatch(login.setCookies[0], /^__Host-/)
+  assert.doesNotMatch(login.setCookies[0], /(?:^|; )Secure(?:;|$)/)
+
+  const completed = await manager.completeLogin({
+    query: { code: 'code', state: authorization.searchParams.get('state') },
+    cookieHeader: cookiePair(login.setCookies[0]),
+  })
+  assert.match(completed.setCookies[0], /^bloggers_session=/)
+  assert.doesNotMatch(completed.setCookies[0], /^__Host-/)
+  assert.doesNotMatch(completed.setCookies[0], /(?:^|; )Secure(?:;|$)/)
+  assert.equal(manager.status(cookiePair(completed.setCookies[0])).authenticated, true)
 })
 
 test('OIDC callback rejects state and nonce mismatches', async () => {
