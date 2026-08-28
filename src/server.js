@@ -14,21 +14,11 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, testConnection, updateBlog } from './orchestrator.js'
 import { buildPortfolioPlan } from './portfolio.js'
+import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
 import { configureScheduler, createScheduler } from './scheduler.js'
 import { JsonStore } from './store.js'
-import {
-  addBlog,
-  configureAiBudget,
-  recordActivity,
-  resolveApproval,
-  runBlogCycle,
-  runPortfolioCycle,
-  setPaused,
-  summarizeHQ,
-  testConnection,
-  updateBlog,
-} from './orchestrator.js'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const publicDir = resolve(root, 'src/public')
@@ -36,7 +26,12 @@ const tokensPath = resolve(root, 'docs/04-design/tokens.css')
 const port = Number(process.env.PORT || 3000)
 const adminToken = String(process.env.BLOGGERS_ADMIN_TOKEN || '').trim() || null
 const store = await new JsonStore().init()
-const scheduler = createScheduler({ store, runPortfolioCycle, runBlogCycle, recordActivity })
+const scheduler = createScheduler({
+  store,
+  runPortfolioCycle: runPortfolioCycleExclusive,
+  runBlogCycle: runBlogCycleExclusive,
+  recordActivity,
+})
 scheduler.start()
 
 function sendJson(response, status, payload, extraHeaders = {}) {
@@ -177,7 +172,7 @@ async function api(request, response, url) {
 
   if (request.method === 'GET' && pathname === '/api/jobs') {
     const state = await store.read()
-    return sendJson(response, 200, { jobs: state.jobs.slice(-300).reverse() })
+    return sendJson(response, 200, { jobs: state.jobs.slice(-300).reverse(), locks: state.locks.slice(0, 100) })
   }
 
   if (request.method === 'GET' && pathname === '/api/settings') {
@@ -210,8 +205,8 @@ async function api(request, response, url) {
   if (request.method === 'POST' && pathname === '/api/workflows/run') {
     const body = await readJson(request)
     const result = body.blogId
-      ? await runBlogCycle(store, body.blogId, { trigger: 'manual' })
-      : await runPortfolioCycle(store, { trigger: 'manual' })
+      ? await runBlogCycleExclusive(store, body.blogId, { trigger: 'manual' })
+      : await runPortfolioCycleExclusive(store, { trigger: 'manual' })
     return sendJson(response, 200, result)
   }
 
@@ -221,7 +216,7 @@ async function api(request, response, url) {
   const approvalParams = match(pathname, '/api/approvals/:approvalId/resolve')
   if (request.method === 'POST' && approvalParams) {
     const body = await readJson(request)
-    return sendJson(response, 200, await resolveApproval(store, approvalParams.approvalId, body.approved !== false))
+    return sendJson(response, 200, await resolveApprovalExclusive(store, approvalParams.approvalId, body.approved !== false))
   }
 
   return sendJson(response, 404, { error: 'API route not found' })
@@ -238,6 +233,7 @@ const server = createServer(async (request, response) => {
         paused: state.system.paused,
         scheduler: state.system.scheduler,
         queuedJobs: state.jobs.filter((item) => item.status === 'queued').length,
+        activeLocks: state.locks.length,
       })
     }
     if (url.pathname.startsWith('/api/')) {
