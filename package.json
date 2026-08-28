@@ -1,11 +1,17 @@
 {
-  "name": "gpt-guardrail-template",
+  "name": "bloggers-ai-editorial-os",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/*.test.js",
     "status": "node scripts/guard/status.mjs",
     "guard": "node scripts/guard/index.mjs",
     "guard:selftest": "node scripts/guard/selftest.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
