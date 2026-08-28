@@ -2,6 +2,7 @@
 // @feature F-009
 // @feature F-012
 import { timingSafeEqual } from 'node:crypto'
+import { resolveSecret } from './secrets.js'
 
 const ROLE_RANK = { viewer: 1, editor: 2, admin: 3 }
 
@@ -38,14 +39,14 @@ function parseRbacEntries(env) {
       name: clean(entry?.name) || clean(entry?.id) || `principal-${index + 1}`,
       role,
       tokenEnv,
-      token: clean(env[tokenEnv]),
+      token: resolveSecret(tokenEnv, { env, label: `RBAC token ${tokenEnv}` }),
     }
   }).filter((entry) => entry.token)
 }
 
 export function loadAuthConfig(env = process.env) {
   const principals = parseRbacEntries(env)
-  const legacyAdmin = clean(env.BLOGGERS_ADMIN_TOKEN)
+  const legacyAdmin = resolveSecret('BLOGGERS_ADMIN_TOKEN', { env, label: 'Legacy admin token' })
   if (legacyAdmin) {
     principals.push({
       id: 'legacy-admin',
