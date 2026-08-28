@@ -190,3 +190,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: tokenを各ブラウザへ手入力・保持する方式だけに依存せず複数利用者のidentityをIdPへ委譲しつつ、CSRF・JWT未検証・role claimの無条件信頼・reverse proxy配下のlocalhost auth bypassを避けるため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: JWT payloadをdecodeしただけで信用する、IdPの任意role claimをそのままadminへ変換する、Cookie認証でOrigin検証をしない、OIDC有効時もloopback admin fallbackを許可する方式。
+
+### D-028
+- 日付: 2026-08-28
+- 決定: PostgreSQL正規化は高頻度かつ独立性の高い履歴・append/upsert hot pathから段階的に進め、jobs / operation leasesに続いてanalytics / activities / AI usage / workflowsを専用tableへ分離する。上位層にはStorage capability経由で従来のstate配列を透過hydrateし、JSON backend互換を維持する。Experiment→Blog Memoryのように複数collectionの原子性が必要な境界は、専用transaction設計が整うまでglobal stateに残す。
+- 理由: multi-worker時のglobal bloggers_state行ロック競合を実際に減らしながら、途中移行で意味的原子性や既存JSON運用を壊さないため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 全collectionを一括正規化して大規模な書き換えを行う、またはexperimentsだけ先に分離してlearning昇格との原子性を失う方式。
