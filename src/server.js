@@ -5,15 +5,20 @@
 // @feature F-007
 // @feature F-008
 // @feature F-009
+// @feature F-010
+// @feature F-011
 // @feature F-012
 import { timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildPortfolioPlan } from './portfolio.js'
+import { configureScheduler, createScheduler } from './scheduler.js'
 import { JsonStore } from './store.js'
 import {
   addBlog,
+  recordActivity,
   resolveApproval,
   runBlogCycle,
   runPortfolioCycle,
@@ -29,6 +34,8 @@ const tokensPath = resolve(root, 'docs/04-design/tokens.css')
 const port = Number(process.env.PORT || 3000)
 const adminToken = String(process.env.BLOGGERS_ADMIN_TOKEN || '').trim() || null
 const store = await new JsonStore().init()
+const scheduler = createScheduler({ store, runPortfolioCycle, runBlogCycle, recordActivity })
+scheduler.start()
 
 function sendJson(response, status, payload, extraHeaders = {}) {
   response.writeHead(status, {
@@ -123,6 +130,10 @@ async function api(request, response, url) {
     return sendJson(response, 200, summarizeHQ(await store.read()))
   }
 
+  if (request.method === 'GET' && pathname === '/api/portfolio') {
+    return sendJson(response, 200, buildPortfolioPlan(await store.read()))
+  }
+
   if (request.method === 'GET' && pathname === '/api/blogs') {
     const state = await store.read()
     return sendJson(response, 200, { blogs: state.blogs })
@@ -155,7 +166,11 @@ async function api(request, response, url) {
 
   if (request.method === 'GET' && pathname === '/api/analytics') {
     const state = await store.read()
-    return sendJson(response, 200, { analytics: state.analytics.slice(0, 500) })
+    return sendJson(response, 200, {
+      analytics: state.analytics.slice(0, 500),
+      experiments: state.experiments.slice(0, 300),
+      memories: state.memories.filter((item) => item.type === 'experiment-learning').slice(0, 300),
+    })
   }
 
   if (request.method === 'GET' && pathname === '/api/activity') {
@@ -184,9 +199,24 @@ async function api(request, response, url) {
     })
   }
 
+  if (request.method === 'PATCH' && pathname === '/api/settings/scheduler') {
+    const schedulerConfig = await configureScheduler(store, await readJson(request))
+    await recordActivity(store, {
+      agent: 'human-control',
+      type: 'scheduler.configured',
+      message: schedulerConfig.enabled
+        ? `定時自律運用を${schedulerConfig.intervalMinutes}分間隔で有効化しました。`
+        : '定時自律運用を無効化しました。',
+      detail: schedulerConfig,
+    })
+    return sendJson(response, 200, { scheduler: schedulerConfig })
+  }
+
   if (request.method === 'POST' && pathname === '/api/workflows/run') {
     const body = await readJson(request)
-    const result = body.blogId ? await runBlogCycle(store, body.blogId) : await runPortfolioCycle(store)
+    const result = body.blogId
+      ? await runBlogCycle(store, body.blogId, { trigger: 'manual' })
+      : await runPortfolioCycle(store, { trigger: 'manual' })
     return sendJson(response, 200, result)
   }
 
@@ -213,7 +243,13 @@ const server = createServer(async (request, response) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
 
     if (url.pathname === '/api/health' && request.method === 'GET') {
-      return sendJson(response, 200, { ok: true, service: 'bloggers-ai-editorial-os' })
+      const state = await store.read()
+      return sendJson(response, 200, {
+        ok: true,
+        service: 'bloggers-ai-editorial-os',
+        paused: state.system.paused,
+        scheduler: state.system.scheduler,
+      })
     }
 
     if (url.pathname.startsWith('/api/')) {
@@ -244,6 +280,14 @@ const server = createServer(async (request, response) => {
     sendJson(response, status, { error: error.message })
   }
 })
+
+function shutdown() {
+  scheduler.stop()
+  server.close(() => process.exit(0))
+}
+
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
 
 server.listen(port, () => {
   const security = adminToken ? 'admin token enabled' : 'local-only API until BLOGGERS_ADMIN_TOKEN is set'
