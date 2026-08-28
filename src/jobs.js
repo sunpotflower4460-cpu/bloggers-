@@ -46,6 +46,8 @@ export async function enqueueJob(store, input) {
     updatedAt: nowIso(),
   }
 
+  if (typeof store.jobEnqueue === 'function') return store.jobEnqueue(job, input.dedupeKey ?? null)
+
   return store.mutate((state) => {
     state.jobs ??= []
     if (input.dedupeKey) {
@@ -65,6 +67,8 @@ export async function leaseDueJobs(store, {
   now = Date.now(),
   owner = `process:${process.pid}`,
 } = {}) {
+  if (typeof store.jobLeaseDue === 'function') return store.jobLeaseDue({ limit, leaseMs, now, owner })
+
   return store.mutate((state) => {
     state.jobs ??= []
     for (const job of state.jobs) {
@@ -100,6 +104,8 @@ export async function renewJobLease(store, jobId, {
   now = Date.now(),
 } = {}) {
   if (!owner) throw new Error('Job lease renewal requires an owner')
+  if (typeof store.jobRenew === 'function') return store.jobRenew(jobId, { owner, leaseMs, now })
+
   return store.mutate((state) => {
     const job = (state.jobs ?? []).find((item) => item.id === jobId)
     if (!job) throw new Error('Job not found')
@@ -111,6 +117,8 @@ export async function renewJobLease(store, jobId, {
 }
 
 export async function completeJob(store, jobId, result = null, { owner = null } = {}) {
+  if (typeof store.jobComplete === 'function') return store.jobComplete(jobId, result, { owner })
+
   return store.mutate((state) => {
     const job = (state.jobs ?? []).find((item) => item.id === jobId)
     if (!job) throw new Error('Job not found')
@@ -131,6 +139,10 @@ export async function failJob(store, jobId, error, {
   retryable = true,
   owner = null,
 } = {}) {
+  if (typeof store.jobFail === 'function') {
+    return store.jobFail(jobId, error, { retryDelayMinutes, now, retryable, owner })
+  }
+
   return store.mutate((state) => {
     const job = (state.jobs ?? []).find((item) => item.id === jobId)
     if (!job) throw new Error('Job not found')
