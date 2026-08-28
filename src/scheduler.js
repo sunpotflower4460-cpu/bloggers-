@@ -156,7 +156,8 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
       heartbeat = startLeaseHeartbeat(job)
       return await withExecutionContext({ jobId: job.id, workerId, beforeExternalWrite }, async () => {
         if (job.type === 'portfolio-cycle') {
-          const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler' })
+          const portfolioKey = job.payload?.idempotencyKey || `portfolio:${job.id}`
+          const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler', idempotencyKey: portfolioKey })
           const failed = portfolio.results?.filter((item) => !item.ok) ?? []
           const retryable = failed.filter((item) => isRetryableFailure(item))
           const nonRetryable = failed.filter((item) => !isRetryableFailure(item))
@@ -166,7 +167,11 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
               blogId: item.blogId,
               dueAt: new Date(now + config.retryDelayMinutes * 60 * 1000).toISOString(),
               maxAttempts: config.maxRetries + 1,
-              payload: { trigger: 'retry', parentJobId: job.id },
+              payload: {
+                trigger: 'retry',
+                parentJobId: job.id,
+                idempotencyKey: `${portfolioKey}:${item.blogId}`,
+              },
               dedupeKey: `retry:${job.id}:${item.blogId}`,
             })
           }
@@ -191,7 +196,11 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
         }
 
         if (job.type === 'blog-cycle') {
-          const result = await runBlogCycle(store, job.blogId, { trigger: job.payload?.trigger || 'retry' })
+          const idempotencyKey = job.payload?.idempotencyKey || `job:${job.id}:${job.blogId}`
+          const result = await runBlogCycle(store, job.blogId, {
+            trigger: job.payload?.trigger || 'retry',
+            idempotencyKey,
+          })
           await completeJob(store, job.id, { workflowId: result.workflowId ?? null }, { owner: workerId })
           return { jobId: job.id, type: job.type, blogId: job.blogId, ok: true, result }
         }
