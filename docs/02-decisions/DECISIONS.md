@@ -148,3 +148,17 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: 現在のFoundationを壊さずWebと自律実行を分離し、将来driver導入時にPostgreSQLのSELECT FOR UPDATE transactionへ移行できるようにするため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: 制約を無視してpg/ORMを追加する、またはPostgreSQL移行時にOrchestrator/Job/Lease全体を書き直す方式。
+
+### D-022
+- 日付: 2026-08-28
+- 決定: PostgreSQLではJob Queueとoperation leaseをstate documentから先に正規化し、Job取得はFOR UPDATE SKIP LOCKED、active dedupeはqueued/runningを対象とするpartial unique index、operation leaseはlease_key一意制約で裁定する。
+- 理由: 複数Workerがglobal state rowを取り合わず別Jobを並列取得でき、同一Job・同一blog cycleの二重実行をDBのtransaction境界で抑えるため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: PostgreSQLへ移行してもjobs/locksをglobal JSON document内だけに残し、全Workerが1行のSELECT FOR UPDATEを奪い合う方式。
+
+### D-023
+- 日付: 2026-08-28
+- 決定: 新規npm依存0を維持したままPostgreSQL runtimeへ接続するため、デプロイ環境が提供するpool moduleをBLOGGERS_POSTGRES_POOL_MODULEからdynamic importする。JSON→PostgreSQL移行は明示コマンドとし、running Jobはqueuedへ戻し旧operation leaseは破棄する。
+- 理由: driverを勝手に追加せず実運用への接続点を作りつつ、旧processのlease ownershipを新環境へ持ち込む危険を避けるため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: pgを無断で依存追加する、running leaseをそのままコピーする、起動時に暗黙の破壊的migrationを行う方式。
