@@ -88,25 +88,14 @@ export function authenticateToken(token, config) {
   if (!actual) return null
   for (const principal of config.principals) {
     if (tokenMatches(principal.token, actual)) {
-      return { id: principal.id, name: principal.name, role: principal.role, tokenEnv: principal.tokenEnv }
+      return { id: principal.id, name: principal.name, role: principal.role, tokenEnv: principal.tokenEnv, authType: 'token' }
     }
   }
   return null
 }
 
-export function authorizeApiAccess({ method, pathname, token, loopback, config }) {
-  if (!config.configured) {
-    if (loopback) return { ok: true, role: 'admin', principal: { id: 'local', name: 'Localhost', role: 'admin' } }
-    return {
-      ok: false,
-      status: 403,
-      error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN / BLOGGERS_ADMIN_TOKEN_REF or BLOGGERS_RBAC_JSON is configured.',
-    }
-  }
-
-  const principal = authenticateToken(token, config)
-  if (!principal) return { ok: false, status: 401, error: 'A valid Bloggers access token is required.' }
-
+function authorizePrincipal({ method, pathname, principal }) {
+  if (!principal || !ROLE_RANK[principal.role]) return { ok: false, status: 401, error: 'A valid Bloggers identity is required.' }
   const required = requiredRole(method, pathname)
   if (ROLE_RANK[principal.role] < ROLE_RANK[required]) {
     return {
@@ -117,8 +106,30 @@ export function authorizeApiAccess({ method, pathname, token, loopback, config }
       requiredRole: required,
     }
   }
-
   return { ok: true, role: principal.role, principal, requiredRole: required }
+}
+
+export function authorizeApiAccess({ method, pathname, token, principal = null, loopback, config }) {
+  const presented = clean(token)
+  if (presented) {
+    if (!config.configured) return { ok: false, status: 401, error: 'A valid Bloggers access token is required.' }
+    const tokenPrincipal = authenticateToken(presented, config)
+    if (!tokenPrincipal) return { ok: false, status: 401, error: 'A valid Bloggers access token is required.' }
+    return authorizePrincipal({ method, pathname, principal: tokenPrincipal })
+  }
+
+  if (principal) return authorizePrincipal({ method, pathname, principal })
+
+  if (!config.configured) {
+    if (loopback) return { ok: true, role: 'admin', principal: { id: 'local', name: 'Localhost', role: 'admin', authType: 'local' } }
+    return {
+      ok: false,
+      status: 403,
+      error: 'Remote API access is disabled until token RBAC or OIDC session identity is configured.',
+    }
+  }
+
+  return { ok: false, status: 401, error: 'A valid Bloggers access token or signed session is required.' }
 }
 
 export function publicAuthSummary(config) {
@@ -127,6 +138,6 @@ export function publicAuthSummary(config) {
   return {
     configured: config.configured,
     roles: counts,
-    remoteAccessRequiresToken: true,
+    remoteAccessRequiresAuthentication: true,
   }
 }
