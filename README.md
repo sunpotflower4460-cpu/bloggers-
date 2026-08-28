@@ -43,6 +43,7 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 - `FOR UPDATE SKIP LOCKED` worker leasing
 - JSON → PostgreSQL migration command
 - deployment-provided PostgreSQL pool module hook
+- PostgreSQL 16 serviceを使う実DB integration smoke CI
 - Audit Log
 - Node標準テスト / GitHub Actions
 
@@ -120,6 +121,7 @@ Worker B ────┘
 - Job heartbeat / owner fencing
 - Operation lease heartbeat / owner fencing
 - JSON → PostgreSQL migration
+- PostgreSQL 16実体を使ったCI smoke test
 
 高頻度・独立履歴はglobal `bloggers_state`行をロックせず専用tableへ直接書き込みます。Blog Brainは`bloggers_blogs`の**1 blog rowだけを`FOR UPDATE`**して更新するため、別ブログの設定変更やMemory Connectorのlocal post更新同士がglobal rowを奪い合いません。Article/ApprovalとExperiment/Memoryのように意味的原子性が必要な組はpaired native transactionで同時確定します。
 
@@ -422,7 +424,6 @@ Secrets: env / managed resolver → no literal credential persistence
 
 ## 次のproduction-hardening候補
 
-- PostgreSQL実インスタンスを使うintegration / migration CI
 - PostgreSQL driverの正式依存化（guard制約変更の承認後）
 - system schema migration / revisionを使った管理UI上の競合検出
 - OIDC Sessionのserver-side revocation / key rotation grace window
