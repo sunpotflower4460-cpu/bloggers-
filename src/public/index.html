@@ -30,6 +30,7 @@
       <header class="topbar">
         <div><p class="eyebrow" id="view-eyebrow">PORTFOLIO CONTROL</p><h1 id="view-title">Bloggers HQ</h1></div>
         <div class="topbar-actions">
+          <button class="button button-ghost" id="auth-session-button" hidden>ログイン</button>
           <button class="button button-ghost" id="refresh-button">更新</button>
           <button class="button button-primary" id="cycle-button">AI運用サイクル</button>
           <button class="button button-danger" id="pause-button">PAUSE ALL AI</button>
@@ -97,6 +98,52 @@
     </form>
   </template>
 
+  <script>
+    (() => {
+      const nativeFetch = window.fetch.bind(window)
+      let statusPromise = null
+      let redirecting = false
+      const authStatus = () => {
+        statusPromise ||= nativeFetch('/auth/status', { headers: { Accept: 'application/json' }, cache: 'no-store' })
+          .then((response) => response.ok ? response.json() : { enabled: false, authenticated: false })
+          .catch(() => ({ enabled: false, authenticated: false }))
+        return statusPromise
+      }
+
+      window.fetch = async (input, init = {}) => {
+        const response = await nativeFetch(input, init)
+        const url = new URL(typeof input === 'string' ? input : input.url, window.location.href)
+        const headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined))
+        if ([401, 403].includes(response.status) && url.origin === window.location.origin && url.pathname.startsWith('/api/') && !headers.has('Authorization')) {
+          const status = await authStatus()
+          if (status.enabled && !status.authenticated && !redirecting) {
+            redirecting = true
+            const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
+            window.location.assign(`/auth/login?returnTo=${encodeURIComponent(returnTo)}`)
+            return new Promise(() => {})
+          }
+        }
+        return response
+      }
+
+      void authStatus().then((status) => {
+        if (!status.enabled) return
+        const button = document.querySelector('#auth-session-button')
+        if (!button) return
+        button.hidden = false
+        button.textContent = status.authenticated ? `${status.principal?.name || 'Session'} · ログアウト` : 'OIDCログイン'
+        button.addEventListener('click', async () => {
+          if (!status.authenticated) {
+            const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`
+            window.location.assign(`/auth/login?returnTo=${encodeURIComponent(returnTo)}`)
+            return
+          }
+          const response = await nativeFetch('/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+          if (response.ok) window.location.reload()
+        })
+      })
+    })()
+  </script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
