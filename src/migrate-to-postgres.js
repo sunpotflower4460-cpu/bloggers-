@@ -3,6 +3,7 @@
 // @feature F-006
 // @feature F-007
 // @feature F-009
+// @feature F-011
 // @feature F-012
 import { access } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -41,6 +42,8 @@ export async function migrateJsonToPostgres({
   const sourceIdeas = structuredClone(sourceState.ideas ?? [])
   const sourceArticles = structuredClone(sourceState.articles ?? [])
   const sourceApprovals = structuredClone(sourceState.approvals ?? [])
+  const sourceExperiments = structuredClone(sourceState.experiments ?? [])
+  const sourceMemories = structuredClone(sourceState.memories ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -61,6 +64,8 @@ export async function migrateJsonToPostgres({
   const nativeIdeas = typeof target.ideaAppend === 'function'
   const nativeArticles = typeof target.articleUpsert === 'function'
   const nativeApprovals = typeof target.approvalUpsert === 'function'
+  const nativeExperiments = typeof target.experimentUpsert === 'function'
+  const nativeMemories = typeof target.memoryUpsert === 'function'
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
   if (nativeAiUsage) portableState.aiUsage = []
@@ -68,6 +73,8 @@ export async function migrateJsonToPostgres({
   if (nativeIdeas) portableState.ideas = []
   if (nativeArticles) portableState.articles = []
   if (nativeApprovals) portableState.approvals = []
+  if (nativeExperiments) portableState.experiments = []
+  if (nativeMemories) portableState.memories = []
 
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
@@ -128,6 +135,22 @@ export async function migrateJsonToPostgres({
     }
   }
 
+  let migratedExperiments = 0
+  if (nativeExperiments) {
+    for (const experiment of sourceExperiments) {
+      await target.experimentUpsert(experiment)
+      migratedExperiments += 1
+    }
+  }
+
+  let migratedMemories = 0
+  if (nativeMemories) {
+    for (const memory of sourceMemories) {
+      await target.memoryUpsert(memory)
+      migratedMemories += 1
+    }
+  }
+
   const existing = await target.read()
   const existingJobIds = new Set((existing.jobs ?? []).map((job) => job.id))
   let migratedJobs = 0
@@ -151,6 +174,8 @@ export async function migrateJsonToPostgres({
     blogs: sourceState.blogs?.length ?? 0,
     articles: sourceArticles.length,
     approvals: sourceApprovals.length,
+    experiments: sourceExperiments.length,
+    memories: sourceMemories.length,
     migratedAnalytics,
     analyticsKeptInStateDocument: nativeAnalytics ? 0 : sourceAnalytics.length,
     migratedActivities,
@@ -165,6 +190,10 @@ export async function migrateJsonToPostgres({
     articlesKeptInStateDocument: nativeArticles ? 0 : sourceArticles.length,
     migratedApprovals,
     approvalsKeptInStateDocument: nativeApprovals ? 0 : sourceApprovals.length,
+    migratedExperiments,
+    experimentsKeptInStateDocument: nativeExperiments ? 0 : sourceExperiments.length,
+    migratedMemories,
+    memoriesKeptInStateDocument: nativeMemories ? 0 : sourceMemories.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
