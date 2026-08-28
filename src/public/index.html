@@ -55,7 +55,11 @@
       <label class="wide">編集方針<textarea name="editorialPolicy" rows="3" placeholder="一次情報を優先し、分からないことを断定しない"></textarea></label>
 
       <label>Connector
-        <select name="connectorType"><option value="memory">Memory / Demo</option><option value="wordpress">WordPress</option></select>
+        <select name="connectorType">
+          <option value="memory">Memory / Demo</option>
+          <option value="wordpress">WordPress</option>
+          <option value="ghost">Ghost</option>
+        </select>
       </label>
       <label>自動運用レベル
         <select name="autonomyLevel">
@@ -64,9 +68,15 @@
       </label>
 
       <div class="wordpress-fields wide" hidden>
-        <label>WordPress URL<input name="endpoint" placeholder="https://example.com"></label>
+        <label>WordPress URL<input name="wpEndpoint" placeholder="https://example.com"></label>
         <label>ユーザー名の環境変数<input name="usernameEnv" placeholder="WP_MUSIC_USER"></label>
         <label>Application Passwordの環境変数<input name="passwordEnv" placeholder="WP_MUSIC_PASSWORD"></label>
+      </div>
+
+      <div class="ghost-fields wide" hidden>
+        <label>Ghost Admin URL<input name="ghostEndpoint" placeholder="https://your-site.ghost.io"></label>
+        <label>Admin API Keyの環境変数<input name="adminKeyEnv" placeholder="GHOST_MUSIC_ADMIN_KEY"></label>
+        <label>Admin API version<input name="ghostApiVersion" value="v6.0" placeholder="v6.0"></label>
       </div>
 
       <div class="wide"><p class="eyebrow">RESEARCH & QUALITY</p><p class="muted">信頼する公開ソースをAIへ渡し、[S1]形式の引用を検証します。1行ごとに「ラベル | URL」またはURLだけを入力できます。</p></div>
