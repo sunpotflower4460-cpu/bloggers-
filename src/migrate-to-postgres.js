@@ -1,3 +1,4 @@
+// @feature F-005
 // @feature F-007
 // @feature F-009
 // @feature F-012
@@ -33,6 +34,7 @@ export async function migrateJsonToPostgres({
   const sourceJobs = structuredClone(sourceState.jobs ?? [])
   const sourceAnalytics = structuredClone(sourceState.analytics ?? [])
   const sourceActivities = structuredClone(sourceState.activities ?? [])
+  const sourceAiUsage = structuredClone(sourceState.aiUsage ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -48,8 +50,10 @@ export async function migrateJsonToPostgres({
 
   const nativeAnalytics = typeof target.analyticsAppend === 'function'
   const nativeActivities = typeof target.activityAppend === 'function'
+  const nativeAiUsage = typeof target.aiUsageAppend === 'function'
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
+  if (nativeAiUsage) portableState.aiUsage = []
 
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
@@ -70,6 +74,12 @@ export async function migrateJsonToPostgres({
       await target.activityAppend(activity, { limit: 1000 })
       migratedActivities += 1
     }
+  }
+
+  let migratedAiUsage = 0
+  if (nativeAiUsage && sourceAiUsage.length > 0) {
+    await target.aiUsageAppend(sourceAiUsage, { limit: 10_000 })
+    migratedAiUsage = sourceAiUsage.length
   }
 
   const existing = await target.read()
@@ -98,6 +108,8 @@ export async function migrateJsonToPostgres({
     analyticsKeptInStateDocument: nativeAnalytics ? 0 : sourceAnalytics.length,
     migratedActivities,
     activitiesKeptInStateDocument: nativeActivities ? 0 : sourceActivities.length,
+    migratedAiUsage,
+    aiUsageKeptInStateDocument: nativeAiUsage ? 0 : sourceAiUsage.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
