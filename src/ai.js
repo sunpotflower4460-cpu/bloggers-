@@ -15,26 +15,34 @@ function parseJson(text) {
   }
 }
 
+function postTitle(post) {
+  return post?.title?.rendered ?? post?.title ?? ''
+}
+
+function postContent(post) {
+  return post?.content?.raw ?? post?.content?.rendered ?? post?.content ?? ''
+}
+
 export class RuleBasedProvider {
   name = 'rule-based-local'
 
   async decide({ blog, posts, learnings = [] }) {
     const topics = blog.brain?.topics?.filter(Boolean) ?? []
     const topic = topics[posts.length % Math.max(topics.length, 1)] ?? blog.brain?.purpose ?? blog.name
-    const existingTitles = posts.map((post) => post.title?.rendered ?? post.title).filter(Boolean)
+    const matchingPost = posts.find((post) => String(postTitle(post)).includes(topic))
     const title = `${topic}：読者が最初に知っておきたいこと`
-    const duplicate = existingTitles.some((item) => String(item).includes(topic))
     const negativeLearning = learnings.find((item) => /negative/.test(item.text || ''))
     return {
-      action: duplicate || negativeLearning ? 'WAIT' : 'CREATE',
+      action: negativeLearning ? 'WAIT' : matchingPost ? 'UPDATE' : 'CREATE',
       topic,
-      title,
-      rationale: duplicate
-        ? '同テーマの記事がすでにあるため、新規量産より既存記事の観測を優先します。'
-        : negativeLearning
-          ? '直近の実験で悪化シグナルがあるため、追加制作より観測を優先します。'
+      title: matchingPost ? postTitle(matchingPost) : title,
+      targetPostId: matchingPost?.id ?? null,
+      rationale: negativeLearning
+        ? '直近の実験で悪化シグナルがあるため、追加制作より観測を優先します。'
+        : matchingPost
+          ? '同テーマの記事があるため、新規量産ではなく既存記事を深くする方を優先します。'
           : 'Blog Brainの主要テーマに未充足の入口記事があるため、下書き候補として提案します。',
-      confidence: negativeLearning ? 0.62 : 0.55,
+      confidence: negativeLearning ? 0.62 : matchingPost ? 0.64 : 0.55,
       provider: this.name,
     }
   }
@@ -67,6 +75,24 @@ export class RuleBasedProvider {
       provider: this.name,
     }
   }
+
+  async revise({ blog, decision, post, learnings = [] }) {
+    const current = postContent(post)
+    const note = learnings.length > 0
+      ? `\n\n## 今回反映する運用上の学び\n${learnings.slice(0, 3).map((item) => `- ${item.text}`).join('\n')}`
+      : ''
+    return {
+      title: postTitle(post) || decision.title,
+      body: [
+        current || `# ${postTitle(post) || decision.title}`,
+        '',
+        '## 更新メモ',
+        '',
+        `${decision.rationale} この方針に沿って、重複を増やさず既存記事をより明確に整理します。${note}`,
+      ].join('\n'),
+      provider: this.name,
+    }
+  }
 }
 
 export class OpenAICompatibleProvider {
@@ -94,10 +120,15 @@ export class OpenAICompatibleProvider {
   }
 
   async decide({ blog, posts, metrics, learnings = [] }) {
+    const recentPosts = posts.slice(0, 20).map((post) => ({
+      id: post.id,
+      title: postTitle(post),
+      status: post.status,
+    }))
     const content = await this.#complete([
       {
         role: 'system',
-        content: 'You are the editorial director of one blog. Return JSON only. Never optimize for article count; WAIT is valid. Prefer measured learning over intuition.',
+        content: 'You are the editorial director of one blog. Return JSON only. Never optimize for article count; WAIT is valid. Prefer improving an existing relevant article over creating a duplicate. Prefer measured learning over intuition.',
       },
       {
         role: 'user',
@@ -105,9 +136,10 @@ export class OpenAICompatibleProvider {
           task: 'Choose the next editorial action.',
           allowedActions: ['CREATE', 'UPDATE', 'WAIT'],
           requiredKeys: ['action', 'topic', 'title', 'rationale', 'confidence'],
+          updateRule: 'When action is UPDATE, targetPostId must be the id of one supplied recentPosts item.',
           blogBrain: blog.brain,
           recentLearnings: learnings,
-          recentPosts: posts.slice(0, 20).map((post) => ({ id: post.id, title: post.title?.rendered ?? post.title, status: post.status })),
+          recentPosts,
           metrics,
         }),
       },
@@ -115,6 +147,9 @@ export class OpenAICompatibleProvider {
     const decision = parseJson(content)
     if (!decision || !['CREATE', 'UPDATE', 'WAIT'].includes(decision.action)) {
       throw new Error('AI provider returned an invalid editorial decision')
+    }
+    if (decision.action === 'UPDATE' && !recentPosts.some((post) => String(post.id) === String(decision.targetPostId))) {
+      throw new Error('AI provider returned UPDATE without a valid targetPostId')
     }
     return { ...decision, provider: this.name }
   }
@@ -140,6 +175,30 @@ export class OpenAICompatibleProvider {
       },
     ], { temperature: 0.6 })
     return { title: decision.title, body: content, provider: this.name }
+  }
+
+  async revise({ blog, decision, post, learnings = [] }) {
+    const content = await this.#complete([
+      {
+        role: 'system',
+        content: 'Revise an existing blog article. Preserve useful material, remove duplication, improve clarity and usefulness, and follow the supplied editorial policy. Do not fabricate facts or sources. Return the full revised article body only.',
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          updateRationale: decision.rationale,
+          topic: decision.topic,
+          currentTitle: postTitle(post),
+          currentBody: postContent(post),
+          purpose: blog.brain?.purpose,
+          audience: blog.brain?.audience,
+          voice: blog.brain?.voice,
+          editorialPolicy: blog.brain?.editorialPolicy,
+          recentLearnings: learnings,
+        }),
+      },
+    ], { temperature: 0.45 })
+    return { title: postTitle(post) || decision.title, body: content, provider: this.name }
   }
 }
 
