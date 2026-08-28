@@ -22,15 +22,17 @@ function fakePostgresTarget() {
   const nativeActivities = []
   const nativeAiUsage = []
   const nativeWorkflows = []
+  const nativeIdeas = []
   return {
     backend: 'postgres',
     async transaction(mutator) {
-      document ??= { system: {}, blogs: [], analytics: [], activities: [], aiUsage: [], workflows: [], jobs: [], locks: [] }
+      document ??= { system: {}, blogs: [], ideas: [], analytics: [], activities: [], aiUsage: [], workflows: [], jobs: [], locks: [] }
       return mutator(document)
     },
     async read() {
       return {
         ...structuredClone(document),
+        ideas: structuredClone(nativeIdeas),
         analytics: structuredClone(nativeAnalytics),
         activities: structuredClone(nativeActivities),
         aiUsage: structuredClone(nativeAiUsage),
@@ -65,6 +67,12 @@ function fakePostgresTarget() {
       nativeWorkflows.unshift(structuredClone(workflow))
       return structuredClone(workflow)
     },
+    async ideaAppend(idea) {
+      const index = nativeIdeas.findIndex((item) => item.id === idea.id)
+      if (index >= 0) nativeIdeas.splice(index, 1)
+      nativeIdeas.unshift(structuredClone(idea))
+      return structuredClone(idea)
+    },
     async jobEnqueue(job, dedupeKey) {
       const existing = nativeJobs.find((item) => item.id === job.id || (dedupeKey && ['queued', 'running'].includes(item.status) && item.payload?.dedupeKey === dedupeKey))
       if (existing) return structuredClone(existing)
@@ -86,6 +94,17 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     await source.mutate((state) => {
       state.blogs.push({ id: 'blog_1', name: 'Migrated Blog' })
       state.articles.push({ id: 'article_1', blogId: 'blog_1', title: 'Hello' })
+      state.ideas.push({
+        id: 'idea_1',
+        blogId: 'blog_1',
+        action: 'CREATE',
+        topic: 'migration',
+        title: 'Migration idea',
+        rationale: 'verify native idea migration',
+        confidence: 0.8,
+        status: 'proposed',
+        createdAt: '2026-08-28T00:01:30.000Z',
+      })
       state.analytics.push({
         id: 'metric_1',
         blogId: 'blog_1',
@@ -177,6 +196,8 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
 
     assert.equal(result.blogs, 1)
     assert.equal(result.articles, 1)
+    assert.equal(result.migratedIdeas, 1)
+    assert.equal(result.ideasKeptInStateDocument, 0)
     assert.equal(result.migratedAnalytics, 1)
     assert.equal(result.analyticsKeptInStateDocument, 0)
     assert.equal(result.migratedActivities, 1)
@@ -190,10 +211,14 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(result.discardedOperationLeases, 1)
     assert.equal(migrated.system.scheduler.running, false)
     assert.equal(migrated.locks.length, 0)
+    assert.equal(document.ideas.length, 0, 'normalized ideas should not remain in the global state document')
     assert.equal(document.analytics.length, 0, 'normalized analytics should not remain in the global state document')
     assert.equal(document.activities.length, 0, 'normalized activities should not remain in the global state document')
     assert.equal(document.aiUsage.length, 0, 'normalized AI usage should not remain in the global state document')
     assert.equal(document.workflows.length, 0, 'normalized workflows should not remain in the global state document')
+    assert.equal(migrated.ideas.length, 1)
+    assert.equal(migrated.ideas[0].id, 'idea_1')
+    assert.equal(migrated.ideas[0].title, 'Migration idea')
     assert.equal(migrated.analytics.length, 1)
     assert.equal(migrated.analytics[0].id, 'metric_1')
     assert.equal(migrated.analytics[0].clicks, 42)
