@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createConnector, GhostConnector } from '../src/connectors.js'
-import { withExecutionContext } from '../src/execution-context.js'
+import { beforeExternalWrite, withExecutionContext } from '../src/execution-context.js'
 import { enqueueJob } from '../src/jobs.js'
 import { addBlog } from '../src/orchestrator.js'
 import { configureScheduler, createScheduler } from '../src/scheduler.js'
@@ -25,6 +25,23 @@ function leaseLostError() {
   error.code = 'JOB_LEASE_LOST'
   return error
 }
+
+test('nested execution contexts compose job and operation write fences', async () => {
+  const calls = []
+  await withExecutionContext({
+    jobId: 'job-1',
+    workerId: 'worker-1',
+    beforeExternalWrite: async (detail) => { calls.push(`job:${detail.operation}`) },
+  }, async () => {
+    await withExecutionContext({
+      operationLeaseKey: 'blog-cycle:b1',
+      beforeExternalWrite: async (detail) => { calls.push(`operation:${detail.operation}`) },
+    }, async () => {
+      await beforeExternalWrite({ operation: 'publish' })
+    })
+  })
+  assert.deepEqual(calls, ['job:publish', 'operation:publish'])
+})
 
 test('connector writes are rejected before mutation when the execution fence is lost', async () => {
   await withStore(async (store) => {
