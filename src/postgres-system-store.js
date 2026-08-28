@@ -27,6 +27,16 @@ function nonSystemFingerprint(state) {
   return JSON.stringify(snapshot)
 }
 
+function revisionConflict(section, expectedRevision, currentRevision) {
+  const error = new Error(`${section} settings changed in another session. Reload the latest settings before saving.`)
+  error.code = 'SYSTEM_VERSION_CONFLICT'
+  error.status = 409
+  error.section = section
+  error.expectedRevision = expectedRevision
+  error.currentRevision = currentRevision
+  return error
+}
+
 export class PostgresSystemStore extends PostgresConfigStore {
   #systemPool
 
@@ -40,6 +50,7 @@ export class PostgresSystemStore extends PostgresConfigStore {
       ...super.capabilities,
       nativeSystemSections: true,
       nativeSystemMutation: true,
+      optimisticSystemRevision: true,
     }
   }
 
@@ -177,6 +188,10 @@ export class PostgresSystemStore extends PostgresConfigStore {
   }
 
   async systemRead(section) {
+    return (await this.systemReadWithRevision(section)).value
+  }
+
+  async systemReadWithRevision(section) {
     assertSection(section)
     const defaults = splitSystemSections(DEFAULT_STATE.system)[section]
     const result = await this.#systemPool.query(
@@ -185,10 +200,22 @@ export class PostgresSystemStore extends PostgresConfigStore {
        WHERE setting_key = $1`,
       [section],
     )
-    return clone(decodeJson(result.rows?.[0]?.document) ?? defaults)
+    return {
+      value: clone(decodeJson(result.rows?.[0]?.document) ?? defaults),
+      revision: Number(result.rows?.[0]?.revision ?? 1),
+      updatedAt: result.rows?.[0]?.updated_at ?? null,
+    }
   }
 
   async systemMutate(section, mutator) {
+    return this.#systemMutateLocked(section, null, mutator)
+  }
+
+  async systemMutateVersioned(section, expectedRevision, mutator) {
+    return this.#systemMutateLocked(section, expectedRevision, mutator)
+  }
+
+  async #systemMutateLocked(section, expectedRevision, mutator) {
     assertSection(section)
     if (typeof mutator !== 'function') throw new Error('system mutator must be a function')
     const client = await this.#systemPool.connect()
@@ -202,6 +229,10 @@ export class PostgresSystemStore extends PostgresConfigStore {
          FOR UPDATE`,
         [section],
       )
+      const currentRevision = Number(locked.rows?.[0]?.revision ?? 1)
+      if (expectedRevision !== null && Number(expectedRevision) !== currentRevision) {
+        throw revisionConflict(section, Number(expectedRevision), currentRevision)
+      }
       const value = clone(decodeJson(locked.rows?.[0]?.document) ?? splitSystemSections(DEFAULT_STATE.system)[section])
       const result = await mutator(value)
       await client.query(
