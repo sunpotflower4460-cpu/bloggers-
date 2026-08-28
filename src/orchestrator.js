@@ -20,6 +20,7 @@ import { summarizeJobs } from './jobs.js'
 import { buildPortfolioPlan } from './portfolio.js'
 import { buildInternalLinkCandidates, evaluateContentQuality, gatherResearchSources } from './quality.js'
 import { createId, nowIso } from './store.js'
+import { upsertWorkflow } from './workflow-store.js'
 
 const DEFAULT_AUTONOMY = {
   level: 2,
@@ -340,10 +341,7 @@ export async function runBlogCycle(store, blogId, options = {}) {
     aiCostUsd: 0,
     error: null,
   }
-  await store.mutate((state) => {
-    state.workflows.unshift(workflow)
-    state.workflows = state.workflows.slice(0, 2000)
-  })
+  await upsertWorkflow(store, workflow, { limit: 2000 })
 
   let cycleCostUsd = 0
   try {
@@ -459,15 +457,12 @@ export async function runBlogCycle(store, blogId, options = {}) {
     }
 
     const finishedAt = nowIso()
-    await store.mutate((state) => {
-      state.system.lastCycleAt = finishedAt
-      const saved = state.workflows.find((item) => item.id === workflow.id)
-      saved.status = 'completed'
-      saved.finishedAt = finishedAt
-      saved.decision = decision
-      saved.experimentId = experiment?.id ?? null
-      saved.aiCostUsd = cycleCostUsd
-    })
+    workflow.status = 'completed'
+    workflow.finishedAt = finishedAt
+    workflow.decision = decision
+    workflow.experimentId = experiment?.id ?? null
+    workflow.aiCostUsd = cycleCostUsd
+    await upsertWorkflow(store, workflow, { limit: 2000 })
 
     return { workflowId: workflow.id, decision, idea, article, approval, published, experiment, evaluation, metrics, aiCostUsd: cycleCostUsd, budgetExceeded }
   } catch (error) {
@@ -475,15 +470,11 @@ export async function runBlogCycle(store, blogId, options = {}) {
       const dangling = provider.drainUsage()
       if (dangling.length > 0) await recordAiUsage(store, dangling, { blogId, workflowId: workflow.id })
     }
-    await store.mutate((state) => {
-      const saved = state.workflows.find((item) => item.id === workflow.id)
-      if (saved) {
-        saved.status = 'failed'
-        saved.finishedAt = nowIso()
-        saved.aiCostUsd = cycleCostUsd
-        saved.error = error.message
-      }
-    })
+    workflow.status = 'failed'
+    workflow.finishedAt = nowIso()
+    workflow.aiCostUsd = cycleCostUsd
+    workflow.error = error.message
+    await upsertWorkflow(store, workflow, { limit: 2000 })
     await recordActivity(store, { blogId, agent: 'system', type: 'cycle.failed', message: error.message, detail: { trigger: workflow.trigger } })
     throw error
   }
