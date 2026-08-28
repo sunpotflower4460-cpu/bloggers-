@@ -13,12 +13,8 @@
     <aside class="sidebar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">B</span>
-        <div>
-          <strong>Bloggers</strong>
-          <small>Editorial OS</small>
-        </div>
+        <div><strong>Bloggers</strong><small>Editorial OS</small></div>
       </div>
-
       <nav class="nav" aria-label="メインナビゲーション">
         <button class="nav-item is-active" data-view="hq">HQ</button>
         <button class="nav-item" data-view="blogs">Blogs</button>
@@ -27,26 +23,18 @@
         <button class="nav-item" data-view="ai">AI</button>
         <button class="nav-item" data-view="settings">Settings</button>
       </nav>
-
-      <div class="sidebar-foot">
-        <span class="status-dot" id="system-dot"></span>
-        <span id="system-label">接続中…</span>
-      </div>
+      <div class="sidebar-foot"><span class="status-dot" id="system-dot"></span><span id="system-label">接続中…</span></div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <div>
-          <p class="eyebrow" id="view-eyebrow">PORTFOLIO CONTROL</p>
-          <h1 id="view-title">Bloggers HQ</h1>
-        </div>
+        <div><p class="eyebrow" id="view-eyebrow">PORTFOLIO CONTROL</p><h1 id="view-title">Bloggers HQ</h1></div>
         <div class="topbar-actions">
           <button class="button button-ghost" id="refresh-button">更新</button>
           <button class="button button-primary" id="cycle-button">AI運用サイクル</button>
           <button class="button button-danger" id="pause-button">PAUSE ALL AI</button>
         </div>
       </header>
-
       <section id="notice" class="notice" hidden></section>
       <section id="view" class="view" aria-live="polite"></section>
     </main>
@@ -55,10 +43,7 @@
   <template id="blog-form-template">
     <form class="panel form-grid" id="blog-form">
       <div class="panel-heading">
-        <div>
-          <p class="eyebrow">CONNECT A BLOG</p>
-          <h2>ブログを追加</h2>
-        </div>
+        <div><p class="eyebrow">CONNECT A BLOG</p><h2>ブログを追加</h2></div>
         <p class="muted">資格情報そのものは保存せず、環境変数名だけを登録します。</p>
       </div>
 
@@ -70,19 +55,11 @@
       <label class="wide">編集方針<textarea name="editorialPolicy" rows="3" placeholder="一次情報を優先し、分からないことを断定しない"></textarea></label>
 
       <label>Connector
-        <select name="connectorType">
-          <option value="memory">Memory / Demo</option>
-          <option value="wordpress">WordPress</option>
-        </select>
+        <select name="connectorType"><option value="memory">Memory / Demo</option><option value="wordpress">WordPress</option></select>
       </label>
       <label>自動運用レベル
         <select name="autonomyLevel">
-          <option value="0">0 — 観測のみ</option>
-          <option value="1">1 — 提案のみ</option>
-          <option value="2" selected>2 — 下書きまで</option>
-          <option value="3">3 — 公開前承認</option>
-          <option value="4">4 — 自動公開</option>
-          <option value="5">5 — 自律運営</option>
+          <option value="0">0 — 観測のみ</option><option value="1">1 — 提案のみ</option><option value="2" selected>2 — 下書きまで</option><option value="3">3 — 公開前承認</option><option value="4">4 — 自動公開</option><option value="5">5 — 自律運営</option>
         </select>
       </label>
 
@@ -92,10 +69,13 @@
         <label>Application Passwordの環境変数<input name="passwordEnv" placeholder="WP_MUSIC_PASSWORD"></label>
       </div>
 
-      <div class="wide">
-        <p class="eyebrow">OPTIONAL ANALYTICS</p>
-        <p class="muted">未設定でもCMSの基本指標だけで動きます。アクセストークン自体は保存しません。</p>
-      </div>
+      <div class="wide"><p class="eyebrow">RESEARCH & QUALITY</p><p class="muted">信頼する公開ソースをAIへ渡し、[S1]形式の引用を検証します。1行ごとに「ラベル | URL」またはURLだけを入力できます。</p></div>
+      <label>出典必須
+        <select name="requireCitations"><option value="false" selected>任意</option><option value="true">必須 — 不足時は自動公開しない</option></select>
+      </label>
+      <label class="wide">Research Sources<textarea name="researchSources" rows="4" placeholder="OpenAI Docs | https://platform.openai.com/docs&#10;https://example.com/primary-source"></textarea></label>
+
+      <div class="wide"><p class="eyebrow">OPTIONAL ANALYTICS</p><p class="muted">未設定でもCMSの基本指標だけで動きます。アクセストークン自体は保存しません。</p></div>
       <label>Search Console site URL<input name="gscSiteUrl" placeholder="https://example.com/"></label>
       <label>GSC token環境変数<input name="gscTokenEnv" placeholder="GSC_ACCESS_TOKEN"></label>
       <label>GA4 Property ID<input name="ga4PropertyId" placeholder="123456789"></label>
@@ -103,9 +83,7 @@
       <label>Custom Metrics URL<input name="metricsEndpoint" placeholder="https://metrics.example.com/blog"></label>
       <label>Custom token環境変数<input name="metricsTokenEnv" placeholder="BLOG_METRICS_TOKEN"></label>
 
-      <div class="form-actions wide">
-        <button class="button button-primary" type="submit">Blog Brainを作成して接続</button>
-      </div>
+      <div class="form-actions wide"><button class="button button-primary" type="submit">Blog Brainを作成して接続</button></div>
     </form>
   </template>
 
