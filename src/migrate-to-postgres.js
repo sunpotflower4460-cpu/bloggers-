@@ -1,3 +1,4 @@
+// @feature F-004
 // @feature F-005
 // @feature F-007
 // @feature F-009
@@ -35,6 +36,7 @@ export async function migrateJsonToPostgres({
   const sourceAnalytics = structuredClone(sourceState.analytics ?? [])
   const sourceActivities = structuredClone(sourceState.activities ?? [])
   const sourceAiUsage = structuredClone(sourceState.aiUsage ?? [])
+  const sourceWorkflows = structuredClone(sourceState.workflows ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -51,9 +53,11 @@ export async function migrateJsonToPostgres({
   const nativeAnalytics = typeof target.analyticsAppend === 'function'
   const nativeActivities = typeof target.activityAppend === 'function'
   const nativeAiUsage = typeof target.aiUsageAppend === 'function'
+  const nativeWorkflows = typeof target.workflowUpsert === 'function'
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
   if (nativeAiUsage) portableState.aiUsage = []
+  if (nativeWorkflows) portableState.workflows = []
 
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
@@ -80,6 +84,14 @@ export async function migrateJsonToPostgres({
   if (nativeAiUsage && sourceAiUsage.length > 0) {
     await target.aiUsageAppend(sourceAiUsage, { limit: 10_000 })
     migratedAiUsage = sourceAiUsage.length
+  }
+
+  let migratedWorkflows = 0
+  if (nativeWorkflows) {
+    for (const workflow of sourceWorkflows) {
+      await target.workflowUpsert(workflow, { limit: 2000 })
+      migratedWorkflows += 1
+    }
   }
 
   const existing = await target.read()
@@ -110,6 +122,8 @@ export async function migrateJsonToPostgres({
     activitiesKeptInStateDocument: nativeActivities ? 0 : sourceActivities.length,
     migratedAiUsage,
     aiUsageKeptInStateDocument: nativeAiUsage ? 0 : sourceAiUsage.length,
+    migratedWorkflows,
+    workflowsKeptInStateDocument: nativeWorkflows ? 0 : sourceWorkflows.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
