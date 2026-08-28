@@ -1,6 +1,7 @@
 // @feature F-004
 // @feature F-005
 // @feature F-012
+import { withExecutionContext } from './execution-context.js'
 import { completeJob, DEFAULT_JOB_LEASE_MS, enqueueJob, failJob, leaseDueJobs, renewJobLease } from './jobs.js'
 import { createId, nowIso } from './store.js'
 
@@ -140,49 +141,56 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
 
   async function processJob(job, config, now) {
     const heartbeat = startLeaseHeartbeat(job)
+    const beforeExternalWrite = async (detail = {}) => {
+      const renewed = await renewJobLease(store, job.id, { owner: workerId, leaseMs })
+      return { ...detail, jobId: job.id, workerId, leaseUntil: renewed.leaseUntil }
+    }
+
     try {
-      if (job.type === 'portfolio-cycle') {
-        const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler' })
-        const failed = portfolio.results?.filter((item) => !item.ok) ?? []
-        const retryable = failed.filter((item) => isRetryableFailure(item.error))
-        const nonRetryable = failed.filter((item) => !isRetryableFailure(item.error))
-        for (const item of retryable) {
-          await enqueueJob(store, {
-            type: 'blog-cycle',
-            blogId: item.blogId,
-            dueAt: new Date(now + config.retryDelayMinutes * 60 * 1000).toISOString(),
-            maxAttempts: config.maxRetries + 1,
-            payload: { trigger: 'retry', parentJobId: job.id },
-            dedupeKey: `retry:${job.id}:${item.blogId}`,
+      return await withExecutionContext({ jobId: job.id, workerId, beforeExternalWrite }, async () => {
+        if (job.type === 'portfolio-cycle') {
+          const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler' })
+          const failed = portfolio.results?.filter((item) => !item.ok) ?? []
+          const retryable = failed.filter((item) => isRetryableFailure(item))
+          const nonRetryable = failed.filter((item) => !isRetryableFailure(item))
+          for (const item of retryable) {
+            await enqueueJob(store, {
+              type: 'blog-cycle',
+              blogId: item.blogId,
+              dueAt: new Date(now + config.retryDelayMinutes * 60 * 1000).toISOString(),
+              maxAttempts: config.maxRetries + 1,
+              payload: { trigger: 'retry', parentJobId: job.id },
+              dedupeKey: `retry:${job.id}:${item.blogId}`,
+            })
+          }
+          await completeJob(store, job.id, {
+            failedBlogs: failed.map((item) => item.blogId),
+            retryableBlogs: retryable.map((item) => item.blogId),
+            nonRetryableBlogs: nonRetryable.map((item) => item.blogId),
+          }, { owner: workerId })
+          await recordActivity(store, {
+            agent: 'scheduler',
+            type: 'scheduler.cycle',
+            message: `定時Portfolio cycleを実行しました。${retryable.length > 0 ? ` ${retryable.length}件をdurable job queueへ追加しました。` : ''}${nonRetryable.length > 0 ? ` ${nonRetryable.length}件はnon-retryableとして停止しました。` : ''}`,
+            detail: {
+              jobId: job.id,
+              workerId,
+              failed: failed.map((item) => item.blogId),
+              retryable: retryable.map((item) => item.blogId),
+              nonRetryable: nonRetryable.map((item) => item.blogId),
+            },
           })
+          return { jobId: job.id, type: job.type, ok: true, portfolio }
         }
-        await completeJob(store, job.id, {
-          failedBlogs: failed.map((item) => item.blogId),
-          retryableBlogs: retryable.map((item) => item.blogId),
-          nonRetryableBlogs: nonRetryable.map((item) => item.blogId),
-        }, { owner: workerId })
-        await recordActivity(store, {
-          agent: 'scheduler',
-          type: 'scheduler.cycle',
-          message: `定時Portfolio cycleを実行しました。${retryable.length > 0 ? ` ${retryable.length}件をdurable job queueへ追加しました。` : ''}${nonRetryable.length > 0 ? ` ${nonRetryable.length}件はnon-retryableとして停止しました。` : ''}`,
-          detail: {
-            jobId: job.id,
-            workerId,
-            failed: failed.map((item) => item.blogId),
-            retryable: retryable.map((item) => item.blogId),
-            nonRetryable: nonRetryable.map((item) => item.blogId),
-          },
-        })
-        return { jobId: job.id, type: job.type, ok: true, portfolio }
-      }
 
-      if (job.type === 'blog-cycle') {
-        const result = await runBlogCycle(store, job.blogId, { trigger: job.payload?.trigger || 'retry' })
-        await completeJob(store, job.id, { workflowId: result.workflowId ?? null }, { owner: workerId })
-        return { jobId: job.id, type: job.type, blogId: job.blogId, ok: true, result }
-      }
+        if (job.type === 'blog-cycle') {
+          const result = await runBlogCycle(store, job.blogId, { trigger: job.payload?.trigger || 'retry' })
+          await completeJob(store, job.id, { workflowId: result.workflowId ?? null }, { owner: workerId })
+          return { jobId: job.id, type: job.type, blogId: job.blogId, ok: true, result }
+        }
 
-      throw new Error(`Unsupported job type: ${job.type}`)
+        throw new Error(`Unsupported job type: ${job.type}`)
+      })
     } catch (error) {
       if (error?.code === 'JOB_LEASE_LOST') return leaseLostResult(job, error)
       const retryable = isRetryableFailure(error)
