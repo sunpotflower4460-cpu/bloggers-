@@ -3,12 +3,22 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 const DEFAULT_STATE = {
-  version: 1,
+  version: 2,
   system: {
     paused: false,
     pausedAt: null,
     lastCycleAt: null,
     defaultAutonomyLevel: 2,
+    scheduler: {
+      enabled: false,
+      intervalMinutes: 360,
+      maxRetries: 2,
+      retryDelayMinutes: 10,
+      lastRunAt: null,
+      nextRunAt: null,
+      running: false,
+      retryQueue: [],
+    },
   },
   blogs: [],
   ideas: [],
@@ -29,7 +39,16 @@ function mergeDefaults(value = {}) {
   return {
     ...clone(DEFAULT_STATE),
     ...value,
-    system: { ...DEFAULT_STATE.system, ...(value.system ?? {}) },
+    version: Math.max(Number(value.version || 1), DEFAULT_STATE.version),
+    system: {
+      ...DEFAULT_STATE.system,
+      ...(value.system ?? {}),
+      scheduler: {
+        ...DEFAULT_STATE.system.scheduler,
+        ...(value.system?.scheduler ?? {}),
+        retryQueue: value.system?.scheduler?.retryQueue ?? [],
+      },
+    },
     blogs: value.blogs ?? [],
     ideas: value.ideas ?? [],
     articles: value.articles ?? [],
