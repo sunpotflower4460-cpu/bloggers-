@@ -17,6 +17,7 @@ async function withTempDir(fn) {
 
 function fakePostgresTarget() {
   let document = null
+  const nativeBlogs = []
   const nativeJobs = []
   const nativeAnalytics = []
   const nativeActivities = []
@@ -36,6 +37,7 @@ function fakePostgresTarget() {
     async read() {
       return {
         ...structuredClone(document),
+        blogs: structuredClone(nativeBlogs),
         ideas: structuredClone(nativeIdeas),
         articles: structuredClone(nativeArticles),
         approvals: structuredClone(nativeApprovals),
@@ -48,6 +50,12 @@ function fakePostgresTarget() {
         jobs: structuredClone(nativeJobs),
         locks: [],
       }
+    },
+    async blogUpsert(blog) {
+      const index = nativeBlogs.findIndex((item) => item.id === blog.id)
+      if (index >= 0) nativeBlogs.splice(index, 1)
+      nativeBlogs.push(structuredClone(blog))
+      return structuredClone(blog)
     },
     async analyticsAppend(snapshot) {
       const index = nativeAnalytics.findIndex((item) => item.id === snapshot.id)
@@ -124,7 +132,17 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     const path = join(dir, 'state.json')
     const source = await new JsonStore(path).init()
     await source.mutate((state) => {
-      state.blogs.push({ id: 'blog_1', name: 'Migrated Blog' })
+      state.blogs.push({
+        id: 'blog_1',
+        name: 'Migrated Blog',
+        slug: 'migrated-blog',
+        active: true,
+        connector: { type: 'memory' },
+        brain: { purpose: 'migration' },
+        remotePosts: [],
+        createdAt: '2026-08-28T00:01:00.000Z',
+        updatedAt: '2026-08-28T00:01:00.000Z',
+      })
       state.articles.push({
         id: 'article_1',
         blogId: 'blog_1',
@@ -276,6 +294,8 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(result.approvals, 1)
     assert.equal(result.experiments, 1)
     assert.equal(result.memories, 1)
+    assert.equal(result.migratedBlogs, 1)
+    assert.equal(result.blogsKeptInStateDocument, 0)
     assert.equal(result.migratedIdeas, 1)
     assert.equal(result.ideasKeptInStateDocument, 0)
     assert.equal(result.migratedArticles, 1)
@@ -299,6 +319,7 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(result.discardedOperationLeases, 1)
     assert.equal(migrated.system.scheduler.running, false)
     assert.equal(migrated.locks.length, 0)
+    assert.equal(document.blogs.length, 0)
     assert.equal(document.ideas.length, 0)
     assert.equal(document.articles.length, 0)
     assert.equal(document.approvals.length, 0)
@@ -308,6 +329,9 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(document.activities.length, 0)
     assert.equal(document.aiUsage.length, 0)
     assert.equal(document.workflows.length, 0)
+    assert.equal(migrated.blogs[0].id, 'blog_1')
+    assert.equal(migrated.blogs[0].slug, 'migrated-blog')
+    assert.equal(migrated.blogs[0].brain.purpose, 'migration')
     assert.equal(migrated.ideas[0].id, 'idea_1')
     assert.equal(migrated.articles[0].id, 'article_1')
     assert.equal(migrated.articles[0].status, 'draft')
