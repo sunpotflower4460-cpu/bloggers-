@@ -5,8 +5,10 @@
 import { recordActivity } from './orchestrator.js'
 import { runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
 import { createScheduler } from './scheduler.js'
+import { initializeSecretResolver } from './secrets.js'
 import { createStore } from './storage.js'
 
+await initializeSecretResolver()
 const store = await createStore()
 const scheduler = createScheduler({
   store,
