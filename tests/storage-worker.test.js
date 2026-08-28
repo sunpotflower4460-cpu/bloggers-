@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { acquireLease, releaseLease } from '../src/leases.js'
 import { completeJob, enqueueJob, leaseDueJobs, renewJobLease } from '../src/jobs.js'
 import { PostgresStore } from '../src/postgres-store.js'
 import { createStore, storageMode } from '../src/storage.js'
@@ -35,7 +36,7 @@ test('separate JsonStore instances serialize mutations through the filesystem lo
   })
 })
 
-test('a running leased job still participates in dedupe', async () => {
+test('a running leased job still participates in JSON dedupe', async () => {
   await withTempDir(async (dir) => {
     const store = await new JsonStore(join(dir, 'state.json')).init()
     const first = await enqueueJob(store, {
@@ -76,7 +77,7 @@ test('job lease heartbeat extends ownership and rejects another worker renewal',
   })
 })
 
-test('a stale worker cannot complete a job after another worker reclaims the lease', async () => {
+test('a stale worker cannot complete a JSON job after another worker reclaims the lease', async () => {
   await withTempDir(async (dir) => {
     const store = await new JsonStore(join(dir, 'state.json')).init()
     const job = await enqueueJob(store, { type: 'blog-cycle', blogId: 'b1', dueAt: '1970-01-01T00:00:01.000Z' })
@@ -106,7 +107,7 @@ function fakePostgresPool() {
     async query(sql, params = []) {
       const command = String(sql).replace(/\s+/g, ' ').trim()
       memory.commands.push(command)
-      if (/^CREATE TABLE/i.test(command)) return { rows: [] }
+      if (/^(CREATE TABLE|CREATE INDEX|CREATE UNIQUE INDEX)/i.test(command)) return { rows: [] }
       if (/^INSERT INTO bloggers_state/i.test(command)) {
         if (!memory.document) memory.document = JSON.parse(params[2])
         return { rows: [] }
@@ -114,6 +115,8 @@ function fakePostgresPool() {
       if (/^SELECT document FROM bloggers_state/i.test(command)) {
         return { rows: memory.document ? [{ document: structuredClone(memory.document) }] : [] }
       }
+      if (/^SELECT id, type, blog_id, payload, status/i.test(command) && /FROM bloggers_jobs/i.test(command)) return { rows: [] }
+      if (/^SELECT lease_key, lease_id, owner/i.test(command) && /FROM bloggers_operation_leases/i.test(command)) return { rows: [] }
       if (/^UPDATE bloggers_state/i.test(command)) {
         memory.document = JSON.parse(params[2])
         return { rows: [] }
@@ -130,7 +133,7 @@ function fakePostgresPool() {
   }
 }
 
-test('PostgresStore wraps mutations in SELECT FOR UPDATE transactions', async () => {
+test('PostgresStore wraps state mutations in SELECT FOR UPDATE transactions', async () => {
   const pool = fakePostgresPool()
   const store = await new PostgresStore(pool).init()
 
@@ -146,7 +149,7 @@ test('PostgresStore wraps mutations in SELECT FOR UPDATE transactions', async ()
   assert.ok(pool.memory.commands.includes('COMMIT'))
 })
 
-test('PostgresStore rolls back when a transaction mutator fails', async () => {
+test('PostgresStore rolls back when a state transaction mutator fails', async () => {
   const pool = fakePostgresPool()
   const store = await new PostgresStore(pool).init()
   await assert.rejects(
@@ -158,6 +161,96 @@ test('PostgresStore rolls back when a transaction mutator fails', async () => {
   )
   assert.equal((await store.read()).system.paused, false)
   assert.ok(pool.memory.commands.includes('ROLLBACK'))
+})
+
+function nativeQueuePool() {
+  const memory = { commands: [] }
+  const runningRow = {
+    id: 'job_native',
+    type: 'portfolio-cycle',
+    blog_id: null,
+    payload: { dedupeKey: 'portfolio:native' },
+    status: 'running',
+    attempt: 1,
+    max_attempts: 3,
+    due_at: '2026-08-28T00:00:00.000Z',
+    lease_until: '2026-08-28T00:06:00.000Z',
+    leased_at: '2026-08-28T00:01:00.000Z',
+    lease_owner: 'worker-a',
+    finished_at: null,
+    last_error: null,
+    failure_reason: null,
+    result: null,
+    created_at: '2026-08-28T00:00:00.000Z',
+    updated_at: '2026-08-28T00:01:00.000Z',
+  }
+  const client = {
+    async query(sql, params = []) {
+      const command = String(sql).replace(/\s+/g, ' ').trim()
+      memory.commands.push(command)
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(command)) return { rows: [] }
+      if (/^UPDATE bloggers_jobs SET status = 'queued'/i.test(command)) return { rows: [] }
+      if (/^WITH due AS/i.test(command) && /FOR UPDATE SKIP LOCKED/i.test(command)) return { rows: [structuredClone(runningRow)] }
+      if (/^UPDATE bloggers_jobs SET lease_until/i.test(command)) {
+        return { rows: [{ ...runningRow, lease_until: params[2], updated_at: params[1] }] }
+      }
+      if (/^UPDATE bloggers_jobs SET status = 'completed'/i.test(command)) {
+        return { rows: [{ ...runningRow, status: 'completed', lease_owner: null, lease_until: null, result: JSON.parse(params[1]) }] }
+      }
+      if (/^DELETE FROM bloggers_operation_leases WHERE expires_at/i.test(command)) return { rows: [] }
+      if (/^INSERT INTO bloggers_operation_leases/i.test(command)) {
+        return { rows: [{ lease_key: params[0], lease_id: params[1], owner: params[2], acquired_at: params[3], expires_at: params[4], updated_at: params[3] }] }
+      }
+      if (/^DELETE FROM bloggers_operation_leases WHERE lease_key/i.test(command)) return { rows: [{ lease_key: params[0] }] }
+      throw new Error(`Unexpected native SQL: ${command}`)
+    },
+    release() {},
+  }
+  return {
+    memory,
+    async connect() { return client },
+    async query(sql, params) { return client.query(sql, params) },
+  }
+}
+
+test('Postgres native job leasing uses SKIP LOCKED and owner fencing through public job APIs', async () => {
+  const pool = nativeQueuePool()
+  const store = new PostgresStore(pool)
+  const now = Date.parse('2026-08-28T00:01:00.000Z')
+
+  const leased = await leaseDueJobs(store, { limit: 4, leaseMs: 300_000, now, owner: 'worker-a' })
+  assert.equal(leased[0].leaseOwner, 'worker-a')
+  assert.ok(pool.memory.commands.some((command) => /FOR UPDATE SKIP LOCKED/i.test(command)))
+
+  const renewed = await renewJobLease(store, leased[0].id, { owner: 'worker-a', leaseMs: 300_000, now })
+  assert.equal(renewed.leaseOwner, 'worker-a')
+
+  const completed = await completeJob(store, leased[0].id, { ok: true }, { owner: 'worker-a' })
+  assert.equal(completed.status, 'completed')
+  assert.deepEqual(completed.result, { ok: true })
+})
+
+test('Postgres native operation leases dispatch through the same public lease API', async () => {
+  const pool = nativeQueuePool()
+  const store = new PostgresStore(pool)
+  const acquired = await acquireLease(store, 'blog-cycle:b1', { owner: 'worker-a', ttlMs: 30_000, now: Date.parse('2026-08-28T00:00:00.000Z') })
+  assert.equal(acquired.acquired, true)
+  assert.equal(acquired.lease.owner, 'worker-a')
+  assert.equal(await releaseLease(store, 'blog-cycle:b1', 'worker-a'), true)
+})
+
+test('generic public job API dispatches to a native queue capability when available', async () => {
+  const calls = []
+  const nativeStore = {
+    async jobEnqueue(job, dedupeKey) {
+      calls.push({ job, dedupeKey })
+      return { ...job, payload: { ...(job.payload ?? {}), dedupeKey } }
+    },
+  }
+  const result = await enqueueJob(nativeStore, { type: 'blog-cycle', blogId: 'b1', dedupeKey: 'retry:b1' })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].dedupeKey, 'retry:b1')
+  assert.equal(result.payload.dedupeKey, 'retry:b1')
 })
 
 test('storage factory keeps JSON as the dependency-free default and refuses un-injected PostgreSQL', async () => {
