@@ -3,7 +3,7 @@
 // @feature F-012
 import { withExecutionContext } from './execution-context.js'
 import { completeJob, DEFAULT_JOB_LEASE_MS, enqueueJob, failJob, leaseDueJobs, renewJobLease } from './jobs.js'
-import { createId, nowIso } from './store.js'
+import { createId } from './store.js'
 
 const MIN_INTERVAL_MINUTES = 15
 const MAX_INTERVAL_MINUTES = 7 * 24 * 60
@@ -18,6 +18,10 @@ function jobLeaseMs() {
   const parsed = Number(process.env.BLOGGERS_JOB_LEASE_MS || DEFAULT_JOB_LEASE_MS)
   if (!Number.isFinite(parsed)) return DEFAULT_JOB_LEASE_MS
   return Math.max(60_000, Math.min(60 * 60 * 1000, Math.round(parsed)))
+}
+
+export function workerConcurrency(env = process.env) {
+  return clampInteger(env.BLOGGERS_WORKER_CONCURRENCY, 4, 1, 20)
 }
 
 export function normalizeSchedulerConfig(value = {}) {
@@ -90,6 +94,7 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
   let running = false
   const workerId = createId('worker')
   const leaseMs = jobLeaseMs()
+  const concurrency = workerConcurrency()
 
   async function schedulePortfolioIfDue(config, now) {
     if (!isDue(config, now)) return null
@@ -140,13 +145,15 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
   }
 
   async function processJob(job, config, now) {
-    const heartbeat = startLeaseHeartbeat(job)
+    let heartbeat = null
     const beforeExternalWrite = async (detail = {}) => {
       const renewed = await renewJobLease(store, job.id, { owner: workerId, leaseMs })
       return { ...detail, jobId: job.id, workerId, leaseUntil: renewed.leaseUntil }
     }
 
     try {
+      await renewJobLease(store, job.id, { owner: workerId, leaseMs })
+      heartbeat = startLeaseHeartbeat(job)
       return await withExecutionContext({ jobId: job.id, workerId, beforeExternalWrite }, async () => {
         if (job.type === 'portfolio-cycle') {
           const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler' })
@@ -215,7 +222,7 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
       })
       return { jobId: job.id, type: job.type, blogId: job.blogId, ok: false, error: error.message, status: failed.status, retryable }
     } finally {
-      clearInterval(heartbeat)
+      if (heartbeat) clearInterval(heartbeat)
     }
   }
 
@@ -229,7 +236,7 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
 
     await migrateLegacyRetries(store, config)
     const scheduled = await schedulePortfolioIfDue(config, now)
-    const jobs = await leaseDueJobs(store, { limit: 20, leaseMs, now, owner: workerId })
+    const jobs = await leaseDueJobs(store, { limit: concurrency, leaseMs, now, owner: workerId })
     if (jobs.length === 0) return { skipped: true, reason: 'not-due' }
 
     running = true
@@ -239,12 +246,12 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     })
 
     try {
-      const results = []
-      for (const job of jobs) results.push(await processJob(job, config, now))
+      const results = await Promise.all(jobs.map((job) => processJob(job, config, now)))
       const portfolioResult = results.find((item) => item.type === 'portfolio-cycle')?.portfolio ?? null
       return {
         skipped: false,
         workerId,
+        concurrency,
         scheduledJobId: scheduled?.id ?? null,
         portfolio: portfolioResult,
         jobs: results,
@@ -276,5 +283,5 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     timer = null
   }
 
-  return { start, stop, tick, workerId }
+  return { start, stop, tick, workerId, concurrency }
 }
