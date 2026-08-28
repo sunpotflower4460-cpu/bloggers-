@@ -27,6 +27,7 @@ let cache = {
   activity: { activities: [], workflows: [] },
   settings: null,
   jobs: [],
+  jobsRestricted: false,
 }
 
 const labels = {
@@ -37,6 +38,8 @@ const labels = {
   ai: ['AGENT ACTIVITY', 'AI'],
   settings: ['CONTROL & CONNECTIONS', 'Settings'],
 }
+
+const roleRank = { viewer: 1, editor: 2, admin: 3 }
 
 function h(value) {
   return String(value ?? '')
@@ -57,7 +60,15 @@ function usd(value) {
 }
 
 function authToken() {
-  return sessionStorage.getItem('bloggersAdminToken') || ''
+  return sessionStorage.getItem('bloggersAccessToken') || sessionStorage.getItem('bloggersAdminToken') || ''
+}
+
+function currentRole() {
+  return cache.settings?.security?.currentPrincipal?.role || 'viewer'
+}
+
+function roleAtLeast(role) {
+  return Number(roleRank[currentRole()] || 0) >= Number(roleRank[role] || 99)
 }
 
 async function request(path, options = {}, allowPrompt = true) {
@@ -66,9 +77,10 @@ async function request(path, options = {}, allowPrompt = true) {
   if (token) headers.Authorization = `Bearer ${token}`
   const response = await fetch(path, { ...options, headers })
   if (response.status === 401 && allowPrompt) {
-    const entered = window.prompt('Bloggers HQ 管理トークンを入力してください')
+    const entered = window.prompt('Bloggers HQ アクセストークンを入力してください')
     if (entered) {
-      sessionStorage.setItem('bloggersAdminToken', entered.trim())
+      sessionStorage.setItem('bloggersAccessToken', entered.trim())
+      sessionStorage.removeItem('bloggersAdminToken')
       return request(path, options, false)
     }
   }
@@ -95,23 +107,25 @@ async function loadAll() {
     request('/api/settings'),
     request('/api/jobs'),
   ])
-  cache = { hq, blogs: blogs.blogs, content, analytics, activity, settings, jobs: jobs.jobs }
+  cache = { hq, blogs: blogs.blogs, content, analytics, activity, settings, jobs: jobs.jobs, jobsRestricted: Boolean(jobs.restricted) }
   updateSystemState()
 }
 
 function updateSystemState() {
   const paused = Boolean(cache.hq?.system?.paused)
   const scheduler = cache.hq?.system?.scheduler
+  const role = currentRole()
   systemDot.classList.toggle('is-paused', paused)
   systemLabel.textContent = paused
-    ? 'AI停止中'
+    ? `AI停止中 · ${role}`
     : scheduler?.enabled
-      ? `自律運転 ON · ${scheduler.intervalMinutes}分`
-      : 'AI稼働可能'
+      ? `自律運転 ON · ${scheduler.intervalMinutes}分 · ${role}`
+      : `AI稼働可能 · ${role}`
   pauseButton.textContent = paused ? 'RESUME AI' : 'PAUSE ALL AI'
   pauseButton.classList.toggle('button-danger', !paused)
   pauseButton.classList.toggle('button-primary', paused)
-  cycleButton.disabled = paused
+  cycleButton.disabled = paused || !roleAtLeast('editor')
+  pauseButton.disabled = paused ? !roleAtLeast('admin') : !roleAtLeast('editor')
 }
 
 function metric(label, value, detail = '') {
@@ -120,6 +134,7 @@ function metric(label, value, detail = '') {
 
 function renderHQ() {
   const data = cache.hq
+  const canEdit = roleAtLeast('editor')
   const blogRows = data.blogs.length
     ? data.blogs.map((blog) => `
       <article class="blog-row">
@@ -129,7 +144,7 @@ function renderHQ() {
     : '<div class="empty-state"><strong>まだブログが接続されていません。</strong><p>Blogsから最初のBlog Brainを作成すると、AI編集部が動き始めます。</p></div>'
 
   const approvals = data.pendingApprovals.length
-    ? data.pendingApprovals.map((item) => `<div class="approval-row"><div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div><button class="button button-small" data-approve="${h(item.id)}">承認</button></div>`).join('')
+    ? data.pendingApprovals.map((item) => `<div class="approval-row"><div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div><button class="button button-small" data-approve="${h(item.id)}" ${canEdit ? '' : 'disabled'}>承認</button></div>`).join('')
     : '<p class="muted">承認待ちはありません。</p>'
 
   const ranking = data.portfolio?.ranking?.length
@@ -170,6 +185,7 @@ function researchLabel(blog) {
 
 function renderBlogs() {
   const template = document.querySelector('#blog-form-template')
+  const canEdit = roleAtLeast('editor')
   const cards = cache.blogs.length
     ? cache.blogs.map((blog) => `
       <article class="panel blog-card">
@@ -183,9 +199,9 @@ function renderBlogs() {
           <div><dt>Analytics</dt><dd>${h(analyticsLabels(blog))}</dd></div>
         </dl>
         <div class="inline-controls">
-          <label>Autonomy<select data-autonomy="${h(blog.id)}">${[0,1,2,3,4,5].map((level) => `<option value="${level}" ${level === Number(blog.autonomy.level) ? 'selected' : ''}>Level ${level}</option>`).join('')}</select></label>
-          <button class="button button-ghost" data-test-blog="${h(blog.id)}">接続テスト</button>
-          <button class="button button-primary" data-run-blog="${h(blog.id)}">このブログだけ運用</button>
+          <label>Autonomy<select data-autonomy="${h(blog.id)}" ${canEdit ? '' : 'disabled'}>${[0,1,2,3,4,5].map((level) => `<option value="${level}" ${level === Number(blog.autonomy.level) ? 'selected' : ''}>Level ${level}</option>`).join('')}</select></label>
+          <button class="button button-ghost" data-test-blog="${h(blog.id)}" ${canEdit ? '' : 'disabled'}>接続テスト</button>
+          <button class="button button-primary" data-run-blog="${h(blog.id)}" ${canEdit ? '' : 'disabled'}>このブログだけ運用</button>
         </div>
       </article>`).join('')
     : '<div class="empty-state"><strong>Blog Brainはまだありません。</strong><p>下のフォームから最初のブログを登録してください。</p></div>'
@@ -199,6 +215,7 @@ function qualitySummary(article) {
   if (!article.quality.ok) return `BLOCK · ${article.quality.blocking.join(' / ')}`
   const notes = []
   if (article.quality.citedSources?.length) notes.push(`${article.quality.citedSources.length} cited`)
+  if (article.quality.claimChecks?.length) notes.push(`${article.quality.claimChecks.length} claims checked`)
   if (article.quality.linkedInternalPosts?.length) notes.push(`${article.quality.linkedInternalPosts.length} internal links`)
   if (article.quality.warnings?.length) notes.push(`${article.quality.warnings.length} warnings`)
   return notes.length ? notes.join(' · ') : 'quality OK'
@@ -242,9 +259,11 @@ function renderAI() {
         return `<div class="activity-row"><time>${fmtDate(item.createdAt)}</time><span class="agent-name">${h(item.agent)}</span><div><strong>${h(item.type)}</strong><p>${h(item.message)}</p>${blog ? `<small>${h(blog.name)}</small>` : ''}</div></div>`
       }).join('')
     : '<p class="muted">AI活動ログはまだありません。</p>'
-  const jobs = cache.jobs.length
-    ? cache.jobs.slice(0, 30).map((job) => `<div class="activity-row"><time>${fmtDate(job.updatedAt)}</time><span class="agent-name">${h(job.status)}</span><div><strong>${h(job.type)}</strong><p>${h(job.blogId || 'portfolio')} · attempt ${h(job.attempt)}/${h(job.maxAttempts)}</p>${job.lastError ? `<small>${h(job.lastError)}</small>` : ''}</div></div>`).join('')
-    : '<p class="muted">Job Queueは空です。</p>'
+  const jobs = cache.jobsRestricted
+    ? '<p class="muted">Job / lock詳細はeditor以上にだけ表示されます。</p>'
+    : cache.jobs.length
+      ? cache.jobs.slice(0, 30).map((job) => `<div class="activity-row"><time>${fmtDate(job.updatedAt)}</time><span class="agent-name">${h(job.status)}</span><div><strong>${h(job.type)}</strong><p>${h(job.blogId || 'portfolio')} · attempt ${h(job.attempt)}/${h(job.maxAttempts)}</p>${job.lastError ? `<small>${h(job.lastError)}</small>` : ''}</div></div>`).join('')
+      : '<p class="muted">Job Queueは空です。</p>'
   view.innerHTML = `<div class="two-column"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div></div><div class="timeline">${activities}</div></section><section class="panel"><div class="panel-heading"><div><p class="eyebrow">DURABLE QUEUE</p><h2>Jobs</h2></div></div><div class="timeline">${jobs}</div></section></div>`
 }
 
@@ -254,32 +273,35 @@ function renderSettings() {
   const budget = settings.system.aiBudget || {}
   const usage = cache.hq.ai?.usage || {}
   const models = settings.ai.models || {}
+  const principal = settings.security?.currentPrincipal || { name: 'Unknown', role: currentRole() }
+  const canAdmin = roleAtLeast('admin')
   view.innerHTML = `
     <div class="two-column">
       <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AI ROUTER</p><h2>推論エンジン</h2></div></div><dl class="brain-grid"><div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div><div><dt>Director</dt><dd>${h(models.decide || 'local')}</dd></div><div><dt>Writer</dt><dd>${h(models.write || 'local')}</dd></div><div><dt>Reviser</dt><dd>${h(models.revise || 'local')}</dd></div></dl><p class="muted">役割ごとに別モデルを指定できます。token usageはCost Governorへ記録されます。</p></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyと品質ゲートの範囲内でのみ動きます。'}</p><p class="muted">削除は禁止。外部公開時はBLOGGERS_ADMIN_TOKENでAPIを保護します。</p><button class="button button-ghost" id="forget-token">この端末の管理トークンを忘れる</button></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY & RBAC</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyと品質ゲートの範囲内でのみ動きます。'}</p><dl class="brain-grid"><div><dt>Principal</dt><dd>${h(principal.name)}</dd></div><div><dt>Role</dt><dd>${h(principal.role)}</dd></div></dl><p class="muted">viewerは閲覧、editorは運用/停止、adminは再開とSettings変更まで可能です。</p><button class="button button-ghost" id="forget-token">この端末のアクセストークンを忘れる</button></section>
     </div>
     <form class="panel form-grid" id="budget-form">
-      <div class="panel-heading"><div><p class="eyebrow">COST GOVERNOR</p><h2>AI予算</h2></div><p class="muted">今月 ${usd(usage.totalUsd)} / ${usage.calls || 0} calls。価格を環境変数へ設定すると概算費用を自動計算します。</p></div>
+      <div class="panel-heading"><div><p class="eyebrow">COST GOVERNOR</p><h2>AI予算</h2></div><p class="muted">今月 ${usd(usage.totalUsd)} / ${usage.calls || 0} calls。設定変更はadminのみです。</p></div>
       <label>状態<select name="enabled"><option value="true" ${budget.enabled === false ? '' : 'selected'}>ON</option><option value="false" ${budget.enabled === false ? 'selected' : ''}>OFF</option></select></label>
       <label>月間上限 USD<input name="monthlyUsd" type="number" min="0" step="0.01" value="${h(budget.monthlyUsd ?? 20)}"></label>
       <label>1サイクル上限 USD<input name="perCycleUsd" type="number" min="0" step="0.01" value="${h(budget.perCycleUsd ?? 2)}"></label>
       <label>残して停止する額 USD<input name="reserveUsd" type="number" min="0" step="0.01" value="${h(budget.reserveUsd ?? 0.5)}"></label>
-      <div class="form-actions wide"><button class="button button-primary" type="submit">AI予算を保存</button></div>
+      <div class="form-actions wide"><button class="button button-primary" type="submit" ${canAdmin ? '' : 'disabled'}>AI予算を保存</button></div>
     </form>
     <form class="panel form-grid" id="scheduler-form">
-      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">永続Job Queueへ先に登録してから実行するため、途中終了してもlease切れ後に回収できます。</p></div>
+      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">永続Job Queueへ先に登録してから実行します。設定変更はadminのみです。</p></div>
       <label>状態<select name="enabled"><option value="false" ${scheduler.enabled ? '' : 'selected'}>OFF</option><option value="true" ${scheduler.enabled ? 'selected' : ''}>ON</option></select></label>
       <label>間隔（分）<input name="intervalMinutes" type="number" min="15" max="10080" value="${h(scheduler.intervalMinutes ?? 360)}"></label>
       <label>最大リトライ<input name="maxRetries" type="number" min="0" max="5" value="${h(scheduler.maxRetries ?? 2)}"></label>
       <label>リトライ間隔（分）<input name="retryDelayMinutes" type="number" min="1" max="1440" value="${h(scheduler.retryDelayMinutes ?? 10)}"></label>
       <div><dt>Last run</dt><dd>${fmtDate(scheduler.lastRunAt)}</dd></div><div><dt>Next run</dt><dd>${fmtDate(scheduler.nextRunAt)}</dd></div>
-      <div class="form-actions wide"><button class="button button-primary" type="submit">Scheduler設定を保存</button></div>
+      <div class="form-actions wide"><button class="button button-primary" type="submit" ${canAdmin ? '' : 'disabled'}>Scheduler設定を保存</button></div>
     </form>`
 
   document.querySelector('#forget-token').addEventListener('click', () => {
+    sessionStorage.removeItem('bloggersAccessToken')
     sessionStorage.removeItem('bloggersAdminToken')
-    flash('このブラウザに保持した管理トークンを削除しました。')
+    flash('このブラウザに保持したアクセストークンを削除しました。')
   })
   document.querySelector('#budget-form').addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -328,11 +350,34 @@ function parseResearchSources(value) {
   }).filter((item) => item.url)
 }
 
+function connectorPayload(data) {
+  const type = data.get('connectorType')
+  if (type === 'wordpress') {
+    return { type, endpoint: data.get('wpEndpoint'), usernameEnv: data.get('usernameEnv'), passwordEnv: data.get('passwordEnv') }
+  }
+  if (type === 'ghost') {
+    return { type, endpoint: data.get('ghostEndpoint'), adminKeyEnv: data.get('adminKeyEnv'), apiVersion: data.get('ghostApiVersion') }
+  }
+  return { type: 'memory' }
+}
+
 function bindBlogForm() {
   const form = document.querySelector('#blog-form')
   const connector = form.elements.connectorType
-  const fields = form.querySelector('.wordpress-fields')
-  connector.addEventListener('change', () => { fields.hidden = connector.value !== 'wordpress' })
+  const wordpressFields = form.querySelector('.wordpress-fields')
+  const ghostFields = form.querySelector('.ghost-fields')
+  const syncConnectorFields = () => {
+    wordpressFields.hidden = connector.value !== 'wordpress'
+    ghostFields.hidden = connector.value !== 'ghost'
+  }
+  connector.addEventListener('change', syncConnectorFields)
+  syncConnectorFields()
+
+  if (!roleAtLeast('editor')) {
+    form.querySelectorAll('input, textarea, select, button').forEach((control) => { control.disabled = true })
+    form.insertAdjacentHTML('afterbegin', '<p class="muted wide">viewer権限ではブログ設定を変更できません。</p>')
+  }
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
     const data = new FormData(form)
@@ -343,7 +388,7 @@ function bindBlogForm() {
         body: JSON.stringify({
           name: data.get('name'),
           brain: { purpose: data.get('purpose'), audience: data.get('audience'), voice: data.get('voice'), editorialPolicy: data.get('editorialPolicy'), topics: String(data.get('topics') || '').split(',').map((item) => item.trim()).filter(Boolean) },
-          connector: { type: data.get('connectorType'), endpoint: data.get('endpoint'), usernameEnv: data.get('usernameEnv'), passwordEnv: data.get('passwordEnv') },
+          connector: connectorPayload(data),
           research: { requireCitations: data.get('requireCitations') === 'true', sources: parseResearchSources(data.get('researchSources')) },
           analytics: {
             searchConsole: { siteUrl: data.get('gscSiteUrl'), accessTokenEnv: data.get('gscTokenEnv') },
