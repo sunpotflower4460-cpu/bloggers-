@@ -18,21 +18,22 @@ import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, tes
 import { buildPortfolioPlan } from './portfolio.js'
 import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
 import { configureScheduler, createScheduler } from './scheduler.js'
-import { JsonStore } from './store.js'
+import { createStore, storageMode } from './storage.js'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const publicDir = resolve(root, 'src/public')
 const tokensPath = resolve(root, 'docs/04-design/tokens.css')
 const port = Number(process.env.PORT || 3000)
 const authConfig = loadAuthConfig()
-const store = await new JsonStore().init()
+const schedulerMode = String(process.env.BLOGGERS_SCHEDULER_MODE || 'embedded').toLowerCase() === 'external' ? 'external' : 'embedded'
+const store = await createStore()
 const scheduler = createScheduler({
   store,
   runPortfolioCycle: runPortfolioCycleExclusive,
   runBlogCycle: runBlogCycleExclusive,
   recordActivity,
 })
-scheduler.start()
+if (schedulerMode === 'embedded') scheduler.start()
 
 function sendJson(response, status, payload, extraHeaders = {}) {
   response.writeHead(status, {
@@ -179,6 +180,11 @@ async function api(request, response, url, auth) {
       system: state.system,
       ai: aiSettings(),
       aiUsage: auth.role === 'viewer' ? [] : state.aiUsage.slice(0, 100),
+      runtime: {
+        schedulerMode,
+        storage: storageMode(),
+        storageBackend: store.backend ?? 'unknown',
+      },
       security: {
         ...publicAuthSummary(authConfig),
         currentPrincipal: auth?.principal ? { id: auth.principal.id, name: auth.principal.name, role: auth.principal.role } : null,
@@ -233,6 +239,8 @@ const server = createServer(async (request, response) => {
         service: 'bloggers-ai-editorial-os',
         paused: state.system.paused,
         scheduler: state.system.scheduler,
+        schedulerMode,
+        storageBackend: store.backend ?? 'unknown',
         queuedJobs: state.jobs.filter((item) => item.status === 'queued').length,
         activeLocks: state.locks.length,
       })
@@ -263,5 +271,5 @@ process.on('SIGTERM', shutdown)
 
 server.listen(port, () => {
   const security = authConfig.configured ? 'token RBAC enabled' : 'local-only API until auth tokens are configured'
-  console.log(`Bloggers HQ running on http://localhost:${port} (${security})`)
+  console.log(`Bloggers HQ running on http://localhost:${port} (${security}; scheduler=${schedulerMode}; storage=${store.backend ?? 'unknown'})`)
 })
