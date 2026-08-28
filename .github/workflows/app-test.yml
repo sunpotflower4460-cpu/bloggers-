@@ -16,5 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Check runtime syntax
+        run: npm run check
       - name: Run application tests
         run: npm test
