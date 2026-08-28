@@ -3,6 +3,7 @@
 // @feature F-005
 // @feature F-006
 // @feature F-007
+// @feature F-008
 // @feature F-009
 // @feature F-011
 // @feature F-012
@@ -11,6 +12,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createStore } from './storage.js'
 import { JsonStore } from './store.js'
+import { splitSystemSections, SYSTEM_SECTIONS } from './system-store.js'
 
 function resetJobForMigration(job) {
   const migrated = structuredClone(job)
@@ -35,6 +37,7 @@ export async function migrateJsonToPostgres({
 
   const source = await new JsonStore(absoluteSource).init()
   const sourceState = await source.read()
+  const sourceSystem = structuredClone(sourceState.system ?? {})
   const sourceBlogs = structuredClone(sourceState.blogs ?? [])
   const sourceJobs = structuredClone(sourceState.jobs ?? [])
   const sourceAnalytics = structuredClone(sourceState.analytics ?? [])
@@ -59,6 +62,7 @@ export async function migrateJsonToPostgres({
   if (target.backend !== 'postgres') throw new Error('Migration target must be PostgreSQL')
   if (typeof target.jobEnqueue !== 'function') throw new Error('Migration target does not support native PostgreSQL jobs')
 
+  const nativeSystem = typeof target.systemUpsert === 'function'
   const nativeBlogs = typeof target.blogUpsert === 'function'
   const nativeAnalytics = typeof target.analyticsAppend === 'function'
   const nativeActivities = typeof target.activityAppend === 'function'
@@ -69,6 +73,7 @@ export async function migrateJsonToPostgres({
   const nativeApprovals = typeof target.approvalUpsert === 'function'
   const nativeExperiments = typeof target.experimentUpsert === 'function'
   const nativeMemories = typeof target.memoryUpsert === 'function'
+  if (nativeSystem) portableState.system = {}
   if (nativeBlogs) portableState.blogs = []
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
@@ -84,6 +89,18 @@ export async function migrateJsonToPostgres({
     for (const key of Object.keys(state)) delete state[key]
     Object.assign(state, structuredClone(portableState))
   })
+
+  let migratedSystemSections = 0
+  if (nativeSystem) {
+    const sections = splitSystemSections({
+      ...sourceSystem,
+      scheduler: { ...(sourceSystem.scheduler ?? {}), running: false },
+    })
+    for (const section of SYSTEM_SECTIONS) {
+      await target.systemUpsert(section, sections[section])
+      migratedSystemSections += 1
+    }
+  }
 
   let migratedBlogs = 0
   if (nativeBlogs) {
@@ -188,6 +205,8 @@ export async function migrateJsonToPostgres({
     approvals: sourceApprovals.length,
     experiments: sourceExperiments.length,
     memories: sourceMemories.length,
+    migratedSystemSections,
+    systemKeptInStateDocument: nativeSystem ? 0 : 1,
     migratedBlogs,
     blogsKeptInStateDocument: nativeBlogs ? 0 : sourceBlogs.length,
     migratedAnalytics,
