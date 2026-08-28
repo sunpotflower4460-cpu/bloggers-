@@ -78,3 +78,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: プロセス終了や再起動の途中でもJobを消失させず、lease期限切れ後に安全に再取得できるようにするため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: メモリ上のtimerと一時retry配列だけに依存する。
+
+### D-012
+- 日付: 2026-08-28
+- 決定: Google Search Console / GA4のaccess tokenはrefresh tokenから自動更新し、更新後tokenはメモリだけへキャッシュする。既存の直接access token環境変数は互換フォールバックとして残す。
+- 理由: 長期自律運用で短命access tokenの手動更新を不要にしつつ、refresh後のcredentialをJSON永続化しないため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: access token期限切れのたびに人間が環境変数を書き換える運用、または更新後tokenをstate.jsonへ保存する方式。
