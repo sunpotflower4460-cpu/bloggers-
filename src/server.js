@@ -167,7 +167,10 @@ async function api(request, response, url, auth) {
 
   if (request.method === 'GET' && pathname === '/api/jobs') {
     const state = await store.read()
-    return sendJson(response, 200, { jobs: state.jobs.slice(-300).reverse(), locks: state.locks.slice(0, 100) })
+    if (auth.role === 'viewer') {
+      return sendJson(response, 200, { jobs: [], locks: [], restricted: true })
+    }
+    return sendJson(response, 200, { jobs: state.jobs.slice(-300).reverse(), locks: state.locks.slice(0, 100), restricted: false })
   }
 
   if (request.method === 'GET' && pathname === '/api/settings') {
@@ -175,7 +178,7 @@ async function api(request, response, url, auth) {
     return sendJson(response, 200, {
       system: state.system,
       ai: aiSettings(),
-      aiUsage: state.aiUsage.slice(0, 100),
+      aiUsage: auth.role === 'viewer' ? [] : state.aiUsage.slice(0, 100),
       security: {
         ...publicAuthSummary(authConfig),
         currentPrincipal: auth?.principal ? { id: auth.principal.id, name: auth.principal.name, role: auth.principal.role } : null,
