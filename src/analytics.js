@@ -1,4 +1,5 @@
 // @feature F-007
+import { resolveGoogleAccessToken } from './oauth.js'
 
 function dateDaysAgo(days) {
   const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
@@ -28,20 +29,25 @@ async function fetchJson(url, options = {}) {
   return payload
 }
 
-async function searchConsoleMetrics(config) {
+function googleAuthFor(source = {}, shared = {}) {
+  return {
+    accessTokenEnv: source.accessTokenEnv || shared.accessTokenEnv,
+    refreshTokenEnv: shared.refreshTokenEnv,
+    clientIdEnv: shared.clientIdEnv,
+    clientSecretEnv: shared.clientSecretEnv,
+  }
+}
+
+async function searchConsoleMetrics(config, sharedAuth) {
   if (!config?.siteUrl) return null
-  const token = accessToken(config.accessTokenEnv)
-  if (!token) throw new Error(`Search Console token env is missing: ${config.accessTokenEnv || '(unset)'}`)
+  const token = await resolveGoogleAccessToken(googleAuthFor(config, sharedAuth))
 
   const endDate = dateDaysAgo(1)
   const startDate = dateDaysAgo(Math.max(2, Number(config.lookbackDays || 28)))
   const url = `https://searchconsole.googleapis.com/webmasters/v3/sites/${encodeURIComponent(config.siteUrl)}/searchAnalytics/query`
   const payload = await fetchJson(url, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${token.accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ startDate, endDate, rowLimit: 1 }),
   })
   const row = payload?.rows?.[0] ?? {}
@@ -56,25 +62,17 @@ async function searchConsoleMetrics(config) {
   }
 }
 
-async function ga4Metrics(config) {
+async function ga4Metrics(config, sharedAuth) {
   if (!config?.propertyId) return null
-  const token = accessToken(config.accessTokenEnv)
-  if (!token) throw new Error(`GA4 token env is missing: ${config.accessTokenEnv || '(unset)'}`)
+  const token = await resolveGoogleAccessToken(googleAuthFor(config, sharedAuth))
 
   const propertyId = String(config.propertyId).replace(/^properties\//, '')
   const payload = await fetchJson(`https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(propertyId)}:runReport`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${token.accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       dateRanges: [{ startDate: `${Math.max(2, Number(config.lookbackDays || 28))}daysAgo`, endDate: 'yesterday' }],
-      metrics: [
-        { name: 'sessions' },
-        { name: 'totalUsers' },
-        { name: 'screenPageViews' },
-      ],
+      metrics: [{ name: 'sessions' }, { name: 'totalUsers' }, { name: 'screenPageViews' }],
       limit: 1,
     }),
   })
@@ -96,9 +94,7 @@ async function httpMetrics(config) {
   const headers = { Accept: 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   const payload = await fetchJson(config.endpoint, { headers })
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new Error('Custom analytics endpoint must return a JSON object')
-  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Custom analytics endpoint must return a JSON object')
   const numeric = {}
   for (const [key, value] of Object.entries(payload)) {
     if (typeof value === 'number' && Number.isFinite(value)) numeric[key] = value
@@ -117,9 +113,10 @@ export async function collectAnalytics(blog, baseMetrics = {}) {
   const merged = { ...baseMetrics }
   const sources = [{ source: baseMetrics.source || blog.connector?.type || 'cms', ...baseMetrics }]
   const warnings = []
+  const sharedAuth = blog.analytics?.googleAuth ?? {}
   const collectors = [
-    ['search-console', () => searchConsoleMetrics(blog.analytics?.searchConsole)],
-    ['ga4', () => ga4Metrics(blog.analytics?.ga4)],
+    ['search-console', () => searchConsoleMetrics(blog.analytics?.searchConsole, sharedAuth)],
+    ['ga4', () => ga4Metrics(blog.analytics?.ga4, sharedAuth)],
     ['custom-http', () => httpMetrics(blog.analytics?.http)],
   ]
 
