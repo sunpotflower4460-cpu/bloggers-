@@ -183,3 +183,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: CMS側で作成が成功した直後に通信切断・process終了が起き、ローカルへremote IDを保存できなかった場合でも、再試行で同一draftを増殖させないため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: 毎retryで無条件にPOSTする、タイトル文字列だけで既存記事を推測する方式。
+
+### D-027
+- 日付: 2026-08-28
+- 決定: Browser identityは既存Bearer RBACと併存するOIDC Authorization Code + PKCE方式を採用し、state / nonce / issuer / audience / azp / exp / JWKS署名を検証後、viewer/editor/adminへ明示mappingしたidentityだけをHttpOnly署名Sessionへ昇格する。Session mutationは設定済みpublic originと完全一致するOriginを必須とする。
+- 理由: tokenを各ブラウザへ手入力・保持する方式だけに依存せず複数利用者のidentityをIdPへ委譲しつつ、CSRF・JWT未検証・role claimの無条件信頼・reverse proxy配下のlocalhost auth bypassを避けるため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: JWT payloadをdecodeしただけで信用する、IdPの任意role claimをそのままadminへ変換する、Cookie認証でOrigin検証をしない、OIDC有効時もloopback admin fallbackを許可する方式。
