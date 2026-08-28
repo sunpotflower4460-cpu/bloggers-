@@ -20,10 +20,11 @@ function fakePostgresTarget() {
   const nativeJobs = []
   const nativeAnalytics = []
   const nativeActivities = []
+  const nativeAiUsage = []
   return {
     backend: 'postgres',
     async transaction(mutator) {
-      document ??= { system: {}, blogs: [], analytics: [], activities: [], jobs: [], locks: [] }
+      document ??= { system: {}, blogs: [], analytics: [], activities: [], aiUsage: [], jobs: [], locks: [] }
       return mutator(document)
     },
     async read() {
@@ -31,6 +32,7 @@ function fakePostgresTarget() {
         ...structuredClone(document),
         analytics: structuredClone(nativeAnalytics),
         activities: structuredClone(nativeActivities),
+        aiUsage: structuredClone(nativeAiUsage),
         jobs: structuredClone(nativeJobs),
         locks: [],
       }
@@ -47,6 +49,14 @@ function fakePostgresTarget() {
       nativeActivities.unshift(structuredClone(activity))
       return structuredClone(activity)
     },
+    async aiUsageAppend(entries) {
+      for (const usage of entries) {
+        const index = nativeAiUsage.findIndex((item) => item.id === usage.id)
+        if (index >= 0) nativeAiUsage.splice(index, 1)
+        nativeAiUsage.unshift(structuredClone(usage))
+      }
+      return entries.map((item) => structuredClone(item))
+    },
     async jobEnqueue(job, dedupeKey) {
       const existing = nativeJobs.find((item) => item.id === job.id || (dedupeKey && ['queued', 'running'].includes(item.status) && item.payload?.dedupeKey === dedupeKey))
       if (existing) return structuredClone(existing)
@@ -61,7 +71,7 @@ function fakePostgresTarget() {
   }
 }
 
-test('JSON to PostgreSQL migration promotes analytics/activity, recovers running jobs, and discards old operation leases', async () => {
+test('JSON to PostgreSQL migration promotes analytics/activity/AI usage, recovers running jobs, and discards old operation leases', async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, 'state.json')
     const source = await new JsonStore(path).init()
@@ -82,6 +92,18 @@ test('JSON to PostgreSQL migration promotes analytics/activity, recovers running
         agent: 'observer',
         type: 'cycle.observe',
         message: 'observed',
+      })
+      state.aiUsage.push({
+        id: 'usage_1',
+        blogId: 'blog_1',
+        workflowId: 'workflow_1',
+        createdAt: '2026-08-28T00:04:00.000Z',
+        operation: 'decide',
+        provider: 'test',
+        model: 'model-a',
+        inputTokens: 100,
+        outputTokens: 20,
+        estimatedCostUsd: 0.01,
       })
       state.system.scheduler.running = true
       state.jobs.push({
@@ -142,6 +164,8 @@ test('JSON to PostgreSQL migration promotes analytics/activity, recovers running
     assert.equal(result.analyticsKeptInStateDocument, 0)
     assert.equal(result.migratedActivities, 1)
     assert.equal(result.activitiesKeptInStateDocument, 0)
+    assert.equal(result.migratedAiUsage, 1)
+    assert.equal(result.aiUsageKeptInStateDocument, 0)
     assert.equal(result.migratedJobs, 2)
     assert.equal(result.recoveredRunningJobs, 1)
     assert.equal(result.discardedOperationLeases, 1)
@@ -149,12 +173,16 @@ test('JSON to PostgreSQL migration promotes analytics/activity, recovers running
     assert.equal(migrated.locks.length, 0)
     assert.equal(document.analytics.length, 0, 'normalized analytics should not remain in the global state document')
     assert.equal(document.activities.length, 0, 'normalized activities should not remain in the global state document')
+    assert.equal(document.aiUsage.length, 0, 'normalized AI usage should not remain in the global state document')
     assert.equal(migrated.analytics.length, 1)
     assert.equal(migrated.analytics[0].id, 'metric_1')
     assert.equal(migrated.analytics[0].clicks, 42)
     assert.equal(migrated.activities.length, 1)
     assert.equal(migrated.activities[0].id, 'activity_1')
     assert.equal(migrated.activities[0].message, 'observed')
+    assert.equal(migrated.aiUsage.length, 1)
+    assert.equal(migrated.aiUsage[0].id, 'usage_1')
+    assert.equal(migrated.aiUsage[0].estimatedCostUsd, 0.01)
 
     const recovered = migrated.jobs.find((job) => job.id === 'job_running')
     assert.equal(recovered.status, 'queued')
