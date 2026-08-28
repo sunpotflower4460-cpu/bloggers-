@@ -1,82 +1,476 @@
-# Bloggers — 複数ブログ自動運用・統合HP
+# Bloggers — AI Editorial Operating System
 
-このリポジトリは、**複数のブログを1つのHP／管理画面からまとめて管理し、自動運用できる仕組み**を作るためのプロジェクトです。
+Bloggers は、**AIが複数ブログへ接続し、1つの統合HPから観測・判断・制作/改稿・公開・計測・実験・学習まで回すAI編集部OS**です。
 
-> 現在はまだ実装前の P0（受入・整理）段階です。ブログ統合HPとしてのアプリ本体や公開自動化機能は、現時点の `main` ブランチにはまだ実装されていません。
+各ブログは独立した `Blog Brain` を持ち、その上に `Portfolio Brain` を置きます。記事数を増やすこと自体を目的にせず、`観測 → 判断 → CREATE / UPDATE / WAIT → Research → 制作 → 品質検査 → 承認/公開 → 計測 → Experiment → Learning` を循環させます。
 
-## 目指すもの
+## 現在の実装
 
-複数ブログを個別に開いて運用するのではなく、1つの統合環境からブログ群を扱える状態を目指します。
+FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規npm依存0**を維持しています。
 
-中心となる方向性は次のとおりです。
+- Bloggers HQ / 複数Blog Brain / Portfolio Brain
+- Memory / WordPress / Ghost Connector
+- CREATE / UPDATE / WAIT / 既存記事改稿
+- Autonomy Level 0〜5 / Human Gate / Emergency Pause
+- Search Console / GA4 / Custom HTTP Metrics
+- Google OAuth refresh（access tokenはmemory-only）
+- Experiment → Blog Memory
+- Research Source / `[S1]` citation / claim単位の数値・日付検証
+- 内部リンク候補 / SSRF / redirect / size / prompt-injection対策
+- Director / Writer / Reviser AI Router
+- AI Usage Ledger / Cost Governor
+- persistent leased Job Queue / retry / non-retryable分類
+- bounded Worker concurrency（default 4 / 1〜20）
+- Job owner / heartbeat / stale-worker fencing
+- blog cycle / approval operation lease + heartbeat
+- Connector書き込み直前のJob + Operation二重fence
+- durable cycle keyによるWorkflow / Idea / Metric / Article / Approval retry-idempotency
+- WordPress / Ghost remote draftの決定的slug retry-idempotency
+- embedded Scheduler / standalone Worker
+- viewer / editor / admin token RBAC
+- OIDC Authorization Code + PKCE / HttpOnly signed Session
+- OIDC server-side Session registry / logout revocation / admin revoke-all
+- OIDC Session signing-key rotation grace（previous keysはverification-only、最大2）
+- env / managed Secret Reference Resolver
+- literal-secret persistence guard
+- JSON Storeのcross-process transaction lock + atomic write
+- PostgreSQL state adapter + normalized jobs / operation leases
+- PostgreSQL native Blog Brain / analytics / activities / AI usage / workflows / ideas / articles / approvals / experiments / memories
+- PostgreSQL native system sections（core / aiBudget / scheduler）+ revision
+- Blog単位のrow-lock mutation（Memory Connectorのlocal remotePostsを含む）
+- Article + Approval paired transaction
+- Experiment completion + Blog Memory promotion paired transaction
+- Learning transactionのper-blog advisory lock
+- Scheduler section単位の`FOR UPDATE` mutation
+- `FOR UPDATE SKIP LOCKED` worker leasing
+- JSON → PostgreSQL migration command
+- deployment-provided PostgreSQL pool module hook
+- PostgreSQL 16 serviceを使う実DB integration smoke CI
+- Audit Log
+- Node標準テスト / GitHub Actions
 
-- 複数ブログを1か所で把握・管理する
-- ブログごとの運用をできるだけ自動化する
-- 記事作成から公開・運用までの状態を統合的に確認できるようにする
-- ブログが増えても、運用負荷がブログ数に比例して増えない構造にする
-
-詳細な機能・対応ブログサービス・自動化範囲・技術構成は、今後の要件整理と承認を経て確定します。
-
-## 現在の状態
-
-**Phase: P0**
-
-現時点のリポジトリは、開発時の逸脱を防ぐための guardrail テンプレートを土台として作成された直後の状態です。
-
-現在存在する主なもの:
-
-- `AGENTS.md` — 開発エージェント向けの基本ルール
-- `PHASE.md` — 現在の開発フェーズ
-- `docs/` — 要件・判断・設計を記録するための台帳
-- `craft/` — UI/UXや表現上の判断材料
-- `scripts/guard/` — guardrail の機械チェック
-- `.github/workflows/` — guardrail / human approval 用の GitHub Actions
-
-一方、現時点では以下はまだありません。
-
-- 統合HPのフロントエンド
-- ブログ管理用バックエンド/API
-- 複数ブログのアカウント・サイト管理
-- 記事生成・予約・公開などの自動運用処理
-- 運用状況を確認するダッシュボード
-
-つまり、**「複数ブログを自動運用できる統合HP」という目的には合っていますが、実装そのものはこれから始まる段階**です。
-
-## 開発の進め方
-
-このリポジトリでは、いきなり機能を増やすのではなく、目的・要件・承認範囲を確定してから実装へ進みます。
-
-大まかな流れ:
-
-1. **P0 — 受入・現状整理**
-   - 既存資材と目的を確認する
-2. **P1 — 要件確認**
-   - 未確定事項を質問し、ユーザー回答を記録する
-3. **P2 — 設計**
-   - 機能・制約・判断を明文化する
-4. **P3 — 実装**
-   - 承認済み機能だけを実装する
-5. **P4 — 自己監査**
-   - 差分と品質を確認して引き渡す
-
-## guardrail
-
-このプロジェクトには、AI/エージェントによる開発で意図しない機能追加や設計逸脱が起きにくくするための guardrail が含まれています。
+## 起動
 
 ```bash
-npm run status
+npm start
+```
+
+既定のローカルURL:
+
+```text
+http://localhost:3000
+```
+
+Standalone Workerを使う場合:
+
+```bash
+export BLOGGERS_SCHEDULER_MODE=external
+npm start
+```
+
+別process:
+
+```bash
+npm run worker
+```
+
+検証:
+
+```bash
+npm run check
+npm test
 npm run guard
 npm run guard:selftest
 ```
 
-`package.json` や guardrail 関連ファイルには、元テンプレート由来の名称・構成が一部残っています。これらはブログ統合HPの実装が進む中で、必要に応じてプロジェクト固有の内容へ整理していきます。
+## Storage / Worker
 
-## 現時点の結論
+### JSON — 標準backend
 
-このリポジトリのプロジェクト目的は、
+```bash
+export BLOGGERS_STORAGE_DRIVER=json
+export BLOGGERS_DATA_FILE=./data/state.json
+```
 
-**「ブログ複数を自動運用できる統合HP」**
+`JsonStore` は `state.json.lock` によるowner付きcross-process transaction lockとatomic renameを使います。同じ共有filesystem上ならWeb + standalone Workerを分離できます。
 
-です。
+```text
+Web process ─┐
+Worker A ────┼─ filesystem transaction lock → state.json
+Worker B ────┘
+```
 
-ただし、2026年8月28日時点の `main` はまだそのアプリを実装した状態ではなく、**開発ガードレールと設計台帳を配置した初期状態**です。READMEについては、元の `gpt-guardrail-template` の説明から、このプロジェクトの目的と実態が分かる内容へ更新しています。
+複数ホストを跨ぐproduction clusterではPostgreSQLを使います。
+
+### PostgreSQL — staged normalization
+
+実装済み:
+
+- `bloggers_state` — legacy state shape / versionを保つcompatibility document
+- `bloggers_system_settings` — `core / aiBudget / scheduler` の独立settings/runtime rows + revision
+- `bloggers_blogs` — Blog Brain / connector refs / autonomy / research / Memory Connector local state
+- `bloggers_jobs` — normalized durable jobs
+- `bloggers_operation_leases` — normalized operation leases
+- `bloggers_analytics` — analytics snapshots
+- `bloggers_activities` — append-only Audit Activity Log
+- `bloggers_ai_usage` — AI Usage Ledger
+- `bloggers_workflows` — running → completed/failed のworkflow lifecycle
+- `bloggers_ideas` — Directorの企画判断履歴
+- `bloggers_articles` / `bloggers_approvals` — editorial state + human gate
+- `bloggers_experiments` / `bloggers_memories` — measured experiments + learned memory
+- queued Jobの `FOR UPDATE SKIP LOCKED`
+- queued/runningを対象にしたactive dedupe partial unique index
+- Job heartbeat / owner fencing
+- Operation lease heartbeat / owner fencing
+- JSON → PostgreSQL migration
+- PostgreSQL 16実体を使ったCI smoke test
+
+高頻度・独立履歴はglobal `bloggers_state`行をロックせず専用tableへ直接書き込みます。Blog Brainは`bloggers_blogs`の**1 blog rowだけを`FOR UPDATE`**して更新するため、別ブログの設定変更やMemory Connectorのlocal post更新同士がglobal rowを奪い合いません。Article/ApprovalとExperiment/Memoryのように意味的原子性が必要な組はpaired native transactionで同時確定します。
+
+Systemも`bloggers_system_settings`へ分離し、`core / aiBudget / scheduler`を別rowとして管理します。Schedulerの通常更新は`scheduler` rowだけを`FOR UPDATE`するため、Emergency PauseやAI Budget設定を巻き込みません。既存`store.mutate(state.system...)`向けの互換経路はnative rowsへ書き戻し、normalizedな非system collectionを書こうとした場合はfail-closedします。
+
+`PostgresRuntimeStore` → `PostgresEditorialStore` → `PostgresLearningStore` → `PostgresConfigStore` → `PostgresSystemStore` の `read()` は専用tableを従来のstate shapeへ透過hydrateするため、Portfolio Brain / HQ / Orchestratorはbackend差を意識しません。
+
+現在の`bloggers_state`は互換shape・versionと将来の未正規化fieldを受ける基底documentとして残しますが、既知の主要可変domainは専用tableへ移行済みです。
+
+現PRは「新規npm依存0」を守るため `pg` 等を同梱していません。デプロイ環境側のESM pool moduleを読み込みます。
+
+```bash
+export BLOGGERS_STORAGE_DRIVER=postgres
+export BLOGGERS_POSTGRES_POOL_MODULE=./deploy/postgres-pool.mjs
+export DATABASE_URL='postgres://...'
+npm start
+```
+
+pool moduleは `pool` / `default` / `createPool({ env })` のいずれかをexportし、返すpoolは `connect()` と `query()` を実装します。
+
+JSONから移行する場合:
+
+```bash
+export BLOGGERS_POSTGRES_POOL_MODULE=./deploy/postgres-pool.mjs
+export BLOGGERS_MIGRATION_JSON_FILE=./data/state.json
+npm run migrate:postgres
+```
+
+移行時に`running`だったJobは`queued`へ戻して旧ownerを破棄し、旧operation leaseも引き継ぎません。Systemは`core / aiBudget / scheduler`へ分割し、移行時の`scheduler.running`は必ず`false`へ戻します。native capabilityを持つBlog / Analytics / Activity / AI Usage / Workflow / Idea / Article / Approval / Experiment / Memoryもglobal documentへ二重保持せず専用tableへ直接移します。
+
+## Durable execution / side-effect fencing
+
+Jobは実行前に永続化し、leaseを取得します。
+
+```text
+queued
+  ↓ lease
+running
+  ├─ success → completed
+  ├─ transient failure → queued(retry)
+  └─ non-retryable failure → failed
+```
+
+同じ`dedupeKey`はqueued/runningの両方をactiveとして扱います。Workerは`BLOGGERS_WORKER_CONCURRENCY`件だけJobをleaseし、その件数をすぐ並列処理します。大量Jobを先取りしてheartbeat前に期限切れさせる構造は取りません。
+
+長いJobはheartbeatでleaseを更新し、別Workerへownerが移った後は古いWorkerの`complete/fail`を拒否します。
+
+さらに、完了時だけでは不十分なので、**CMSへの外部書き込み直前にもlease ownershipを再検証**します。
+
+```text
+Scheduled publish/update
+  ├─ Job lease owner OK?
+  ├─ Blog/Approval operation lease owner OK?
+  └─ both OK → Connector write
+```
+
+実行contextは`AsyncLocalStorage`で伝播します。Scheduler配下ではJob fence + Operation fence、手動cycle/approvalではOperation fenceが有効です。ownerを失った処理はnon-retryableとして止めます。
+
+## CMS Connector / retry idempotency
+
+Scheduler Job IDからdurable cycle keyを作り、Portfolio child cycleではblog IDまで含めます。同一Jobの再試行ではWorkflow / Idea / Metric / Article / ApprovalのIDが安定するため、AI判断・下書き・Human Gateを不用意に増殖させません。完了済みWorkflowは再実行せず復帰します。
+
+### Memory
+
+ローカル検証用。article IDで同一draftを再利用します。PostgreSQLでは`remotePosts`も`bloggers_blogs`の該当Blog rowを`FOR UPDATE`して更新するため、global state rowは使いません。
+
+### WordPress
+
+Application Password等はSecret Referenceとして保持します。
+
+```bash
+export WP_MUSIC_USER='editor'
+export WP_MUSIC_PASSWORD='xxxx xxxx xxxx xxxx'
+```
+
+CREATEでは`bloggers-{articleId}`の決定的slugを使い、POST前に同じslugの既存postを検索します。CMS側で作成成功後にWorkerが落ちても、retry時には同じlocal Articleと既存remote postを再利用します。
+
+### Ghost
+
+Custom Integration Admin API keyから短命HS256 JWTを生成します。
+
+```bash
+export GHOST_MUSIC_ADMIN_KEY='<id>:<hex-secret>'
+```
+
+Ghostも同じ決定的slugを使い、Admin APIのslug lookupで既存postを確認してから作成します。UPDATE / publish前には最新postを取得し、collision detection用`updated_at`を送ります。
+
+## Secret Boundary
+
+Secret Referenceは以下を使えます。
+
+```text
+WP_MUSIC_PASSWORD
+env:WP_MUSIC_PASSWORD
+managed:bloggers/music/wp-password
+```
+
+managed backendはデプロイ環境側のESM moduleを起動時に読み込みます。
+
+```bash
+export BLOGGERS_SECRET_PROVIDER_MODULE=./deploy/secrets.mjs
+```
+
+moduleは `createSecretResolver({ env })` / `resolver` / `default` のいずれかをexportできます。起動時preloadは非同期で構いませんが、runtimeの`resolve(key)`は同期である必要があります。
+
+AI / RBAC / Google OAuth / OIDCにもreference overrideを使えます。
+
+```bash
+BLOGGERS_ADMIN_TOKEN_REF=managed:bloggers/admin-token
+BLOGGERS_AI_API_KEY_REF=managed:bloggers/ai/api-key
+GOOGLE_REFRESH_TOKEN_REF=managed:bloggers/google/refresh-token
+BLOGGERS_OIDC_CLIENT_SECRET_REF=managed:bloggers/oidc/client-secret
+BLOGGERS_SESSION_SECRET_REF=managed:bloggers/session-signing-key
+```
+
+Secret Reference用フィールドへ実password/API keyらしいliteral値を書こうとするとStoreが永続化を拒否します。
+
+## Browser identity — OIDC + HttpOnly Session
+
+従来のBearer token RBACは維持しつつ、ブラウザ利用者はOIDCでログインできます。OIDCは未設定なら完全に無効です。
+
+```bash
+BLOGGERS_OIDC_ISSUER=https://idp.example.com
+BLOGGERS_OIDC_CLIENT_ID=bloggers
+BLOGGERS_OIDC_CLIENT_SECRET_REF=OIDC_CLIENT_SECRET
+BLOGGERS_PUBLIC_BASE_URL=https://bloggers.example.com
+BLOGGERS_SESSION_SECRET_REF=BLOGGERS_SESSION_SECRET
+
+OIDC_CLIENT_SECRET='...'
+BLOGGERS_SESSION_SECRET='32-bytes-or-longer-random-secret...'
+```
+
+Role mappingはIdPのclaimを**明示的にBloggers roleへ対応付ける**方式です。
+
+```bash
+BLOGGERS_OIDC_ROLE_RULES_JSON='[
+  {"claim":"groups","value":"bloggers-admins","role":"admin"},
+  {"claim":"groups","value":"bloggers-editors","role":"editor"},
+  {"claim":"groups","value":"bloggers-viewers","role":"viewer"}
+]'
+```
+
+ruleが1件も一致しないidentityはログイン拒否です。全IdPユーザーへroleを付けたい場合だけ`BLOGGERS_OIDC_DEFAULT_ROLE=viewer`等を明示します。
+
+認証フロー:
+
+```text
+Browser
+  ↓ /auth/login
+Authorization Code + PKCE
+  ↓ callback
+state + nonce検証
+  ↓
+ID token JWKS署名検証
+  ↓
+issuer / audience / azp / exp / nbf / iat検証
+  ↓
+明示Role mapping
+  ↓
+HttpOnly signed Session
+  ↓
+server-side Session registryへfingerprint登録
+```
+
+対応署名algは `RS256 / PS256 / ES256` です。JWKSは短時間cacheし、該当`kid`が見つからない場合は1回refreshしてkey rotationへ追従します。
+
+SessionはHMAC署名し、credentialやID token/access token自体はCookieへ保存しません。production HTTPSでは`__Host-bloggers_session` / `__Host-bloggers_oidc_flow`を使い、`Secure`を付与します。flow cookieは`SameSite=Lax`、login後Sessionは`SameSite=Strict`です。
+
+署名Cookieだけではなくserver-side registryも認証条件です。login callbackが正常完了したCookie fingerprintだけをactiveとして登録し、API利用時は**Cookie署名/期限が正しいこと + registryでactiveであること**の両方を要求します。導入前の未登録Cookieは再ログインが必要になります。
+
+`POST /auth/logout`はブラウザCookieを消すだけでなくserver-side registry上でも現在Sessionを失効します。そのため、同じCookieが別環境へコピーされていてもlogout後は使えません。adminは次のendpointで全OIDC Sessionを一括失効できます。
+
+```text
+POST /api/settings/sessions/revoke-all
+```
+
+Session registry本体にはfingerprint / principal ID / expiry等を保持しますが、HQ/Settingsのpublic system viewからは必ずredactします。admin向けSettingsにはactive/revoked件数のサマリだけを返します。
+
+### Session signing key rotation
+
+Session signing keyをrotationするときは、新しい鍵を現在鍵へ変更し、直前の鍵を`BLOGGERS_SESSION_PREVIOUS_SECRET_REFS`へ一時的に置きます。最大2個までです。
+
+```bash
+BLOGGERS_SESSION_SECRET_REF=NEW_SESSION_SECRET
+BLOGGERS_SESSION_PREVIOUS_SECRET_REFS=OLD_SESSION_SECRET
+NEW_SESSION_SECRET='new-32-byte-or-longer-secret...'
+OLD_SESSION_SECRET='old-32-byte-or-longer-secret...'
+```
+
+新規flow/session Cookieは**現在鍵だけ**で署名します。previous keyは検証専用です。そのためrotation前に開始していたOIDC callbackや、まだserver-side registryでactiveな既存Sessionはgrace中だけ継続できます。失効済みSessionはprevious keyで署名が検証できてもregistry判定で拒否されるため復活しません。
+
+旧鍵referenceは、必要なgrace window（通常は最大Session TTLを上限にした運用期間）が終わったら削除します。旧鍵を長期間残し続けません。
+
+Cookie認証ではCSRFを別途防ぐ必要があるため、POST/PATCH等のSession mutationは**`Origin`が`BLOGGERS_PUBLIC_BASE_URL`のoriginと完全一致する場合だけ許可**します。
+
+安全境界:
+
+- OIDC有効時は開発用localhost-admin fallbackを使わない
+- 明示Bearer tokenが送られた場合はBearerを優先し、不正Bearerを有効Sessionへfallbackしない
+- 署名済みでもserver-side registry未登録/失効済みSessionは認証しない
+- logoutはserver-sideでも該当Sessionを失効する
+- registry fingerprint/subject情報をviewer向けsystem payloadへ出さない
+- rotation後の新規Cookieは現在鍵だけで署名する
+- previous signing keyは最大2個・検証専用
+- `returnTo`は同一サイト内のrelative pathだけ許可し、open redirectを作らない
+- OIDC discovery issuerは設定issuerと完全一致必須
+- client secret / Session signing keyはSecret Resolverから取得
+
+ローカルOIDC検証でHTTPが必要な場合だけ`BLOGGERS_OIDC_ALLOW_INSECURE_LOCALHOST=true`を明示してください。この場合はブラウザ仕様上`__Host-` prefixを使わず`bloggers_session` / `bloggers_oidc_flow`へ切り替え、`Secure`も付けません。productionでは使用しません。
+
+## Research / Citation / Quality Gate
+
+Research Source本文は**未信頼データ**として扱います。
+
+検査内容:
+
+- 出典必須なのにsourceなし
+- 不明なsource ID
+- citation不足
+- 数値・割合・日付claimと同一文のcitation
+- citation先抜粋に主張した数値が存在するか
+- 関連内部リンク候補
+
+blocking issueがあればAutonomy Level 4以上でもHuman Gateへ降格します。Research fetchはpublic HTTP(S)のみを許可し、localhost/private network、redirect、過大responseを拒否します。
+
+## AI Router / Cost Governor
+
+OpenAI-compatible `/chat/completions` endpointを利用できます。Director / Writer / Reviserでモデルを分けられます。
+
+```bash
+BLOGGERS_AI_BASE_URL=https://provider.example/v1
+BLOGGERS_AI_API_KEY_REF=managed:bloggers/ai/api-key
+BLOGGERS_AI_MODEL=fallback-model
+BLOGGERS_AI_DECIDE_MODEL=reasoning-model
+BLOGGERS_AI_WRITE_MODEL=writing-model
+BLOGGERS_AI_REVISE_MODEL=editing-model
+```
+
+実token usageから概算費用を記録し、cycle開始前だけでなく各AI callのusage保存直後にも月間reserveを再判定します。PostgreSQLではusageを`bloggers_ai_usage`へ先に記録し、hydrate済み最新stateでreserve判定するため、記録と停止判断の順序を維持します。reserve到達はnon-retryableです。
+
+API key未設定時は`RuleBasedProvider`でパイプラインを検証できます。
+
+## Analytics / Learning
+
+Analytics HubはCMS metrics + Search Console + GA4 + Custom HTTP Metricsを統合します。Google refresh後access tokenはmemory-onlyです。
+
+PostgreSQLでは観測snapshotを`bloggers_analytics`へ直接appendし、Audit Logは`bloggers_activities`、Workflow lifecycleは`bloggers_workflows`、Directorの企画判断は`bloggers_ideas`へ分離しています。Article/Approvalもpaired transactionで専用tableへ保存します。
+
+CREATE / UPDATEが実際に反映された時点でExperimentを開始し、`positive / negative / inconclusive` の結果を評価します。PostgreSQLではExperiment更新と結果Memory追加を**同一DB transaction**でcommitし、「ExperimentだけcompletedだがLearningがない」という中間状態を作りません。対象blogにまだExperiment行が存在しない初回raceもper-blog transactional advisory lockで直列化します。完了した実測結果だけを次のDirector/Writer/Reviserへ戻します。
+
+## RBAC
+
+OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin fallbackを使います。OIDCを有効化した時点でこのfallbackは無効です。
+
+| Role | 主な権限 |
+|---|---|
+| viewer | HQ / Blogs / Content / Analytics / Activity / Settings閲覧 |
+| editor | viewer + blog操作 / AI cycle / approval / Emergency Pause |
+| admin | editor + Resume / AI予算 / Scheduler設定 / 全OIDC Session失効 |
+
+従来の`BLOGGERS_ADMIN_TOKEN`はadmin互換です。RBAC tokenもenvまたはmanaged Secret Referenceで解決できます。
+
+## アーキテクチャ
+
+```text
+                       Bloggers HQ / API
+                              |
+                 Token RBAC / OIDC Session
+                              |
+          signed cookie + server registry + key grace
+                              |
+                       Storage Contract
+                     /                   \
+          JsonStore + fs lock      PostgreSQL layered stores
+                    |              /                    \
+               state.json    bloggers_state      normalized tables
+                                            system settings / blogs
+                                            jobs / leases / analytics
+                                            activities / AI usage
+                                            workflows / ideas
+                                            articles / approvals
+                                            experiments / memories
+                     \                   /
+                      Embedded / External Worker
+                              |
+                        Portfolio Brain
+                              |
+                       Blog Brain A ... N
+                              |
+        Observer → Director → Research → Writer/Reviser
+                              ↓
+              Quality Gate → Human Gate/Publisher
+                              ↓
+                Analytics → Experiment → Learning
+
+Write safety: Job lease + Operation lease → Connector side-effect fence
+Secrets: env / managed resolver → no literal credential persistence
+```
+
+主要コード:
+
+- `src/server.js` — HTTP/API/UI / auth route integration
+- `src/auth.js` — viewer/editor/admin authorization policy
+- `src/oidc.js` — OIDC discovery / PKCE / JWT/JWKS verification / signed Session / signing-key grace
+- `src/oidc-session-store.js` — server-side Session registry / revoke / revoke-all
+- `src/secrets.js` — env / managed Secret Resolver
+- `src/worker.js` — standalone Worker
+- `src/storage.js` — storage factory / pool module loader
+- `src/store.js` — JsonStore
+- `src/postgres-store.js` — PostgreSQL state / native jobs / leases
+- `src/postgres-runtime-store.js` — PostgreSQL native runtime hot paths / operation lease renewal
+- `src/postgres-editorial-store.js` — PostgreSQL native ideas / articles / approvals
+- `src/postgres-learning-store.js` — PostgreSQL native experiments / memories + atomic learning transaction
+- `src/postgres-config-store.js` — PostgreSQL native Blog Brain + row-lock mutation
+- `src/postgres-system-store.js` — PostgreSQL native system sections + revision / section row locks
+- `src/system-store.js` — backend-neutral system section split/merge/mutation + public redaction contract
+- `src/migrate-to-postgres.js` — JSON → PostgreSQL staged migration
+- `src/jobs.js` — leased Job Queue
+- `src/leases.js` / `src/runtime.js` — operation lease / exclusive runtime
+- `src/execution-context.js` — nested side-effect fencing context
+- `src/idempotency.js` — durable cycle-derived stable IDs
+- `src/scheduler.js` — Scheduler / Worker loop
+- `src/connectors.js` — Memory / WordPress / Ghost
+- `src/orchestrator.js` — editorial loop
+- `src/quality.js` — Research / Citation / Claim checks
+- `src/analytics.js` / `src/experiments.js` — measurement / learning
+- `src/blog-store.js` — backend-neutral Blog Brain persistence
+- `src/analytics-store.js` — backend-neutral Analytics persistence
+- `src/activity-store.js` — backend-neutral Audit Activity persistence
+- `src/ai-usage-store.js` — backend-neutral AI Usage Ledger persistence
+- `src/workflow-store.js` — backend-neutral Workflow lifecycle persistence
+- `src/idea-store.js` — backend-neutral Director Idea persistence
+- `src/article-approval-store.js` — backend-neutral Article / Approval paired persistence
+- `src/experiment-memory-store.js` — backend-neutral Experiment / Memory transaction boundary
+
+## 次のproduction-hardening候補
+
+- PostgreSQL driverの正式依存化（guard制約変更の承認後）
+- system schema migration / revisionを使った管理UI上の競合検出
+- dedicated OIDC session table / per-user session management UI
+- AWS Secrets Manager / GCP Secret Manager / Vault等の具体provider module
+- microCMS / Contentful等の追加Connector
+- semantic / AI-assisted fact verification
+- Google service account
+- conversion / revenue中心のExperiment評価
+- provider固有AI Adapter / pricing registry
+
+## Guardrail
+
+`AGENTS.md`、`docs/` の台帳、GitHub Actions guardを維持し、承認済みfeature IDの範囲だけを実装します。

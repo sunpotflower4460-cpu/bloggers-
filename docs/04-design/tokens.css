@@ -1,41 +1,42 @@
-/*
-  tokens.css
-  値はすべてプレースホルダ。具体的な色・数値はプロジェクトごとに定義すること。
-  ここに定義されていない変数を UI で新規にハードコードしてはならない。
-*/
-
+/* Bloggers — editorial control-room tokens */
 :root {
-  /* 色 */
-  --bg: /* プロジェクトごとに定義 */;
-  --surface: /* プロジェクトごとに定義 */;
-  --text: /* プロジェクトごとに定義 */;
-  --text-muted: /* プロジェクトごとに定義 */;
-  --accent: /* プロジェクトごとに定義 */;
-  --border: /* プロジェクトごとに定義 */;
+  --bg: #eef3f1;
+  --surface: #f9fbfa;
+  --surface-strong: #ffffff;
+  --surface-soft: #e5eeea;
+  --text: #17231f;
+  --text-muted: #61706a;
+  --accent: #355f52;
+  --accent-soft: #d8e6e0;
+  --border: #c9d5d0;
+  --positive: #376b55;
+  --warning: #8a642e;
+  --danger: #8b3f3f;
+  --shadow: 0 12px 36px rgb(23 35 31 / 0.08);
 
-  /* タイポ */
-  --ff-display: /* プロジェクトごとに定義 */;
-  --ff-body: /* プロジェクトごとに定義 */;
-  --fs-1: /* プロジェクトごとに定義 */;
-  --fs-2: /* プロジェクトごとに定義 */;
-  --fs-3: /* プロジェクトごとに定義 */;
-  --fs-4: /* プロジェクトごとに定義 */;
-  --fs-5: /* プロジェクトごとに定義 */;
-  --fs-6: /* プロジェクトごとに定義 */;
+  --ff-display: "Avenir Next", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --ff-body: "Avenir Next", "Hiragino Sans", "Yu Gothic", sans-serif;
+  --fs-1: 0.75rem;
+  --fs-2: 0.875rem;
+  --fs-3: 1rem;
+  --fs-4: 1.25rem;
+  --fs-5: 1.75rem;
+  --fs-6: 2.5rem;
 
-  /* 余白（4px基準） */
-  --sp-1: /* プロジェクトごとに定義 */;
-  --sp-2: /* プロジェクトごとに定義 */;
-  --sp-3: /* プロジェクトごとに定義 */;
-  --sp-4: /* プロジェクトごとに定義 */;
-  --sp-5: /* プロジェクトごとに定義 */;
-  --sp-6: /* プロジェクトごとに定義 */;
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.5rem;
+  --sp-6: 2rem;
+  --sp-7: 3rem;
 
-  /* 角丸 */
-  --radius-s: /* プロジェクトごとに定義 */;
-  --radius-m: /* プロジェクトごとに定義 */;
+  --radius-s: 0.5rem;
+  --radius-m: 0.875rem;
+  --radius-l: 1.25rem;
 
-  /* モーション */
-  --dur: /* プロジェクトごとに定義 */;
-  --ease: /* プロジェクトごとに定義 */;
+  --dur: 160ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --content-max: 90rem;
+  --sidebar: 15rem;
 }
