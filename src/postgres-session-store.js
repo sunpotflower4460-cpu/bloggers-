@@ -35,8 +35,12 @@ function validFingerprint(value) {
 function normalizeSession(fingerprint, session = {}) {
   const issuedAt = Number(session.issuedAt)
   const expiresAt = Number(session.expiresAt)
+  const revokedAt = session.revokedAt === null || session.revokedAt === undefined
+    ? null
+    : Number(session.revokedAt)
   if (!validFingerprint(fingerprint) || !session.principalId || !ROLES.has(session.role)) return null
   if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt) return null
+  if (revokedAt !== null && !Number.isFinite(revokedAt)) return null
   return {
     fingerprint,
     principalId: String(session.principalId),
@@ -45,7 +49,7 @@ function normalizeSession(fingerprint, session = {}) {
     role: session.role,
     issuedAt,
     expiresAt,
-    revokedAt: Number.isFinite(Number(session.revokedAt)) ? Number(session.revokedAt) : null,
+    revokedAt,
     revokedBy: session.revokedBy ?? null,
   }
 }
