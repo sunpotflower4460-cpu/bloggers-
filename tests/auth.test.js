@@ -35,6 +35,15 @@ test('viewer can read but cannot run workflows', () => {
   assert.equal(read.ok, true)
   assert.equal(read.role, 'viewer')
 
+  const jobs = authorizeApiAccess({
+    method: 'GET',
+    pathname: '/api/jobs',
+    token: 'viewer-secret',
+    loopback: false,
+    config,
+  })
+  assert.equal(jobs.ok, true)
+
   const mutate = authorizeApiAccess({
     method: 'POST',
     pathname: '/api/workflows/run',
@@ -69,9 +78,9 @@ test('localhost remains admin only when no auth token is configured', () => {
   assert.equal(remote.status, 403)
 })
 
-test('route policy keeps operational job data above viewer level', () => {
+test('route policy keeps mutations above viewer level', () => {
   assert.equal(requiredRole('GET', '/api/hq'), 'viewer')
-  assert.equal(requiredRole('GET', '/api/jobs'), 'editor')
+  assert.equal(requiredRole('GET', '/api/jobs'), 'viewer')
   assert.equal(requiredRole('POST', '/api/blogs'), 'editor')
   assert.equal(requiredRole('PATCH', '/api/settings/scheduler'), 'admin')
 })
