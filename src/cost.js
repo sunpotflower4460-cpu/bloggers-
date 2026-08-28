@@ -7,6 +7,15 @@ function number(value, fallback = 0) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
+export class AiBudgetReserveReachedError extends Error {
+  constructor(status) {
+    super(`AI monthly budget reserve reached. spent=$${status.usage.totalUsd.toFixed(4)} budget=$${status.budget.monthlyUsd.toFixed(2)}`)
+    this.name = 'AiBudgetReserveReachedError'
+    this.code = 'AI_BUDGET_RESERVE_REACHED'
+    this.status = status
+  }
+}
+
 export function normalizeAiBudget(value = {}) {
   return {
     enabled: value.enabled !== false,
@@ -39,9 +48,7 @@ export function budgetStatus(state, date = new Date()) {
 
 export function assertAiBudget(state) {
   const status = budgetStatus(state)
-  if (status.blocked) {
-    throw new Error(`AI monthly budget reserve reached. spent=$${status.usage.totalUsd.toFixed(4)} budget=$${status.budget.monthlyUsd.toFixed(2)}`)
-  }
+  if (status.blocked) throw new AiBudgetReserveReachedError(status)
   return status
 }
 
@@ -59,10 +66,20 @@ export async function recordAiUsage(store, entries = [], context = {}) {
     estimatedCostUsd: number(entry.estimatedCostUsd),
   }))
   if (normalized.length === 0) return []
+
+  let status
   await store.mutate((state) => {
     state.aiUsage ??= []
     state.aiUsage.unshift(...normalized)
     state.aiUsage = state.aiUsage.slice(0, 10_000)
+    status = budgetStatus(state)
   })
+
+  // The API call has already happened, so its usage must remain recorded. If that
+  // call crosses the configured reserve, fail immediately before another model
+  // operation can run in the same workflow.
+  if (status?.blocked && context.enforceBudget !== false) {
+    throw new AiBudgetReserveReachedError(status)
+  }
   return normalized
 }
