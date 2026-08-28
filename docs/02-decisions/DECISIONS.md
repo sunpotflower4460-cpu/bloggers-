@@ -85,3 +85,17 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: 長期自律運用で短命access tokenの手動更新を不要にしつつ、refresh後のcredentialをJSON永続化しないため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: access token期限切れのたびに人間が環境変数を書き換える運用、または更新後tokenをstate.jsonへ保存する方式。
+
+### D-013
+- 日付: 2026-08-28
+- 決定: ブログcycleと承認処理はJSON-backed operation leaseで排他し、API・Portfolio・Schedulerの入口を同じexclusive runtimeへ統一する。
+- 理由: 手動実行とSchedulerの競合、ダブルクリック等で同じブログや承認を二重処理する事故を抑えるため。leaseには期限を持たせ、異常終了後は回収可能にする。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 各入口ごとにメモリ上のbooleanだけで重複実行を防ぐ。
+
+### D-014
+- 日付: 2026-08-28
+- 決定: CMS / Analytics / AI / OAuth / Researchの外部通信には用途別の有限timeoutを持たせる。
+- 理由: 1つの外部サービスの無応答でcycle、operation lease、Scheduler全体が長時間占有されることを防ぐため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: fetch既定の無期限待機に依存する。
