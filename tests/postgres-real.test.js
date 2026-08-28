@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { addBlog, setPaused, updateBlog } from '../src/orchestrator.js'
 import { createConnector } from '../src/connectors.js'
-import { configureScheduler } from '../src/scheduler.js'
+import {
+  configureAiBudgetVersioned,
+  configureSchedulerVersioned,
+  settingsVersions,
+} from '../src/settings-control.js'
 import { startExperiment, evaluateExperiments } from '../src/experiments.js'
 import { createStore } from '../src/storage.js'
 
@@ -132,7 +136,41 @@ test('real PostgreSQL accepts the layered store SQL and round-trips core domains
       autonomy: { level: 2, allowCreate: true, allowUpdate: true, allowPublish: false },
     })
     await updateBlog(store, blog.id, { brain: { voice: 'clear' } })
-    await configureScheduler(store, { enabled: true, intervalMinutes: 30, maxRetries: 2, retryDelayMinutes: 5 })
+
+    const initialVersions = await settingsVersions(store)
+    assert.match(initialVersions.scheduler, /^r:\d+$/)
+    assert.match(initialVersions.aiBudget, /^r:\d+$/)
+
+    await configureSchedulerVersioned(store, {
+      enabled: true,
+      intervalMinutes: 30,
+      maxRetries: 2,
+      retryDelayMinutes: 5,
+    }, { expectedVersion: initialVersions.scheduler, now: 1_800_000_000_000 })
+    await configureAiBudgetVersioned(store, {
+      monthlyUsd: 35,
+      perCycleUsd: 2,
+      reserveUsd: 0.5,
+    }, { expectedVersion: initialVersions.aiBudget })
+
+    const updatedVersions = await settingsVersions(store)
+    assert.notEqual(updatedVersions.scheduler, initialVersions.scheduler)
+    assert.notEqual(updatedVersions.aiBudget, initialVersions.aiBudget)
+
+    await assert.rejects(
+      () => configureSchedulerVersioned(store, { intervalMinutes: 15 }, {
+        expectedVersion: initialVersions.scheduler,
+        now: 1_800_000_100_000,
+      }),
+      (error) => error?.code === 'SYSTEM_VERSION_CONFLICT' && error?.status === 409,
+    )
+    await assert.rejects(
+      () => configureAiBudgetVersioned(store, { monthlyUsd: 99 }, {
+        expectedVersion: initialVersions.aiBudget,
+      }),
+      (error) => error?.code === 'SYSTEM_VERSION_CONFLICT' && error?.status === 409,
+    )
+
     await setPaused(store, true)
     await setPaused(store, false)
 
@@ -141,6 +179,7 @@ test('real PostgreSQL accepts the layered store SQL and round-trips core domains
     assert.equal(liveBlog.brain.voice, 'clear')
     assert.equal(stateAfterBlog.system.scheduler.enabled, true)
     assert.equal(stateAfterBlog.system.scheduler.intervalMinutes, 30)
+    assert.equal(stateAfterBlog.system.aiBudget.monthlyUsd, 35)
     assert.equal(stateAfterBlog.system.paused, false)
 
     const connector = createConnector({ blog: liveBlog, store })
