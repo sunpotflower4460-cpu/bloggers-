@@ -150,8 +150,10 @@ export function buildInternalLinkCandidates(posts, decision, limit = 5) {
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word.length >= 2)
+  const updateTarget = decision?.action === 'UPDATE' ? String(decision.targetPostId ?? '') : null
 
   return posts
+    .filter((post) => !updateTarget || String(post.id) !== updateTarget)
     .map((post) => {
       const title = normalizeTitle(post)
       const haystack = `${title} ${normalizeContent(post)}`.toLowerCase()
