@@ -48,6 +48,15 @@ function isDue(config, now) {
   return new Date(config.nextRunAt).getTime() <= now
 }
 
+function isRetryableFailure(errorOrMessage) {
+  const code = errorOrMessage?.code
+  const message = String(errorOrMessage?.message ?? errorOrMessage ?? '')
+  if (code === 'AI_BUDGET_RESERVE_REACHED') return false
+  if (/AI monthly budget reserve reached/i.test(message)) return false
+  if (/operation lease is already active/i.test(message)) return false
+  return true
+}
+
 async function migrateLegacyRetries(store, config) {
   const legacy = config.retryQueue ?? []
   if (legacy.length === 0) return
@@ -94,7 +103,9 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
       if (job.type === 'portfolio-cycle') {
         const portfolio = await runPortfolioCycle(store, { trigger: 'scheduler' })
         const failed = portfolio.results?.filter((item) => !item.ok) ?? []
-        for (const item of failed) {
+        const retryable = failed.filter((item) => isRetryableFailure(item.error))
+        const nonRetryable = failed.filter((item) => !isRetryableFailure(item.error))
+        for (const item of retryable) {
           await enqueueJob(store, {
             type: 'blog-cycle',
             blogId: item.blogId,
@@ -104,12 +115,21 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
             dedupeKey: `retry:${job.id}:${item.blogId}`,
           })
         }
-        await completeJob(store, job.id, { failedBlogs: failed.map((item) => item.blogId) })
+        await completeJob(store, job.id, {
+          failedBlogs: failed.map((item) => item.blogId),
+          retryableBlogs: retryable.map((item) => item.blogId),
+          nonRetryableBlogs: nonRetryable.map((item) => item.blogId),
+        })
         await recordActivity(store, {
           agent: 'scheduler',
           type: 'scheduler.cycle',
-          message: `定時Portfolio cycleを実行しました。${failed.length > 0 ? ` ${failed.length}件をdurable job queueへ追加しました。` : ''}`,
-          detail: { jobId: job.id, failed: failed.map((item) => item.blogId) },
+          message: `定時Portfolio cycleを実行しました。${retryable.length > 0 ? ` ${retryable.length}件をdurable job queueへ追加しました。` : ''}${nonRetryable.length > 0 ? ` ${nonRetryable.length}件はnon-retryableとして停止しました。` : ''}`,
+          detail: {
+            jobId: job.id,
+            failed: failed.map((item) => item.blogId),
+            retryable: retryable.map((item) => item.blogId),
+            nonRetryable: nonRetryable.map((item) => item.blogId),
+          },
         })
         return { jobId: job.id, type: job.type, ok: true, portfolio }
       }
@@ -122,15 +142,20 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
 
       throw new Error(`Unsupported job type: ${job.type}`)
     } catch (error) {
-      const failed = await failJob(store, job.id, error, { retryDelayMinutes: config.retryDelayMinutes, now })
+      const retryable = isRetryableFailure(error)
+      const failed = await failJob(store, job.id, error, {
+        retryDelayMinutes: config.retryDelayMinutes,
+        now,
+        retryable,
+      })
       await recordActivity(store, {
         blogId: job.blogId,
         agent: 'scheduler',
-        type: 'scheduler.job-failed',
+        type: retryable ? 'scheduler.job-failed' : 'scheduler.job-stopped',
         message: `${job.type} が失敗しました: ${error.message}`,
-        detail: { jobId: job.id, attempt: failed.attempt, status: failed.status },
+        detail: { jobId: job.id, attempt: failed.attempt, status: failed.status, retryable },
       })
-      return { jobId: job.id, type: job.type, blogId: job.blogId, ok: false, error: error.message, status: failed.status }
+      return { jobId: job.id, type: job.type, blogId: job.blogId, ok: false, error: error.message, status: failed.status, retryable }
     }
   }
 
