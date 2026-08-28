@@ -198,14 +198,14 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     }
   }
 
-  function start() {
+  function start({ keepAlive = false } = {}) {
     if (timer) return
     timer = setInterval(() => {
       tick().catch((error) => {
         recordActivity(store, { agent: 'scheduler', type: 'scheduler.failed', message: error.message }).catch(() => undefined)
       })
     }, 30_000)
-    timer.unref?.()
+    if (!keepAlive) timer.unref?.()
     tick().catch(() => undefined)
   }
 
