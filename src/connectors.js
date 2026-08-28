@@ -1,10 +1,79 @@
 // @feature F-003
+import { createHmac } from 'node:crypto'
 import { resolveSecret } from './secrets.js'
 import { createId, nowIso } from './store.js'
 
 function timeoutMs(name, fallback) {
   const value = Number(process.env[name] || fallback)
   return Math.max(1000, Math.min(300_000, Number.isFinite(value) ? value : fallback))
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function inlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+export function markdownToBasicHtml(markdown) {
+  const lines = String(markdown ?? '').split(/\r?\n/)
+  const html = []
+  let list = []
+
+  function flushList() {
+    if (list.length === 0) return
+    html.push(`<ul>${list.map((item) => `<li>${inlineMarkdown(item)}</li>`).join('')}</ul>`)
+    list = []
+  }
+
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) {
+      flushList()
+      continue
+    }
+    const bullet = line.match(/^[-*+]\s+(.+)$/)
+    if (bullet) {
+      list.push(bullet[1])
+      continue
+    }
+    flushList()
+    const heading = line.match(/^(#{1,6})\s+(.+)$/)
+    if (heading) {
+      const level = heading[1].length
+      html.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`)
+    } else {
+      html.push(`<p>${inlineMarkdown(line)}</p>`)
+    }
+  }
+  flushList()
+  return html.join('\n')
+}
+
+function base64UrlJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString('base64url')
+}
+
+export function createGhostAdminToken(adminKey, { now = Date.now() } = {}) {
+  const [id, secretHex, ...rest] = String(adminKey || '').split(':')
+  if (!id || !secretHex || rest.length > 0 || !/^[0-9a-f]+$/i.test(secretHex) || secretHex.length % 2 !== 0) {
+    throw new Error('Ghost Admin API key must use the id:hex_secret format')
+  }
+  const issuedAt = Math.floor(now / 1000)
+  const header = base64UrlJson({ alg: 'HS256', typ: 'JWT', kid: id })
+  const payload = base64UrlJson({ iat: issuedAt, exp: issuedAt + 300, aud: '/admin/' })
+  const unsigned = `${header}.${payload}`
+  const signature = createHmac('sha256', Buffer.from(secretHex, 'hex')).update(unsigned).digest('base64url')
+  return `${unsigned}.${signature}`
 }
 
 class BaseConnector {
@@ -167,10 +236,111 @@ class WordPressConnector extends BaseConnector {
   }
 }
 
+class GhostConnector extends BaseConnector {
+  constructor(options) {
+    super(options)
+    const config = this.blog.connector ?? {}
+    this.endpoint = String(config.endpoint ?? '').replace(/\/$/, '')
+    this.adminKey = resolveSecret(config.adminKeyEnv, { required: true, label: 'Ghost Admin API key' })
+    this.apiVersion = /^v\d+\.\d+$/.test(String(config.apiVersion || '')) ? String(config.apiVersion) : 'v6.0'
+    if (!this.endpoint) throw new Error('Ghost admin endpoint is required')
+  }
+
+  async #request(path, options = {}) {
+    const token = createGhostAdminToken(this.adminKey)
+    const headers = {
+      Accept: 'application/json',
+      'Accept-Version': this.apiVersion,
+      Authorization: `Ghost ${token}`,
+      ...(options.headers ?? {}),
+    }
+    if (options.body) headers['Content-Type'] = 'application/json'
+    const response = await fetch(`${this.endpoint}/ghost/api/admin${path}`, {
+      ...options,
+      headers,
+      redirect: 'error',
+      signal: options.signal ?? AbortSignal.timeout(timeoutMs('BLOGGERS_CMS_TIMEOUT_MS', 15_000)),
+    })
+    const text = await response.text()
+    let payload = null
+    try {
+      payload = text ? JSON.parse(text) : null
+    } catch {
+      payload = text
+    }
+    if (!response.ok) {
+      const message = payload?.errors?.[0]?.message || `Ghost HTTP ${response.status}`
+      throw new Error(message)
+    }
+    return payload
+  }
+
+  async listPosts(limit = 20) {
+    const payload = await this.#request(`/posts/?limit=${Math.min(limit, 100)}&formats=html`)
+    return payload?.posts ?? []
+  }
+
+  async #readPost(postId) {
+    const payload = await this.#request(`/posts/${encodeURIComponent(postId)}/?formats=html`)
+    const post = payload?.posts?.[0]
+    if (!post) throw new Error('Ghost post not found')
+    return post
+  }
+
+  async createDraft(article) {
+    const payload = await this.#request('/posts/?source=html', {
+      method: 'POST',
+      body: JSON.stringify({
+        posts: [{
+          title: article.title,
+          html: markdownToBasicHtml(article.body),
+          status: 'draft',
+        }],
+      }),
+    })
+    const post = payload?.posts?.[0]
+    if (!post) throw new Error('Ghost did not return the created post')
+    return post
+  }
+
+  async updatePost(postId, changes) {
+    const current = await this.#readPost(postId)
+    const update = { updated_at: current.updated_at }
+    if (changes.title !== undefined) update.title = changes.title
+    if (changes.content !== undefined) update.html = markdownToBasicHtml(changes.content)
+    if (changes.status !== undefined) update.status = changes.status === 'publish' ? 'published' : changes.status
+
+    const query = changes.content !== undefined ? '?source=html&save_revision=true' : '?save_revision=true'
+    const payload = await this.#request(`/posts/${encodeURIComponent(postId)}/${query}`, {
+      method: 'PUT',
+      body: JSON.stringify({ posts: [update] }),
+    })
+    const post = payload?.posts?.[0]
+    if (!post) throw new Error('Ghost did not return the updated post')
+    return post
+  }
+
+  async publishPost(postId) {
+    return this.updatePost(postId, { status: 'published' })
+  }
+
+  async getMetrics() {
+    const payload = await this.#request('/posts/?limit=1')
+    return {
+      posts: Number(payload?.meta?.pagination?.total ?? payload?.posts?.length ?? 0),
+      views: null,
+      source: 'ghost',
+      note: 'Connect Search Console / Analytics for traffic metrics',
+    }
+  }
+}
+
 export function createConnector({ blog, store }) {
   switch (blog.connector?.type) {
     case 'wordpress':
       return new WordPressConnector({ blog, store })
+    case 'ghost':
+      return new GhostConnector({ blog, store })
     case 'memory':
     case undefined:
       return new MemoryConnector({ blog, store })
@@ -179,4 +349,4 @@ export function createConnector({ blog, store }) {
   }
 }
 
-export { BaseConnector, MemoryConnector, WordPressConnector }
+export { BaseConnector, GhostConnector, MemoryConnector, WordPressConnector }
