@@ -1,6 +1,11 @@
 // @feature F-003
 import { createId, nowIso } from './store.js'
 
+function timeoutMs(name, fallback) {
+  const value = Number(process.env[name] || fallback)
+  return Math.max(1000, Math.min(300_000, Number.isFinite(value) ? value : fallback))
+}
+
 class BaseConnector {
   constructor({ blog, store }) {
     this.blog = blog
@@ -36,20 +41,25 @@ class MemoryConnector extends BaseConnector {
   }
 
   async createDraft(article) {
-    const post = {
-      id: createId('remote'),
-      title: article.title,
-      content: article.body,
-      status: 'draft',
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    }
-    await this.store.mutate((state) => {
+    return this.store.mutate((state) => {
       const blog = state.blogs.find((item) => item.id === this.blog.id)
+      if (!blog) throw new Error('Blog not found')
       blog.remotePosts ??= []
+      const existing = blog.remotePosts.find((item) => item.sourceArticleId === article.id)
+      if (existing) return structuredClone(existing)
+
+      const post = {
+        id: createId('remote'),
+        sourceArticleId: article.id,
+        title: article.title,
+        content: article.body,
+        status: 'draft',
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+      }
       blog.remotePosts.push(post)
+      return structuredClone(post)
     })
-    return post
   }
 
   async updatePost(postId, changes) {
@@ -98,6 +108,8 @@ class WordPressConnector extends BaseConnector {
     const response = await fetch(`${this.endpoint}/wp-json/wp/v2${path}`, {
       ...options,
       headers,
+      redirect: 'error',
+      signal: options.signal ?? AbortSignal.timeout(timeoutMs('BLOGGERS_CMS_TIMEOUT_MS', 15_000)),
     })
     const text = await response.text()
     let payload = null
@@ -125,6 +137,7 @@ class WordPressConnector extends BaseConnector {
         title: article.title,
         content: article.body,
         status: 'draft',
+        slug: `bloggers-${String(article.id).replace(/[^a-zA-Z0-9-]+/g, '-')}`.toLowerCase(),
       }),
     })
     return payload
