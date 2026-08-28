@@ -12,6 +12,7 @@
 import { createAIProvider } from './ai.js'
 import { collectAnalytics } from './analytics.js'
 import { appendAnalyticsSnapshot } from './analytics-store.js'
+import { appendActivity } from './activity-store.js'
 import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
@@ -182,10 +183,7 @@ export async function recordActivity(store, entry) {
     message: entry.message ?? '',
     detail: entry.detail ?? null,
   }
-  await store.mutate((state) => {
-    state.activities.unshift(activity)
-    state.activities = state.activities.slice(0, 1000)
-  })
+  await appendActivity(store, activity, { limit: 1000 })
   return activity
 }
 
