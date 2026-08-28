@@ -1,3 +1,4 @@
+// @feature F-002
 // @feature F-004
 // @feature F-005
 // @feature F-006
@@ -34,6 +35,7 @@ export async function migrateJsonToPostgres({
 
   const source = await new JsonStore(absoluteSource).init()
   const sourceState = await source.read()
+  const sourceBlogs = structuredClone(sourceState.blogs ?? [])
   const sourceJobs = structuredClone(sourceState.jobs ?? [])
   const sourceAnalytics = structuredClone(sourceState.analytics ?? [])
   const sourceActivities = structuredClone(sourceState.activities ?? [])
@@ -57,6 +59,7 @@ export async function migrateJsonToPostgres({
   if (target.backend !== 'postgres') throw new Error('Migration target must be PostgreSQL')
   if (typeof target.jobEnqueue !== 'function') throw new Error('Migration target does not support native PostgreSQL jobs')
 
+  const nativeBlogs = typeof target.blogUpsert === 'function'
   const nativeAnalytics = typeof target.analyticsAppend === 'function'
   const nativeActivities = typeof target.activityAppend === 'function'
   const nativeAiUsage = typeof target.aiUsageAppend === 'function'
@@ -66,6 +69,7 @@ export async function migrateJsonToPostgres({
   const nativeApprovals = typeof target.approvalUpsert === 'function'
   const nativeExperiments = typeof target.experimentUpsert === 'function'
   const nativeMemories = typeof target.memoryUpsert === 'function'
+  if (nativeBlogs) portableState.blogs = []
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
   if (nativeAiUsage) portableState.aiUsage = []
@@ -80,6 +84,14 @@ export async function migrateJsonToPostgres({
     for (const key of Object.keys(state)) delete state[key]
     Object.assign(state, structuredClone(portableState))
   })
+
+  let migratedBlogs = 0
+  if (nativeBlogs) {
+    for (const blog of sourceBlogs) {
+      await target.blogUpsert(blog)
+      migratedBlogs += 1
+    }
+  }
 
   let migratedAnalytics = 0
   if (nativeAnalytics) {
@@ -171,11 +183,13 @@ export async function migrateJsonToPostgres({
 
   return {
     source: absoluteSource,
-    blogs: sourceState.blogs?.length ?? 0,
+    blogs: sourceBlogs.length,
     articles: sourceArticles.length,
     approvals: sourceApprovals.length,
     experiments: sourceExperiments.length,
     memories: sourceMemories.length,
+    migratedBlogs,
+    blogsKeptInStateDocument: nativeBlogs ? 0 : sourceBlogs.length,
     migratedAnalytics,
     analyticsKeptInStateDocument: nativeAnalytics ? 0 : sourceAnalytics.length,
     migratedActivities,
