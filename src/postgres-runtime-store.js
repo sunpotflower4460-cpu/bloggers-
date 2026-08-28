@@ -1,3 +1,4 @@
+// @feature F-005
 // @feature F-007
 // @feature F-009
 // @feature F-012
@@ -34,6 +35,14 @@ function activityDocument(row) {
   return document
 }
 
+function aiUsageDocument(row) {
+  const document = structuredClone(decodeJson(row.document) ?? {})
+  document.id ??= row.id
+  document.blogId ??= row.blog_id ?? null
+  document.createdAt ??= iso(row.created_at)
+  return document
+}
+
 function safeLimit(value, fallback = 5000, max = 50_000) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
@@ -54,6 +63,7 @@ export class PostgresRuntimeStore extends PostgresStore {
       nativeLeaseRenew: true,
       nativeAnalytics: true,
       nativeActivities: true,
+      nativeAiUsage: true,
     }
   }
 
@@ -94,6 +104,23 @@ export class PostgresRuntimeStore extends PostgresStore {
       CREATE INDEX IF NOT EXISTS bloggers_activities_time_idx
       ON bloggers_activities (created_at DESC)
     `)
+    await this.#runtimePool.query(`
+      CREATE TABLE IF NOT EXISTS bloggers_ai_usage (
+        id text PRIMARY KEY,
+        blog_id text,
+        created_at timestamptz NOT NULL,
+        document jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `)
+    await this.#runtimePool.query(`
+      CREATE INDEX IF NOT EXISTS bloggers_ai_usage_blog_time_idx
+      ON bloggers_ai_usage (blog_id, created_at DESC)
+    `)
+    await this.#runtimePool.query(`
+      CREATE INDEX IF NOT EXISTS bloggers_ai_usage_time_idx
+      ON bloggers_ai_usage (created_at DESC)
+    `)
     await this.#promoteLegacyCollections()
     return this
   }
@@ -110,6 +137,7 @@ export class PostgresRuntimeStore extends PostgresStore {
       const state = normalizeState(raw)
       const legacyAnalytics = Array.isArray(state.analytics) ? state.analytics : []
       const legacyActivities = Array.isArray(state.activities) ? state.activities : []
+      const legacyAiUsage = Array.isArray(state.aiUsage) ? state.aiUsage : []
       let changed = false
 
       if (legacyAnalytics.length > 0) {
@@ -150,6 +178,25 @@ export class PostgresRuntimeStore extends PostgresStore {
         changed = true
       }
 
+      if (legacyAiUsage.length > 0) {
+        for (const usage of legacyAiUsage) {
+          if (!usage?.id || !usage?.createdAt) continue
+          await client.query(
+            `INSERT INTO bloggers_ai_usage
+               (id, blog_id, created_at, document, updated_at)
+             VALUES ($1, $2, $3::timestamptz, $4::jsonb, now())
+             ON CONFLICT (id) DO UPDATE SET
+               blog_id = EXCLUDED.blog_id,
+               created_at = EXCLUDED.created_at,
+               document = EXCLUDED.document,
+               updated_at = now()`,
+            [usage.id, usage.blogId ?? null, usage.createdAt, JSON.stringify(usage)],
+          )
+        }
+        state.aiUsage = []
+        changed = true
+      }
+
       if (changed) {
         await client.query(
           `UPDATE bloggers_state
@@ -169,13 +216,15 @@ export class PostgresRuntimeStore extends PostgresStore {
   }
 
   async read() {
-    const [state, analytics, activities] = await Promise.all([
+    const [state, analytics, activities, aiUsage] = await Promise.all([
       super.read(),
       this.analyticsList({ limit: 5000 }),
       this.activityList({ limit: 1000 }),
+      this.aiUsageList({ limit: 10_000 }),
     ])
     state.analytics = analytics
     state.activities = activities
+    state.aiUsage = aiUsage
     return state
   }
 
@@ -290,6 +339,68 @@ export class PostgresRuntimeStore extends PostgresStore {
       params,
     )
     return (result.rows ?? []).map(activityDocument)
+  }
+
+  async aiUsageAppend(entries, { limit = 10_000 } = {}) {
+    const rows = Array.isArray(entries) ? entries : []
+    if (rows.length === 0) return []
+    for (const usage of rows) {
+      if (!usage?.id) throw new Error('AI usage id is required')
+      if (!usage?.createdAt) throw new Error('AI usage createdAt is required')
+    }
+    const keep = safeLimit(limit, 10_000, 100_000)
+    const client = await this.#runtimePool.connect()
+    try {
+      await client.query('BEGIN')
+      for (const usage of rows) {
+        await client.query(
+          `INSERT INTO bloggers_ai_usage
+             (id, blog_id, created_at, document, updated_at)
+           VALUES ($1, $2, $3::timestamptz, $4::jsonb, now())
+           ON CONFLICT (id) DO UPDATE SET
+             blog_id = EXCLUDED.blog_id,
+             created_at = EXCLUDED.created_at,
+             document = EXCLUDED.document,
+             updated_at = now()`,
+          [usage.id, usage.blogId ?? null, usage.createdAt, JSON.stringify(usage)],
+        )
+      }
+      await client.query(
+        `DELETE FROM bloggers_ai_usage
+         WHERE id IN (
+           SELECT id FROM bloggers_ai_usage
+           ORDER BY created_at DESC, id DESC
+           OFFSET $1
+         )`,
+        [keep],
+      )
+      await client.query('COMMIT')
+      return rows.map((item) => structuredClone(item))
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      client.release?.()
+    }
+  }
+
+  async aiUsageList({ blogId = null, limit = 10_000 } = {}) {
+    const take = safeLimit(limit, 10_000, 100_000)
+    const params = blogId ? [blogId, take] : [take]
+    const result = await this.#runtimePool.query(
+      blogId
+        ? `SELECT id, blog_id, created_at, document
+           FROM bloggers_ai_usage
+           WHERE blog_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`
+        : `SELECT id, blog_id, created_at, document
+           FROM bloggers_ai_usage
+           ORDER BY created_at DESC, id DESC
+           LIMIT $1`,
+      params,
+    )
+    return (result.rows ?? []).map(aiUsageDocument)
   }
 
   async leaseRenew(key, owner, { ttlMs, now = Date.now() } = {}) {
