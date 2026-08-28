@@ -1,6 +1,7 @@
 // @feature F-001
 // @feature F-002
 // @feature F-004
+// @feature F-005
 // @feature F-006
 // @feature F-007
 // @feature F-008
@@ -18,6 +19,7 @@ import { configureScheduler, createScheduler } from './scheduler.js'
 import { JsonStore } from './store.js'
 import {
   addBlog,
+  configureAiBudget,
   recordActivity,
   resolveApproval,
   runBlogCycle,
@@ -55,8 +57,7 @@ async function readJson(request) {
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
-  const text = Buffer.concat(chunks).toString('utf8')
-  return JSON.parse(text)
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
 async function sendFile(response, path, type) {
@@ -107,38 +108,35 @@ function tokenMatches(expected, actual) {
 function authorizeApi(request, response) {
   if (adminToken) {
     if (tokenMatches(adminToken, presentedToken(request))) return true
-    sendJson(
-      response,
-      401,
-      { error: 'Bloggers admin token is required.' },
-      { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' },
-    )
+    sendJson(response, 401, { error: 'Bloggers admin token is required.' }, { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' })
     return false
   }
-
   if (isLoopback(request)) return true
-  sendJson(response, 403, {
-    error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN is configured.',
-  })
+  sendJson(response, 403, { error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN is configured.' })
   return false
+}
+
+function aiSettings() {
+  const fallback = process.env.BLOGGERS_AI_MODEL || null
+  const models = {
+    decide: process.env.BLOGGERS_AI_DECIDE_MODEL || fallback,
+    write: process.env.BLOGGERS_AI_WRITE_MODEL || fallback,
+    revise: process.env.BLOGGERS_AI_REVISE_MODEL || process.env.BLOGGERS_AI_WRITE_MODEL || fallback,
+  }
+  const remote = Boolean(process.env.BLOGGERS_AI_BASE_URL && process.env.BLOGGERS_AI_API_KEY && models.decide && models.write && models.revise)
+  return { mode: remote ? 'remote-openai-compatible-routed' : 'local-rule-based', models }
 }
 
 async function api(request, response, url) {
   const { pathname } = url
 
-  if (request.method === 'GET' && pathname === '/api/hq') {
-    return sendJson(response, 200, summarizeHQ(await store.read()))
-  }
-
-  if (request.method === 'GET' && pathname === '/api/portfolio') {
-    return sendJson(response, 200, buildPortfolioPlan(await store.read()))
-  }
+  if (request.method === 'GET' && pathname === '/api/hq') return sendJson(response, 200, summarizeHQ(await store.read()))
+  if (request.method === 'GET' && pathname === '/api/portfolio') return sendJson(response, 200, buildPortfolioPlan(await store.read()))
 
   if (request.method === 'GET' && pathname === '/api/blogs') {
     const state = await store.read()
     return sendJson(response, 200, { blogs: state.blogs })
   }
-
   if (request.method === 'POST' && pathname === '/api/blogs') {
     const blog = await addBlog(store, await readJson(request))
     return sendJson(response, 201, { blog })
@@ -151,9 +149,7 @@ async function api(request, response, url) {
   }
 
   const connectionParams = match(pathname, '/api/blogs/:blogId/test-connection')
-  if (request.method === 'POST' && connectionParams) {
-    return sendJson(response, 200, await testConnection(store, connectionParams.blogId))
-  }
+  if (request.method === 'POST' && connectionParams) return sendJson(response, 200, await testConnection(store, connectionParams.blogId))
 
   if (request.method === 'GET' && pathname === '/api/content') {
     const state = await store.read()
@@ -176,26 +172,21 @@ async function api(request, response, url) {
   if (request.method === 'GET' && pathname === '/api/activity') {
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') || 100)))
     const state = await store.read()
-    return sendJson(response, 200, {
-      activities: state.activities.slice(0, limit),
-      workflows: state.workflows.slice(0, limit),
-    })
+    return sendJson(response, 200, { activities: state.activities.slice(0, limit), workflows: state.workflows.slice(0, limit) })
+  }
+
+  if (request.method === 'GET' && pathname === '/api/jobs') {
+    const state = await store.read()
+    return sendJson(response, 200, { jobs: state.jobs.slice(-300).reverse() })
   }
 
   if (request.method === 'GET' && pathname === '/api/settings') {
     const state = await store.read()
     return sendJson(response, 200, {
       system: state.system,
-      ai: {
-        mode: process.env.BLOGGERS_AI_BASE_URL && process.env.BLOGGERS_AI_API_KEY && process.env.BLOGGERS_AI_MODEL
-          ? 'remote-openai-compatible'
-          : 'local-rule-based',
-        model: process.env.BLOGGERS_AI_MODEL || null,
-      },
-      security: {
-        adminTokenConfigured: Boolean(adminToken),
-        remoteAccessRequiresToken: true,
-      },
+      ai: aiSettings(),
+      aiUsage: state.aiUsage.slice(0, 100),
+      security: { adminTokenConfigured: Boolean(adminToken), remoteAccessRequiresToken: true },
     })
   }
 
@@ -204,12 +195,16 @@ async function api(request, response, url) {
     await recordActivity(store, {
       agent: 'human-control',
       type: 'scheduler.configured',
-      message: schedulerConfig.enabled
-        ? `定時自律運用を${schedulerConfig.intervalMinutes}分間隔で有効化しました。`
-        : '定時自律運用を無効化しました。',
+      message: schedulerConfig.enabled ? `定時自律運用を${schedulerConfig.intervalMinutes}分間隔で有効化しました。` : '定時自律運用を無効化しました。',
       detail: schedulerConfig,
     })
     return sendJson(response, 200, { scheduler: schedulerConfig })
+  }
+
+  if (request.method === 'PATCH' && pathname === '/api/settings/ai-budget') {
+    const budget = await configureAiBudget(store, await readJson(request))
+    await recordActivity(store, { agent: 'human-control', type: 'ai.budget.configured', message: `AI月間予算を$${budget.monthlyUsd}に設定しました。`, detail: budget })
+    return sendJson(response, 200, { aiBudget: budget })
   }
 
   if (request.method === 'POST' && pathname === '/api/workflows/run') {
@@ -220,19 +215,13 @@ async function api(request, response, url) {
     return sendJson(response, 200, result)
   }
 
-  if (request.method === 'POST' && pathname === '/api/system/pause') {
-    return sendJson(response, 200, await setPaused(store, true))
-  }
-
-  if (request.method === 'POST' && pathname === '/api/system/resume') {
-    return sendJson(response, 200, await setPaused(store, false))
-  }
+  if (request.method === 'POST' && pathname === '/api/system/pause') return sendJson(response, 200, await setPaused(store, true))
+  if (request.method === 'POST' && pathname === '/api/system/resume') return sendJson(response, 200, await setPaused(store, false))
 
   const approvalParams = match(pathname, '/api/approvals/:approvalId/resolve')
   if (request.method === 'POST' && approvalParams) {
     const body = await readJson(request)
-    const result = await resolveApproval(store, approvalParams.approvalId, body.approved !== false)
-    return sendJson(response, 200, result)
+    return sendJson(response, 200, await resolveApproval(store, approvalParams.approvalId, body.approved !== false))
   }
 
   return sendJson(response, 404, { error: 'API route not found' })
@@ -241,7 +230,6 @@ async function api(request, response, url) {
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
-
     if (url.pathname === '/api/health' && request.method === 'GET') {
       const state = await store.read()
       return sendJson(response, 200, {
@@ -249,35 +237,21 @@ const server = createServer(async (request, response) => {
         service: 'bloggers-ai-editorial-os',
         paused: state.system.paused,
         scheduler: state.system.scheduler,
+        queuedJobs: state.jobs.filter((item) => item.status === 'queued').length,
       })
     }
-
     if (url.pathname.startsWith('/api/')) {
       if (!authorizeApi(request, response)) return
       return await api(request, response, url)
     }
-
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      return sendJson(response, 405, { error: 'Method not allowed' })
-    }
-
-    if (url.pathname === '/' || url.pathname === '/index.html') {
-      return await sendFile(response, resolve(publicDir, 'index.html'), 'text/html; charset=utf-8')
-    }
-    if (url.pathname === '/app.js') {
-      return await sendFile(response, resolve(publicDir, 'app.js'), 'text/javascript; charset=utf-8')
-    }
-    if (url.pathname === '/styles.css') {
-      return await sendFile(response, resolve(publicDir, 'styles.css'), 'text/css; charset=utf-8')
-    }
-    if (url.pathname === '/tokens.css') {
-      return await sendFile(response, tokensPath, 'text/css; charset=utf-8')
-    }
-
+    if (request.method !== 'GET' && request.method !== 'HEAD') return sendJson(response, 405, { error: 'Method not allowed' })
+    if (url.pathname === '/' || url.pathname === '/index.html') return await sendFile(response, resolve(publicDir, 'index.html'), 'text/html; charset=utf-8')
+    if (url.pathname === '/app.js') return await sendFile(response, resolve(publicDir, 'app.js'), 'text/javascript; charset=utf-8')
+    if (url.pathname === '/styles.css') return await sendFile(response, resolve(publicDir, 'styles.css'), 'text/css; charset=utf-8')
+    if (url.pathname === '/tokens.css') return await sendFile(response, tokensPath, 'text/css; charset=utf-8')
     return sendJson(response, 404, { error: 'Not found' })
   } catch (error) {
-    const status = error instanceof SyntaxError ? 400 : 500
-    sendJson(response, status, { error: error.message })
+    sendJson(response, error instanceof SyntaxError ? 400 : 500, { error: error.message })
   }
 })
 
