@@ -7,9 +7,9 @@ const googleTokenCache = new Map()
 function normalizedAuth(auth = {}) {
   return {
     accessTokenEnv: auth.accessTokenEnv || null,
-    refreshTokenEnv: auth.refreshTokenEnv || 'GOOGLE_REFRESH_TOKEN',
-    clientIdEnv: auth.clientIdEnv || 'GOOGLE_CLIENT_ID',
-    clientSecretEnv: auth.clientSecretEnv || 'GOOGLE_CLIENT_SECRET',
+    refreshTokenEnv: auth.refreshTokenEnv || process.env.GOOGLE_REFRESH_TOKEN_REF || 'GOOGLE_REFRESH_TOKEN',
+    clientIdEnv: auth.clientIdEnv || process.env.GOOGLE_CLIENT_ID_REF || 'GOOGLE_CLIENT_ID',
+    clientSecretEnv: auth.clientSecretEnv || process.env.GOOGLE_CLIENT_SECRET_REF || 'GOOGLE_CLIENT_SECRET',
   }
 }
 
@@ -25,11 +25,11 @@ export async function resolveGoogleAccessToken(input = {}, { fetchImpl = fetch, 
   const clientSecret = resolveSecret(auth.clientSecretEnv, { label: 'Google OAuth client secret' })
 
   if (!refreshToken || !clientId) {
-    if (direct) return { accessToken: direct, source: 'access-token-env', expiresAt: null }
+    if (direct) return { accessToken: direct, source: 'access-token-reference', expiresAt: null }
     const missing = []
     if (!refreshToken) missing.push(auth.refreshTokenEnv)
     if (!clientId) missing.push(auth.clientIdEnv)
-    throw new Error(`Google OAuth credential env is missing: ${missing.join(', ')}`)
+    throw new Error(`Google OAuth credential reference is missing: ${missing.join(', ')}`)
   }
 
   const key = cacheKey(auth)
