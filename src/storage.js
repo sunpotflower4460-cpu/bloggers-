@@ -21,7 +21,7 @@ export async function loadConfiguredPostgresPool({
 } = {}) {
   const specifier = String(env.BLOGGERS_POSTGRES_POOL_MODULE || '').trim()
   if (!specifier) {
-    throw new Error('PostgreSQL storage requires postgresPool injection or BLOGGERS_POSTGRES_POOL_MODULE. No PostgreSQL driver is bundled by this no-new-dependencies foundation.')
+    throw new Error('PostgreSQL storage requires an injected postgresPool or BLOGGERS_POSTGRES_POOL_MODULE. No PostgreSQL driver is bundled by this no-new-dependencies foundation.')
   }
 
   const module = await importer(specifier)
