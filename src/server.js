@@ -9,11 +9,11 @@
 // @feature F-010
 // @feature F-011
 // @feature F-012
-import { timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { authorizeApiAccess, loadAuthConfig, publicAuthSummary } from './auth.js'
 import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, testConnection, updateBlog } from './orchestrator.js'
 import { buildPortfolioPlan } from './portfolio.js'
 import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
@@ -24,7 +24,7 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const publicDir = resolve(root, 'src/public')
 const tokensPath = resolve(root, 'docs/04-design/tokens.css')
 const port = Number(process.env.PORT || 3000)
-const adminToken = String(process.env.BLOGGERS_ADMIN_TOKEN || '').trim() || null
+const authConfig = loadAuthConfig()
 const store = await new JsonStore().init()
 const scheduler = createScheduler({
   store,
@@ -92,23 +92,18 @@ function presentedToken(request) {
   return String(request.headers['x-bloggers-token'] || '').trim()
 }
 
-function tokenMatches(expected, actual) {
-  if (!expected || !actual) return false
-  const expectedBuffer = Buffer.from(expected)
-  const actualBuffer = Buffer.from(actual)
-  if (expectedBuffer.length !== actualBuffer.length) return false
-  return timingSafeEqual(expectedBuffer, actualBuffer)
-}
-
-function authorizeApi(request, response) {
-  if (adminToken) {
-    if (tokenMatches(adminToken, presentedToken(request))) return true
-    sendJson(response, 401, { error: 'Bloggers admin token is required.' }, { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' })
-    return false
-  }
-  if (isLoopback(request)) return true
-  sendJson(response, 403, { error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN is configured.' })
-  return false
+function authorizeApi(request, response, url) {
+  const auth = authorizeApiAccess({
+    method: request.method,
+    pathname: url.pathname,
+    token: presentedToken(request),
+    loopback: isLoopback(request),
+    config: authConfig,
+  })
+  if (auth.ok) return auth
+  const headers = auth.status === 401 ? { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' } : {}
+  sendJson(response, auth.status || 403, { error: auth.error, requiredRole: auth.requiredRole ?? null }, headers)
+  return null
 }
 
 function aiSettings() {
@@ -122,7 +117,7 @@ function aiSettings() {
   return { mode: remote ? 'remote-openai-compatible-routed' : 'local-rule-based', models }
 }
 
-async function api(request, response, url) {
+async function api(request, response, url, auth) {
   const { pathname } = url
 
   if (request.method === 'GET' && pathname === '/api/hq') return sendJson(response, 200, summarizeHQ(await store.read()))
@@ -181,7 +176,10 @@ async function api(request, response, url) {
       system: state.system,
       ai: aiSettings(),
       aiUsage: state.aiUsage.slice(0, 100),
-      security: { adminTokenConfigured: Boolean(adminToken), remoteAccessRequiresToken: true },
+      security: {
+        ...publicAuthSummary(authConfig),
+        currentPrincipal: auth?.principal ? { id: auth.principal.id, name: auth.principal.name, role: auth.principal.role } : null,
+      },
     })
   }
 
@@ -191,14 +189,14 @@ async function api(request, response, url) {
       agent: 'human-control',
       type: 'scheduler.configured',
       message: schedulerConfig.enabled ? `定時自律運用を${schedulerConfig.intervalMinutes}分間隔で有効化しました。` : '定時自律運用を無効化しました。',
-      detail: schedulerConfig,
+      detail: { ...schedulerConfig, actor: auth?.principal?.id ?? null },
     })
     return sendJson(response, 200, { scheduler: schedulerConfig })
   }
 
   if (request.method === 'PATCH' && pathname === '/api/settings/ai-budget') {
     const budget = await configureAiBudget(store, await readJson(request))
-    await recordActivity(store, { agent: 'human-control', type: 'ai.budget.configured', message: `AI月間予算を$${budget.monthlyUsd}に設定しました。`, detail: budget })
+    await recordActivity(store, { agent: 'human-control', type: 'ai.budget.configured', message: `AI月間予算を$${budget.monthlyUsd}に設定しました。`, detail: { ...budget, actor: auth?.principal?.id ?? null } })
     return sendJson(response, 200, { aiBudget: budget })
   }
 
@@ -237,8 +235,9 @@ const server = createServer(async (request, response) => {
       })
     }
     if (url.pathname.startsWith('/api/')) {
-      if (!authorizeApi(request, response)) return
-      return await api(request, response, url)
+      const auth = authorizeApi(request, response, url)
+      if (!auth) return
+      return await api(request, response, url, auth)
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') return sendJson(response, 405, { error: 'Method not allowed' })
     if (url.pathname === '/' || url.pathname === '/index.html') return await sendFile(response, resolve(publicDir, 'index.html'), 'text/html; charset=utf-8')
@@ -260,6 +259,6 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 server.listen(port, () => {
-  const security = adminToken ? 'admin token enabled' : 'local-only API until BLOGGERS_ADMIN_TOKEN is set'
+  const security = authConfig.configured ? 'token RBAC enabled' : 'local-only API until auth tokens are configured'
   console.log(`Bloggers HQ running on http://localhost:${port} (${security})`)
 })
