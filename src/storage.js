@@ -8,15 +8,38 @@ export function storageMode(env = process.env) {
   return { driver, transactionCapable: false, multiProcess: false, multiHost: false }
 }
 
-export async function createStore({ env = process.env, postgresPool = null } = {}) {
+function assertPostgresPool(pool) {
+  if (!pool || typeof pool.connect !== 'function' || typeof pool.query !== 'function') {
+    throw new Error('PostgreSQL pool must provide connect() and query()')
+  }
+  return pool
+}
+
+export async function loadConfiguredPostgresPool({
+  env = process.env,
+  importer = (specifier) => import(specifier),
+} = {}) {
+  const specifier = String(env.BLOGGERS_POSTGRES_POOL_MODULE || '').trim()
+  if (!specifier) {
+    throw new Error('PostgreSQL storage requires postgresPool injection or BLOGGERS_POSTGRES_POOL_MODULE. No PostgreSQL driver is bundled by this no-new-dependencies foundation.')
+  }
+
+  const module = await importer(specifier)
+  const pool = typeof module.createPool === 'function'
+    ? await module.createPool({ env })
+    : module.pool ?? module.default
+  return assertPostgresPool(pool)
+}
+
+export async function createStore({ env = process.env, postgresPool = null, importer } = {}) {
   const mode = storageMode(env)
   if (mode.driver === 'json') return new JsonStore(env.BLOGGERS_DATA_FILE || './data/state.json').init()
   if (mode.driver === 'postgres') {
-    if (!postgresPool) {
-      throw new Error('PostgreSQL storage requires an injected postgresPool. The current no-new-dependencies foundation does not bundle a PostgreSQL driver.')
-    }
+    const pool = postgresPool
+      ? assertPostgresPool(postgresPool)
+      : await loadConfiguredPostgresPool({ env, importer })
     const { PostgresStore } = await import('./postgres-store.js')
-    return new PostgresStore(postgresPool).init()
+    return new PostgresStore(pool).init()
   }
   throw new Error(`Unsupported BLOGGERS_STORAGE_DRIVER: ${mode.driver}`)
 }
