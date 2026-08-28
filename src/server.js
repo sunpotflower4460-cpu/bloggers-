@@ -6,6 +6,7 @@
 // @feature F-008
 // @feature F-009
 // @feature F-012
+import { timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -26,12 +27,14 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const publicDir = resolve(root, 'src/public')
 const tokensPath = resolve(root, 'docs/04-design/tokens.css')
 const port = Number(process.env.PORT || 3000)
+const adminToken = String(process.env.BLOGGERS_ADMIN_TOKEN || '').trim() || null
 const store = await new JsonStore().init()
 
-function sendJson(response, status, payload) {
+function sendJson(response, status, payload, extraHeaders = {}) {
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   })
   response.end(`${JSON.stringify(payload)}\n`)
 }
@@ -75,12 +78,46 @@ function match(pathname, pattern) {
   return Object.fromEntries(names.map((name, index) => [name, decodeURIComponent(found[index + 1])]))
 }
 
+function isLoopback(request) {
+  const address = request.socket.remoteAddress
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+function presentedToken(request) {
+  const authorization = String(request.headers.authorization || '')
+  if (authorization.startsWith('Bearer ')) return authorization.slice(7).trim()
+  return String(request.headers['x-bloggers-token'] || '').trim()
+}
+
+function tokenMatches(expected, actual) {
+  if (!expected || !actual) return false
+  const expectedBuffer = Buffer.from(expected)
+  const actualBuffer = Buffer.from(actual)
+  if (expectedBuffer.length !== actualBuffer.length) return false
+  return timingSafeEqual(expectedBuffer, actualBuffer)
+}
+
+function authorizeApi(request, response) {
+  if (adminToken) {
+    if (tokenMatches(adminToken, presentedToken(request))) return true
+    sendJson(
+      response,
+      401,
+      { error: 'Bloggers admin token is required.' },
+      { 'WWW-Authenticate': 'Bearer realm="Bloggers HQ"' },
+    )
+    return false
+  }
+
+  if (isLoopback(request)) return true
+  sendJson(response, 403, {
+    error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN is configured.',
+  })
+  return false
+}
+
 async function api(request, response, url) {
   const { pathname } = url
-
-  if (request.method === 'GET' && pathname === '/api/health') {
-    return sendJson(response, 200, { ok: true, service: 'bloggers-ai-editorial-os' })
-  }
 
   if (request.method === 'GET' && pathname === '/api/hq') {
     return sendJson(response, 200, summarizeHQ(await store.read()))
@@ -140,6 +177,10 @@ async function api(request, response, url) {
           : 'local-rule-based',
         model: process.env.BLOGGERS_AI_MODEL || null,
       },
+      security: {
+        adminTokenConfigured: Boolean(adminToken),
+        remoteAccessRequiresToken: true,
+      },
     })
   }
 
@@ -170,7 +211,15 @@ async function api(request, response, url) {
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`)
-    if (url.pathname.startsWith('/api/')) return await api(request, response, url)
+
+    if (url.pathname === '/api/health' && request.method === 'GET') {
+      return sendJson(response, 200, { ok: true, service: 'bloggers-ai-editorial-os' })
+    }
+
+    if (url.pathname.startsWith('/api/')) {
+      if (!authorizeApi(request, response)) return
+      return await api(request, response, url)
+    }
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return sendJson(response, 405, { error: 'Method not allowed' })
@@ -197,5 +246,6 @@ const server = createServer(async (request, response) => {
 })
 
 server.listen(port, () => {
-  console.log(`Bloggers HQ running on http://localhost:${port}`)
+  const security = adminToken ? 'admin token enabled' : 'local-only API until BLOGGERS_ADMIN_TOKEN is set'
+  console.log(`Bloggers HQ running on http://localhost:${port} (${security})`)
 })
