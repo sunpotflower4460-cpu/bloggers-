@@ -170,7 +170,21 @@ test('real PostgreSQL accepts the layered store SQL and round-trips core domains
     }
     const oidcClock = () => 1_800_000_100_000
     const firstSession = sessionCookie()
-    await registerOidcSession(store, { cookieHeader: firstSession, principal: oidcPrincipal, clock: oidcClock })
+    const registered = await registerOidcSession(store, { cookieHeader: firstSession, principal: oidcPrincipal, clock: oidcClock })
+    const nativeSession = await pool.query(
+      `SELECT fingerprint, principal_id, role, issued_at, expires_at, revoked_at, generation
+       FROM bloggers_oidc_sessions
+       WHERE fingerprint = $1`,
+      [registered.fingerprint],
+    )
+    assert.equal(nativeSession.rows.length, 1)
+    assert.equal(nativeSession.rows[0].fingerprint, registered.fingerprint)
+    assert.equal(nativeSession.rows[0].principal_id, oidcPrincipal.id)
+    assert.equal(nativeSession.rows[0].role, 'admin')
+    assert.equal(Number(nativeSession.rows[0].issued_at), 1_800_000_000)
+    assert.equal(Number(nativeSession.rows[0].expires_at), 1_800_003_600)
+    assert.equal(nativeSession.rows[0].revoked_at, '')
+    assert.equal(Number(nativeSession.rows[0].generation), 1)
     assert.equal(await oidcSessionIsActive(store, { cookieHeader: firstSession, principal: oidcPrincipal, clock: oidcClock }), true)
     assert.deepEqual(await oidcSessionRegistrySummary(store, { clock: oidcClock }), { generation: 1, active: 1, revoked: 0 })
 
