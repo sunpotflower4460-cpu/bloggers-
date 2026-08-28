@@ -99,3 +99,31 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: 1つの外部サービスの無応答でcycle、operation lease、Scheduler全体が長時間占有されることを防ぐため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: fetch既定の無期限待機に依存する。
+
+### D-015
+- 日付: 2026-08-28
+- 決定: 出典必須の記事では、記事全体にcitationがあるだけでなく、数値・割合・日付等を含む検証可能なclaim単位で同じ文にcitationがあるか検査する。
+- 理由: 記事末尾に出典一覧だけ置いて無関係な数値主張を通す事故を防ぎ、どの主張がどのSourceに依存するか追跡可能にするため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 本文中に1件でもcitationがあれば記事全体を検証済みとみなす。
+
+### D-016
+- 日付: 2026-08-28
+- 決定: Cost Governorは各AI callのusage記録直後にも月間reserveを再判定し、reserveを跨いだcallを記録した上で同一cycleの追加AI callを停止する。予算到達はSchedulerでnon-retryableとする。
+- 理由: Director callで残予算を使い切った直後にWriter/Reviserまで実行する超過と、月が変わるまで解消しない予算エラーの無意味な再試行を防ぐため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: cycle開始時だけ予算確認し、途中超過を次cycleまで許容する。
+
+### D-017
+- 日付: 2026-08-28
+- 決定: API認証はviewer / editor / adminの3段階token RBACを採用し、既存BLOGGERS_ADMIN_TOKENはadmin互換として残す。Emergency Pauseはeditor、ResumeとSettings変更はadminに限定する。
+- 理由: 読み取り利用者・編集運用者・システム管理者を分離し、統合HPを複数人で使う際の権限過多を抑えるため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 全利用者が同一admin tokenを共有する方式。
+
+### D-018
+- 日付: 2026-08-28
+- 決定: credential値は共通Secret Reference Resolver経由で取得し、永続化フィールドには環境変数名等のreferenceだけを許可する。Secret Reference用フィールドへliteral secretが入った場合はJsonStoreが保存を拒否する。
+- 理由: WordPress / Google / Analytics / RBAC / AIの秘密値をstate.jsonへ誤保存する経路を減らし、将来のmanaged Vault backendへ差し替えやすくするため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 各moduleがprocess.envを個別に読み、設定APIから渡された値を無検証でJSON保存する方式。
