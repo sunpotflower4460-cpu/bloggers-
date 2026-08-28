@@ -9,32 +9,31 @@ Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観�
 FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規npm依存0**を維持しています。
 
 - Bloggers HQ 統合ダッシュボード
-- 複数ブログ / 独立 Blog Brain
-- Portfolio Brain
+- 複数ブログ / 独立 Blog Brain / Portfolio Brain
 - Memory / WordPress / Ghost Connector
-- CREATE / UPDATE / WAIT
-- 既存記事の改稿
-- Autonomy Level 0〜5
-- Human Gate / Emergency Pause
+- CREATE / UPDATE / WAIT / 既存記事改稿
+- Autonomy Level 0〜5 / Human Gate / Emergency Pause
 - Search Console / GA4 / Custom HTTP Metrics
 - Google OAuth access token自動refresh（memory-only cache）
 - Experiment → Blog Memory
 - Research Source / `[S1]` citation gate
-- 数値・日付claimの文単位citation検査
-- citation先の数値不一致警告
+- 数値・日付claimの文単位citation検査 / 数値不一致警告
 - 内部リンク候補
 - Research SSRF / redirect / size / prompt-injection対策
 - Director / Writer / Reviser AI Router
 - AI Usage Ledger / Cost Governor
-- persistent leased Job Queue
-- retry / non-retryable failure分類
+- persistent leased Job Queue / retry / non-retryable分類
+- Job owner / heartbeat / stale-worker fencing
 - blog cycle / approval exclusive lease
 - embedded Scheduler / standalone Worker
 - viewer / editor / admin RBAC
-- Secret Reference Resolver
-- JSON literal-secret persistence guard
-- JSON Storeのプロセス間transaction lock
-- PostgreSQL Store adapter / migration contract
+- Secret Reference Resolver / literal-secret persistence guard
+- JSON Storeのプロセス間transaction lock + atomic write
+- PostgreSQL Store adapter
+- PostgreSQL native jobs / operation leases
+- `FOR UPDATE SKIP LOCKED` worker leasing
+- JSON → PostgreSQL migration command
+- deployment-provided PostgreSQL pool module hook
 - Audit Log
 - Node標準テスト / GitHub Actions
 
@@ -99,14 +98,14 @@ WebとWorkerは同じStorageを共有します。Health / Settings APIには `sc
 
 ## Storage / Transaction Boundary
 
-### JSON — 現在の標準
+### JSON — 標準backend
 
 ```bash
 export BLOGGERS_STORAGE_DRIVER=json
 export BLOGGERS_DATA_FILE=./data/state.json
 ```
 
-`JsonStore` は同一Node内のqueueだけでなく、`state.json.lock` を使う**プロセス間transaction lock**を持ちます。
+`JsonStore` は `state.json.lock` を使う**プロセス間transaction lock**を持ちます。
 
 ```text
 Web process ─┐
@@ -117,8 +116,6 @@ Worker B ────┘
 
 書き込みは一時ファイルからatomic renameし、stale lockは期限後に回収します。lock ownerを記録するため、古いprocessが新しいprocessのlockを誤って解放しないようにしています。
 
-設定:
-
 ```bash
 BLOGGERS_JSON_LOCK_TIMEOUT_MS=10000
 BLOGGERS_JSON_STALE_LOCK_MS=300000
@@ -126,11 +123,20 @@ BLOGGERS_JSON_STALE_LOCK_MS=300000
 
 同一共有filesystem上のWeb + Worker分離には使えますが、複数ホストを跨ぐ本番クラスタ向けではありません。
 
-### PostgreSQL — Adapter / Migration ready
+### PostgreSQL — native hot-path ready
 
-`src/postgres-store.js` に実Store adapter、`db/postgres/001_state_store.sql` に初期migrationを追加しています。
+PostgreSQL側には次を実装しています。
 
-PostgreSQL側ではmutationごとに、
+- `src/postgres-store.js` — Store adapter
+- `db/postgres/001_state_store.sql` — state document
+- `db/postgres/002_jobs_leases.sql` — normalized jobs / operation leases
+- Job lease取得の `FOR UPDATE SKIP LOCKED`
+- active dedupe partial unique index
+- Job owner / heartbeat / fencing
+- DB-native operation lease
+- JSON → PostgreSQL migration command
+
+一般stateのmutationは、
 
 ```sql
 BEGIN;
@@ -140,9 +146,44 @@ UPDATE bloggers_state ...;
 COMMIT;
 ```
 
-というtransaction境界を使います。現在のstate documentを最初から細かく分解せず移行するため、既存ロジックを崩さずmulti-host transactionへ移せる構成です。
+で整合性を保ちます。一方、競合頻度の高いJob Queueとoperation leaseは独立テーブルへ正規化し、複数Workerが同じglobal state rowを取り合わずに動けるようにしています。
 
-ただし、現PRには `pg` 等のDB driverを**同梱していません**。これは `CONSTRAINTS.md` の「新規依存0」を守るためです。`PostgresStore` はpoolをdependency injectionする設計で、driver導入が承認された段階でstock runtimeから接続します。
+#### PostgreSQL poolの接続
+
+現PRは `CONSTRAINTS.md` の「新規依存0」を守るため、`pg`等のdriverを**同梱していません**。代わりにデプロイ環境が提供するESM moduleを読み込めます。
+
+```bash
+export BLOGGERS_STORAGE_DRIVER=postgres
+export BLOGGERS_POSTGRES_POOL_MODULE=./deploy/postgres-pool.mjs
+export DATABASE_URL='postgres://...'
+npm start
+```
+
+moduleは次のいずれかをexportします。
+
+```js
+export const pool = yourPool
+// または
+export default yourPool
+// または
+export async function createPool({ env }) {
+  return yourPool
+}
+```
+
+pool contractは `connect()` と `query()` です。WebとWorkerは同じ設定を使えます。
+
+#### JSONからPostgreSQLへ移行
+
+```bash
+export BLOGGERS_POSTGRES_POOL_MODULE=./deploy/postgres-pool.mjs
+export BLOGGERS_MIGRATION_JSON_FILE=./data/state.json
+npm run migrate:postgres
+```
+
+移行では通常state、ブログ、記事、Analytics、Experiment、Memory等をコピーし、Jobはnative `bloggers_jobs`へ移します。
+
+安全のため、移行時点で`running`だったJobは**queuedへ戻してlease ownerを破棄**し、新Workerが再取得できるようにします。旧operation leaseは新環境へ持ち込まず破棄します。移行コマンドは既存Job IDを見て再実行時の重複も避けます。
 
 ## Durable Job Queue
 
@@ -157,9 +198,11 @@ running
   └─ non-retryable failure → failed
 ```
 
-lease期限を過ぎた`running` Jobは次回tickで回収します。
+同じ`dedupeKey`を持つJobは、**queuedだけでなくrunning中もactive**です。
 
-同じ`dedupeKey`を持つJobは、**queuedだけでなくrunning中もactive**として扱います。複数Workerが同じscheduled jobを同時登録しても、実行中Jobの横に重複Jobを生成しません。
+長い処理ではWorkerがleaseをheartbeat更新します。Worker停止後にleaseが切れ、別WorkerがJobを再取得した場合、古いWorkerはowner fencingにより`complete/fail`できません。
+
+JSON backendではfilesystem transaction内でleaseします。PostgreSQL backendではdue Jobを `FOR UPDATE SKIP LOCKED` で取得するため、複数Workerが別Jobを並列処理できます。
 
 AI月間reserve到達など、再試行しても直らない失敗はnon-retryableです。
 
@@ -246,8 +289,6 @@ CREATE / UPDATEが実際に反映された時点でExperimentを開始し、`pos
 
 認証未設定ではAPIはlocalhost限定です。
 
-ロール:
-
 | Role | 主な権限 |
 |---|---|
 | viewer | HQ / Blogs / Content / Analytics / Activity / Settings閲覧 |
@@ -266,21 +307,22 @@ Secret Reference用フィールドへ実password/API keyらしい値を書こう
                     Storage Contract
                     /              \
       JsonStore + fs lock       PostgresStore
-             |                 SELECT FOR UPDATE
-             |
-      Persistent Job Queue
-             |
-      Embedded / External Worker
-             |
-        Portfolio Brain
-             |
-       Blog Brain A ... N
-             |
- Observer → Director → Research → Writer/Reviser
-             ↓
- Quality Gate → Human Gate/Publisher
-             ↓
- Analytics → Experiment → Learning
+             |                  /           \
+      state.json        bloggers_state   jobs / leases
+             |                          SKIP LOCKED
+             └──────────────┬───────────────┘
+                            |
+                 Embedded / External Worker
+                            |
+                      Portfolio Brain
+                            |
+                     Blog Brain A ... N
+                            |
+       Observer → Director → Research → Writer/Reviser
+                            ↓
+             Quality Gate → Human Gate/Publisher
+                            ↓
+              Analytics → Experiment → Learning
 
 Connector Layer: Memory / WordPress / Ghost
 AI Layer: Director / Writer / Reviser + Cost Governor
@@ -291,11 +333,13 @@ Security: RBAC + Secret Resolver + Emergency Pause
 
 - `src/server.js` — HTTP/API/UI
 - `src/worker.js` — standalone autonomous worker
-- `src/storage.js` — Storage factory / backend contract
+- `src/storage.js` — Storage factory / optional PostgreSQL pool module loader
 - `src/store.js` — JsonStore / process lock / atomic persistence
-- `src/postgres-store.js` — injected PostgreSQL adapter
-- `db/postgres/001_state_store.sql` — PostgreSQL initial migration
-- `src/jobs.js` — leased Job Queue
+- `src/postgres-store.js` — PostgreSQL state + native queue/lease adapter
+- `src/migrate-to-postgres.js` — safe JSON → PostgreSQL migration
+- `db/postgres/001_state_store.sql` — state migration
+- `db/postgres/002_jobs_leases.sql` — jobs / leases migration
+- `src/jobs.js` — backend-capability aware leased Job Queue
 - `src/scheduler.js` — Scheduler / Worker loop
 - `src/runtime.js` / `src/leases.js` — operation exclusivity
 - `src/connectors.js` — CMS connectors
@@ -306,9 +350,8 @@ Security: RBAC + Secret Resolver + Emergency Pause
 
 ## 次のproduction-hardening候補
 
-- PostgreSQL driver導入承認後のstock runtime接続
-- state documentからjobs / locks / blogs等を段階的に正規化
-- PostgreSQL `SKIP LOCKED` を使う高並列Job lease
+- PostgreSQL driverの正式依存化（guard制約変更の承認後）
+- blogs / articles / analytics / experiments等の段階的正規化
 - managed Secrets backend
 - OIDC / session-based identity
 - microCMS / Contentful等の追加Connector
