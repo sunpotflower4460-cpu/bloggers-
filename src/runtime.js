@@ -2,16 +2,32 @@
 // @feature F-006
 // @feature F-010
 // @feature F-012
-import { acquireLease, releaseLease } from './leases.js'
+import { withExecutionContext } from './execution-context.js'
+import { acquireLease, releaseLease, renewLease } from './leases.js'
 import { resolveApproval, runBlogCycle } from './orchestrator.js'
 import { buildPortfolioPlan } from './portfolio.js'
 
 async function withLease(store, key, work, { ttlMs = 15 * 60 * 1000, busyMessage = 'Operation is already running' } = {}) {
   const claimed = await acquireLease(store, key, { ttlMs })
   if (!claimed.acquired) throw new Error(busyMessage)
+
+  const intervalMs = Math.max(10_000, Math.min(60_000, Math.floor(ttlMs / 3)))
+  const heartbeat = setInterval(() => {
+    renewLease(store, key, claimed.owner, { ttlMs }).catch(() => undefined)
+  }, intervalMs)
+  heartbeat.unref?.()
+
+  const beforeExternalWrite = async (detail = {}) => {
+    const renewed = await renewLease(store, key, claimed.owner, { ttlMs })
+    return { ...detail, operationLeaseKey: key, leaseUntil: renewed.expiresAt }
+  }
+
   try {
-    return await work()
+    const result = await withExecutionContext({ operationLeaseKey: key, beforeExternalWrite }, work)
+    await renewLease(store, key, claimed.owner, { ttlMs })
+    return result
   } finally {
+    clearInterval(heartbeat)
     await releaseLease(store, key, claimed.owner)
   }
 }
