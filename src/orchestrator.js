@@ -1,17 +1,22 @@
 // @feature F-001
 // @feature F-002
 // @feature F-004
+// @feature F-005
 // @feature F-006
 // @feature F-007
 // @feature F-008
 // @feature F-009
 // @feature F-010
 // @feature F-011
+// @feature F-012
 import { createAIProvider } from './ai.js'
 import { collectAnalytics } from './analytics.js'
+import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
+import { summarizeJobs } from './jobs.js'
 import { buildPortfolioPlan } from './portfolio.js'
+import { buildInternalLinkCandidates, evaluateContentQuality, gatherResearchSources } from './quality.js'
 import { createId, nowIso } from './store.js'
 
 const DEFAULT_AUTONOMY = {
@@ -50,6 +55,19 @@ function sanitizeAnalytics(input = {}) {
   }
 }
 
+function sanitizeResearch(input = {}) {
+  const sources = Array.isArray(input.sources)
+    ? input.sources
+        .map((item) => ({ label: cleanString(item?.label), url: cleanString(item?.url) }))
+        .filter((item) => item.url)
+        .slice(0, 6)
+    : []
+  return {
+    requireCitations: Boolean(input.requireCitations),
+    sources,
+  }
+}
+
 export function sanitizeBlogInput(input = {}) {
   const name = cleanString(input.name)
   if (!name) throw new Error('Blog name is required')
@@ -63,10 +81,7 @@ export function sanitizeBlogInput(input = {}) {
         passwordEnv: cleanString(input.connector?.passwordEnv),
       }
     : { type: 'memory' }
-
-  if (connectorType === 'wordpress' && !connector.endpoint) {
-    throw new Error('WordPress endpoint is required')
-  }
+  if (connectorType === 'wordpress' && !connector.endpoint) throw new Error('WordPress endpoint is required')
 
   const level = Math.max(0, Math.min(5, Number(input.autonomy?.level ?? 2)))
   return {
@@ -79,6 +94,7 @@ export function sanitizeBlogInput(input = {}) {
     active: input.active !== false,
     connector,
     analytics: sanitizeAnalytics(input.analytics),
+    research: sanitizeResearch(input.research),
     brain: {
       purpose: cleanString(input.brain?.purpose),
       audience: cleanString(input.brain?.audience),
@@ -86,7 +102,7 @@ export function sanitizeBlogInput(input = {}) {
       editorialPolicy: cleanString(input.brain?.editorialPolicy),
       monetization: cleanString(input.brain?.monetization),
       topics: Array.isArray(input.brain?.topics)
-        ? input.brain.topics.map((item) => String(item).trim()).filter(Boolean).slice(0, 30)
+        ? input.brain.topics.map((item) => cleanString(item)).filter(Boolean).slice(0, 30)
         : [],
     },
     autonomy: {
@@ -108,17 +124,10 @@ export async function addBlog(store, input) {
     updatedAt: nowIso(),
   }
   await store.mutate((state) => {
-    if (state.blogs.some((item) => item.slug === blog.slug)) {
-      throw new Error('A blog with this slug already exists')
-    }
+    if (state.blogs.some((item) => item.slug === blog.slug)) throw new Error('A blog with this slug already exists')
     state.blogs.push(blog)
   })
-  await recordActivity(store, {
-    blogId: blog.id,
-    agent: 'system',
-    type: 'blog.connected',
-    message: `${blog.name} をBloggers HQへ登録しました。`,
-  })
+  await recordActivity(store, { blogId: blog.id, agent: 'system', type: 'blog.connected', message: `${blog.name} をBloggers HQへ登録しました。` })
   return blog
 }
 
@@ -126,9 +135,9 @@ export async function updateBlog(store, blogId, changes) {
   return store.mutate((state) => {
     const blog = state.blogs.find((item) => item.id === blogId)
     if (!blog) throw new Error('Blog not found')
-
     if (changes.brain) blog.brain = { ...blog.brain, ...changes.brain }
     if (changes.analytics) blog.analytics = sanitizeAnalytics({ ...blog.analytics, ...changes.analytics })
+    if (changes.research) blog.research = sanitizeResearch({ ...blog.research, ...changes.research })
     if (changes.autonomy) {
       const level = Math.max(0, Math.min(5, Number(changes.autonomy.level ?? blog.autonomy.level)))
       blog.autonomy = { ...blog.autonomy, ...changes.autonomy, level, allowDelete: false }
@@ -136,6 +145,13 @@ export async function updateBlog(store, blogId, changes) {
     if (typeof changes.active === 'boolean') blog.active = changes.active
     blog.updatedAt = nowIso()
     return structuredClone(blog)
+  })
+}
+
+export async function configureAiBudget(store, changes = {}) {
+  return store.mutate((state) => {
+    state.system.aiBudget = normalizeAiBudget({ ...state.system.aiBudget, ...changes })
+    return structuredClone(state.system.aiBudget)
   })
 }
 
@@ -194,14 +210,85 @@ async function startLiveExperiment(store, { blog, article, action, snapshot = nu
   if (!baseline) return null
   return startExperiment(store, {
     blog,
-    decision: {
-      action,
-      rationale: idea?.rationale || `${action}施策が主要指標を改善するか検証する。`,
-    },
+    decision: { action, rationale: idea?.rationale || `${action}施策が主要指標を改善するか検証する。` },
     snapshot: baseline,
     ideaId: article.ideaId,
     articleId: article.id,
   })
+}
+
+async function callProvider(provider, method, args, store, context) {
+  let value
+  let error
+  try {
+    value = await provider[method](args)
+  } catch (caught) {
+    error = caught
+  }
+  const usage = typeof provider.drainUsage === 'function' ? provider.drainUsage() : []
+  const savedUsage = await recordAiUsage(store, usage, context)
+  if (error) throw error
+  return {
+    value,
+    costUsd: savedUsage.reduce((sum, item) => sum + Number(item.estimatedCostUsd || 0), 0),
+  }
+}
+
+function cycleBudgetExceeded(state, cycleCostUsd) {
+  const budget = normalizeAiBudget(state.system.aiBudget)
+  return budget.enabled && budget.perCycleUsd > 0 && cycleCostUsd > budget.perCycleUsd
+}
+
+async function prepareQualityContext(store, blog, posts, decision) {
+  const research = await gatherResearchSources(blog)
+  if (research.warnings.length > 0) {
+    await recordActivity(store, {
+      blogId: blog.id,
+      agent: 'researcher',
+      type: 'research.partial',
+      message: `${research.warnings.length}件のResearch Sourceを取得できませんでした。`,
+      detail: research.warnings,
+    })
+  }
+  return {
+    sources: research.sources,
+    internalLinks: buildInternalLinkCandidates(posts, decision),
+  }
+}
+
+function articleSourceMetadata(sources) {
+  return sources.map((item) => ({ id: item.id, label: item.label, url: item.url }))
+}
+
+async function createDraftArticle(store, { blog, idea, action, draft, remoteId = null, qualityContext }) {
+  const quality = evaluateContentQuality({
+    body: draft.body,
+    research: blog.research,
+    sources: qualityContext.sources,
+    internalLinks: qualityContext.internalLinks,
+  })
+  const article = {
+    id: createId('article'),
+    blogId: blog.id,
+    ideaId: idea.id,
+    action,
+    title: draft.title,
+    body: draft.body,
+    status: action === 'UPDATE' ? 'draft-update' : 'draft',
+    provider: draft.provider,
+    remoteId,
+    quality,
+    sources: articleSourceMetadata(qualityContext.sources),
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  }
+  await store.mutate((state) => state.articles.unshift(article))
+  return article
+}
+
+function qualityApprovalReason(article, fallback) {
+  if (article.quality?.ok) return fallback
+  return `品質ゲートで自動反映を停止しました: ${article.quality.blocking.join(' / ')}`
 }
 
 export async function testConnection(store, blogId) {
@@ -223,6 +310,9 @@ export async function runBlogCycle(store, blogId, options = {}) {
   if (!blog) throw new Error('Blog not found')
   if (!blog.active) return { skipped: true, reason: 'blog-inactive' }
 
+  const provider = options.provider ?? createAIProvider()
+  if (String(provider.name || '').startsWith('openai-compatible')) assertAiBudget(initial)
+
   const workflow = {
     id: createId('workflow'),
     blogId,
@@ -232,6 +322,7 @@ export async function runBlogCycle(store, blogId, options = {}) {
     finishedAt: null,
     decision: null,
     experimentId: null,
+    aiCostUsd: 0,
     error: null,
   }
   await store.mutate((state) => {
@@ -239,14 +330,9 @@ export async function runBlogCycle(store, blogId, options = {}) {
     state.workflows = state.workflows.slice(0, 2000)
   })
 
+  let cycleCostUsd = 0
   try {
-    await recordActivity(store, {
-      blogId,
-      agent: 'observer',
-      type: 'cycle.observe',
-      message: `${blog.name} の状態観測を開始しました。`,
-      detail: { trigger: workflow.trigger },
-    })
+    await recordActivity(store, { blogId, agent: 'observer', type: 'cycle.observe', message: `${blog.name} の状態観測を開始しました。`, detail: { trigger: workflow.trigger } })
 
     const connector = createConnector({ blog, store })
     const [posts, cmsMetrics] = await Promise.all([connector.listPosts(30), connector.getMetrics()])
@@ -258,39 +344,22 @@ export async function runBlogCycle(store, blogId, options = {}) {
     })
 
     if (metrics.warnings?.length) {
-      await recordActivity(store, {
-        blogId,
-        agent: 'observer',
-        type: 'analytics.partial',
-        message: `${metrics.warnings.length}個のAnalytics sourceを取得できませんでしたが、利用可能なデータで継続します。`,
-        detail: metrics.warnings,
-      })
+      await recordActivity(store, { blogId, agent: 'observer', type: 'analytics.partial', message: `${metrics.warnings.length}個のAnalytics sourceを取得できませんでしたが、利用可能なデータで継続します。`, detail: metrics.warnings })
     }
 
     const evaluation = await evaluateExperiments(store, blogId, snapshot)
     for (const completed of evaluation.completed) {
-      await recordActivity(store, {
-        blogId,
-        agent: 'learner',
-        type: 'experiment.completed',
-        message: `実験結果をBlog Memoryへ保存しました: ${completed.result} / ${completed.targetMetric} ${Number(completed.deltaPct || 0).toFixed(1)}%`,
-        detail: { experimentId: completed.id },
-      })
+      await recordActivity(store, { blogId, agent: 'learner', type: 'experiment.completed', message: `実験結果をBlog Memoryへ保存しました: ${completed.result} / ${completed.targetMetric} ${Number(completed.deltaPct || 0).toFixed(1)}%`, detail: { experimentId: completed.id } })
     }
 
     const stateWithLearning = await store.read()
     const learnings = recentLearnings(stateWithLearning, blogId)
-    const provider = options.provider ?? createAIProvider()
-    const decision = await provider.decide({ blog, posts, metrics, learnings })
+    const decided = await callProvider(provider, 'decide', { blog, posts, metrics, learnings }, store, { blogId, workflowId: workflow.id })
+    cycleCostUsd += decided.costUsd
+    const decision = decided.value
     workflow.decision = decision
 
-    await recordActivity(store, {
-      blogId,
-      agent: 'director',
-      type: 'cycle.decide',
-      message: `${decision.action}: ${decision.rationale}`,
-      detail: { ...decision, learningsUsed: learnings.length },
-    })
+    await recordActivity(store, { blogId, agent: 'director', type: 'cycle.decide', message: `${decision.action}: ${decision.rationale}`, detail: { ...decision, learningsUsed: learnings.length } })
 
     const idea = {
       id: createId('idea'),
@@ -312,33 +381,25 @@ export async function runBlogCycle(store, blogId, options = {}) {
     let approval = null
     let published = null
     let experiment = null
+    let qualityContext = { sources: [], internalLinks: [] }
 
-    if (decision.action === 'CREATE') {
+    const budgetSnapshot = await store.read()
+    const budgetExceeded = cycleBudgetExceeded(budgetSnapshot, cycleCostUsd)
+    if (budgetExceeded && decision.action !== 'WAIT') {
+      await recordActivity(store, { blogId, agent: 'cost-governor', type: 'ai.budget.cycle-limit', message: `1サイクルのAI予算上限に達したため、追加生成を止めました。 $${cycleCostUsd.toFixed(4)}` })
+    } else if (['CREATE', 'UPDATE'].includes(decision.action)) {
+      qualityContext = await prepareQualityContext(store, blog, posts, decision)
+    }
+
+    if (!budgetExceeded && decision.action === 'CREATE') {
       if (canExecute(blog, 'CREATE') && Number(blog.autonomy.level) >= 2) {
-        const draft = await provider.draft({ blog, decision, learnings })
-        article = {
-          id: createId('article'),
-          blogId,
-          ideaId: idea.id,
-          action: 'CREATE',
-          title: draft.title,
-          body: draft.body,
-          status: 'draft',
-          provider: draft.provider,
-          remoteId: null,
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-        }
-        await store.mutate((state) => state.articles.unshift(article))
-        await recordActivity(store, {
-          blogId,
-          agent: 'writer',
-          type: 'content.drafted',
-          message: `「${article.title}」の下書きを作成しました。`,
-          detail: { articleId: article.id, provider: article.provider },
-        })
+        const drafted = await callProvider(provider, 'draft', { blog, decision, learnings, ...qualityContext }, store, { blogId, workflowId: workflow.id })
+        cycleCostUsd += drafted.costUsd
+        article = await createDraftArticle(store, { blog, idea, action: 'CREATE', draft: drafted.value, qualityContext })
+        await recordActivity(store, { blogId, agent: 'writer', type: 'content.drafted', message: `「${article.title}」の下書きを作成しました。`, detail: { articleId: article.id, provider: article.provider, quality: article.quality } })
 
-        if (canExecute(blog, 'PUBLISH')) {
+        const canAutoPublish = canExecute(blog, 'PUBLISH') && article.quality.ok
+        if (canAutoPublish) {
           const remote = await connector.createDraft(article)
           published = await connector.publishPost(remote.id)
           await store.mutate((state) => {
@@ -348,64 +409,26 @@ export async function runBlogCycle(store, blogId, options = {}) {
             saved.updatedAt = nowIso()
           })
           experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE', snapshot })
-          await recordActivity(store, {
-            blogId,
-            agent: 'publisher',
-            type: 'content.published',
-            message: `「${article.title}」を自動公開しました。`,
-            detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null },
-          })
-        } else if (needsApproval(blog, 'PUBLISH')) {
-          approval = await createApproval(store, {
-            blogId,
-            articleId: article.id,
-            action: 'PUBLISH',
-            reason: '現在の自動運用レベルでは公開に人間の承認が必要です。',
-          })
-          await recordActivity(store, {
-            blogId,
-            agent: 'editor',
-            type: 'approval.requested',
-            message: `「${article.title}」の公開承認を待っています。`,
-            detail: { approvalId: approval.id },
-          })
+          await recordActivity(store, { blogId, agent: 'publisher', type: 'content.published', message: `「${article.title}」を自動公開しました。`, detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null } })
+        } else if (needsApproval(blog, 'PUBLISH') || !article.quality.ok) {
+          approval = await createApproval(store, { blogId, articleId: article.id, action: 'PUBLISH', reason: qualityApprovalReason(article, '現在の自動運用レベルでは公開に人間の承認が必要です。') })
+          await recordActivity(store, { blogId, agent: 'editor', type: 'approval.requested', message: `「${article.title}」の公開承認を待っています。`, detail: { approvalId: approval.id, quality: article.quality } })
         }
       } else {
-        approval = await createApproval(store, {
-          blogId,
-          action: 'CREATE',
-          reason: '現在の自動運用レベルでは下書き作成前に承認が必要です。',
-        })
+        approval = await createApproval(store, { blogId, action: 'CREATE', reason: '現在の自動運用レベルでは下書き作成前に承認が必要です。' })
       }
-    } else if (decision.action === 'UPDATE') {
+    } else if (!budgetExceeded && decision.action === 'UPDATE') {
       const target = posts.find((post) => String(post.id) === String(decision.targetPostId))
       if (!target) throw new Error('UPDATE target post was not found')
 
       if (canExecute(blog, 'UPDATE') && Number(blog.autonomy.level) >= 2) {
-        const revision = await provider.revise({ blog, decision, post: target, learnings })
-        article = {
-          id: createId('article'),
-          blogId,
-          ideaId: idea.id,
-          action: 'UPDATE',
-          title: revision.title,
-          body: revision.body,
-          status: 'draft-update',
-          provider: revision.provider,
-          remoteId: target.id,
-          createdAt: nowIso(),
-          updatedAt: nowIso(),
-        }
-        await store.mutate((state) => state.articles.unshift(article))
-        await recordActivity(store, {
-          blogId,
-          agent: 'writer',
-          type: 'content.revision-drafted',
-          message: `「${article.title}」の改稿案を作成しました。`,
-          detail: { articleId: article.id, remoteId: target.id },
-        })
+        const revised = await callProvider(provider, 'revise', { blog, decision, post: target, learnings, ...qualityContext }, store, { blogId, workflowId: workflow.id })
+        cycleCostUsd += revised.costUsd
+        article = await createDraftArticle(store, { blog, idea, action: 'UPDATE', draft: revised.value, remoteId: target.id, qualityContext })
+        await recordActivity(store, { blogId, agent: 'writer', type: 'content.revision-drafted', message: `「${article.title}」の改稿案を作成しました。`, detail: { articleId: article.id, remoteId: target.id, quality: article.quality } })
 
-        if (canExecute(blog, 'PUBLISH')) {
+        const canAutoUpdate = canExecute(blog, 'PUBLISH') && article.quality.ok
+        if (canAutoUpdate) {
           published = await connector.updatePost(target.id, { title: article.title, content: article.body })
           await store.mutate((state) => {
             const saved = state.articles.find((item) => item.id === article.id)
@@ -413,36 +436,13 @@ export async function runBlogCycle(store, blogId, options = {}) {
             saved.updatedAt = nowIso()
           })
           experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE', snapshot })
-          await recordActivity(store, {
-            blogId,
-            agent: 'publisher',
-            type: 'content.updated',
-            message: `「${article.title}」の改稿を自動反映しました。`,
-            detail: { articleId: article.id, remoteId: target.id, experimentId: experiment?.id ?? null },
-          })
+          await recordActivity(store, { blogId, agent: 'publisher', type: 'content.updated', message: `「${article.title}」の改稿を自動反映しました。`, detail: { articleId: article.id, remoteId: target.id, experimentId: experiment?.id ?? null } })
         } else {
-          approval = await createApproval(store, {
-            blogId,
-            articleId: article.id,
-            targetRemoteId: target.id,
-            action: 'UPDATE',
-            reason: '既存記事の改稿反映には人間の承認が必要です。',
-          })
-          await recordActivity(store, {
-            blogId,
-            agent: 'editor',
-            type: 'approval.requested',
-            message: `「${article.title}」の改稿反映を待っています。`,
-            detail: { approvalId: approval.id, remoteId: target.id },
-          })
+          approval = await createApproval(store, { blogId, articleId: article.id, targetRemoteId: target.id, action: 'UPDATE', reason: qualityApprovalReason(article, '既存記事の改稿反映には人間の承認が必要です。') })
+          await recordActivity(store, { blogId, agent: 'editor', type: 'approval.requested', message: `「${article.title}」の改稿反映を待っています。`, detail: { approvalId: approval.id, remoteId: target.id, quality: article.quality } })
         }
       } else {
-        approval = await createApproval(store, {
-          blogId,
-          action: 'UPDATE',
-          targetRemoteId: target.id,
-          reason: '現在の自動運用レベルでは改稿案の作成前に承認が必要です。',
-        })
+        approval = await createApproval(store, { blogId, action: 'UPDATE', targetRemoteId: target.id, reason: '現在の自動運用レベルでは改稿案の作成前に承認が必要です。' })
       }
     }
 
@@ -454,25 +454,25 @@ export async function runBlogCycle(store, blogId, options = {}) {
       saved.finishedAt = finishedAt
       saved.decision = decision
       saved.experimentId = experiment?.id ?? null
+      saved.aiCostUsd = cycleCostUsd
     })
 
-    return { workflowId: workflow.id, decision, idea, article, approval, published, experiment, evaluation, metrics }
+    return { workflowId: workflow.id, decision, idea, article, approval, published, experiment, evaluation, metrics, aiCostUsd: cycleCostUsd, budgetExceeded }
   } catch (error) {
+    if (typeof provider.drainUsage === 'function') {
+      const dangling = provider.drainUsage()
+      if (dangling.length > 0) await recordAiUsage(store, dangling, { blogId, workflowId: workflow.id })
+    }
     await store.mutate((state) => {
       const saved = state.workflows.find((item) => item.id === workflow.id)
       if (saved) {
         saved.status = 'failed'
         saved.finishedAt = nowIso()
+        saved.aiCostUsd = cycleCostUsd
         saved.error = error.message
       }
     })
-    await recordActivity(store, {
-      blogId,
-      agent: 'system',
-      type: 'cycle.failed',
-      message: error.message,
-      detail: { trigger: workflow.trigger },
-    })
+    await recordActivity(store, { blogId, agent: 'system', type: 'cycle.failed', message: error.message, detail: { trigger: workflow.trigger } })
     throw error
   }
 }
@@ -527,13 +527,7 @@ export async function resolveApproval(store, approvalId, approved) {
       savedArticle.updatedAt = nowIso()
     })
     const experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE' })
-    await recordActivity(store, {
-      blogId: blog.id,
-      agent: 'publisher',
-      type: 'content.published.after-approval',
-      message: `承認後に「${article.title}」を公開しました。`,
-      detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null },
-    })
+    await recordActivity(store, { blogId: blog.id, agent: 'publisher', type: 'content.published.after-approval', message: `承認後に「${article.title}」を公開しました。`, detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null } })
     return { status: 'approved', published: true, remoteId: remote.id, experimentId: experiment?.id ?? null }
   }
 
@@ -549,13 +543,7 @@ export async function resolveApproval(store, approvalId, approved) {
       savedArticle.updatedAt = nowIso()
     })
     const experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE' })
-    await recordActivity(store, {
-      blogId: blog.id,
-      agent: 'publisher',
-      type: 'content.updated.after-approval',
-      message: `承認後に「${article.title}」の改稿を反映しました。`,
-      detail: { articleId: article.id, remoteId: approval.targetRemoteId, experimentId: experiment?.id ?? null },
-    })
+    await recordActivity(store, { blogId: blog.id, agent: 'publisher', type: 'content.updated.after-approval', message: `承認後に「${article.title}」の改稿を反映しました。`, detail: { articleId: article.id, remoteId: approval.targetRemoteId, experimentId: experiment?.id ?? null } })
     return { status: 'approved', updated: true, remoteId: remote.id ?? approval.targetRemoteId, experimentId: experiment?.id ?? null }
   }
 
@@ -573,11 +561,7 @@ export async function setPaused(store, paused) {
     state.system.paused = Boolean(paused)
     state.system.pausedAt = paused ? at : null
   })
-  await recordActivity(store, {
-    agent: 'human-control',
-    type: paused ? 'system.paused' : 'system.resumed',
-    message: paused ? 'すべてのAI自動運用を停止しました。' : 'AI自動運用を再開しました。',
-  })
+  await recordActivity(store, { agent: 'human-control', type: paused ? 'system.paused' : 'system.resumed', message: paused ? 'すべてのAI自動運用を停止しました。' : 'AI自動運用を再開しました。' })
   return { paused: Boolean(paused), at }
 }
 
@@ -586,6 +570,8 @@ export function summarizeHQ(state) {
   const published = state.articles.filter((item) => item.status === 'published')
   const drafts = state.articles.filter((item) => item.status === 'draft' || item.status === 'draft-update')
   const portfolio = buildPortfolioPlan(state)
+  const ai = budgetStatus(state)
+  const jobs = summarizeJobs(state)
 
   const blogs = state.blogs.map((blog) => {
     const latestMetric = state.analytics.find((item) => item.blogId === blog.id) ?? null
@@ -617,7 +603,11 @@ export function summarizeHQ(state) {
       activities: state.activities.length,
       runningExperiments: state.experiments.filter((item) => item.status === 'running').length,
       learnings: state.memories.filter((item) => item.type === 'experiment-learning').length,
+      queuedJobs: jobs.queued,
+      failedJobs: jobs.failed,
     },
+    ai,
+    jobs,
     blogs,
     portfolio,
     portfolioRecommendation: portfolio.recommendation,
