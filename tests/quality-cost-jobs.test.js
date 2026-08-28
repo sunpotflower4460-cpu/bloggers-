@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { AiBudgetReserveReachedError, budgetStatus, recordAiUsage } from '../src/cost.js'
 import { enqueueJob, leaseDueJobs } from '../src/jobs.js'
 import { addBlog, runBlogCycle } from '../src/orchestrator.js'
-import { assertPublicHttpUrl, buildInternalLinkCandidates, evaluateContentQuality } from '../src/quality.js'
+import { assertPublicHttpUrl, buildInternalLinkCandidates, evaluateClaimSupport, evaluateContentQuality } from '../src/quality.js'
 import { JsonStore } from '../src/store.js'
 
 async function withStore(fn) {
@@ -35,6 +35,50 @@ test('citation quality gate blocks required missing and unknown sources', () => 
   })
   assert.equal(unknown.ok, false)
   assert.match(unknown.blocking[0], /S9/)
+})
+
+test('claim-level verification requires citations next to numeric claims', () => {
+  const sources = [{
+    id: 'S1',
+    label: 'Official report',
+    url: 'https://example.com/report',
+    excerpt: 'The official report says conversion increased by 20% in 2026.',
+  }]
+
+  const uncited = evaluateContentQuality({
+    body: 'コンバージョンは20%増加しました。\n公式発表です。[S1]',
+    research: { requireCitations: true },
+    sources,
+  })
+  assert.equal(uncited.ok, false)
+  assert.ok(uncited.claimChecks.some((claim) => claim.status === 'uncited'))
+  assert.ok(uncited.blocking.some((message) => /文単位の出典/.test(message)))
+
+  const cited = evaluateContentQuality({
+    body: 'コンバージョンは20%増加しました。[S1]',
+    research: { requireCitations: true },
+    sources,
+  })
+  assert.equal(cited.ok, true)
+  assert.equal(cited.claimChecks[0].status, 'supported')
+})
+
+test('claim-level verification warns when cited evidence does not contain the claimed number', () => {
+  const checks = evaluateClaimSupport(
+    '利用者は35%増加しました。[S1]',
+    [{ id: 'S1', excerpt: 'The report says users increased by 20%.' }],
+    { requireCitations: true },
+  )
+  assert.equal(checks[0].status, 'citation-number-mismatch')
+  assert.deepEqual(checks[0].missingNumbers, ['35%'])
+
+  const quality = evaluateContentQuality({
+    body: '利用者は35%増加しました。[S1]',
+    research: { requireCitations: true },
+    sources: [{ id: 'S1', excerpt: 'The report says users increased by 20%.' }],
+  })
+  assert.equal(quality.ok, true)
+  assert.ok(quality.warnings.some((message) => /数値を確認できない/.test(message)))
 })
 
 test('private research endpoints are rejected before fetch', async () => {
