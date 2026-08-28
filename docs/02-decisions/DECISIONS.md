@@ -134,3 +134,17 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: 複数ブログ統合OSをWordPress専用にせず、CMS差異をConnectorへ閉じ込めたままGhostも同じCREATE / UPDATE / PUBLISHパイプラインへ載せるため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: Ghost専用の別運用フローを作る、Admin API keyをstate.jsonへ保存する、updated_atを再取得せず上書きする方式。
+
+### D-020
+- 日付: 2026-08-28
+- 決定: JsonStoreのmutationをfilesystem lockでプロセス間排他し、atomic renameとowner付きstale-lock回収を組み合わせる。Job dedupeはqueuedだけでなくrunningもactiveとして扱う。
+- 理由: Webとstandalone Worker、または複数Workerが同一state.jsonを共有してもlost updateや同一Job重複を起こしにくくするため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: Nodeプロセス内Promise queueだけで排他できているとみなし、複数processから同じJSONへ直接書き込む方式。
+
+### D-021
+- 日付: 2026-08-28
+- 決定: Schedulerはembedded / external workerを切り替え可能にし、Storageは共通contractへ寄せる。PostgreSQLは新規npm依存0制約を守るためdriverを同梱せず、pool injection型PostgresStoreとmigrationを先に実装する。
+- 理由: 現在のFoundationを壊さずWebと自律実行を分離し、将来driver導入時にPostgreSQLのSELECT FOR UPDATE transactionへ移行できるようにするため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 制約を無視してpg/ORMを追加する、またはPostgreSQL移行時にOrchestrator/Job/Lease全体を書き直す方式。
