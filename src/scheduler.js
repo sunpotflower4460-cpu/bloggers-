@@ -57,7 +57,7 @@ function isDue(config, now) {
 
 function isRetryableFailure(errorOrMessage) {
   const code = errorOrMessage?.code
-  const message = String(errorOrMessage?.message ?? errorOrMessage ?? '')
+  const message = String(errorOrMessage?.message ?? errorOrMessage?.error ?? errorOrMessage ?? '')
   if (code === 'AI_BUDGET_RESERVE_REACHED' || code === 'JOB_LEASE_LOST') return false
   if (/AI monthly budget reserve reached/i.test(message)) return false
   if (/operation lease is already active/i.test(message)) return false
