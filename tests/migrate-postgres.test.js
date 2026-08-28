@@ -23,16 +23,20 @@ function fakePostgresTarget() {
   const nativeAiUsage = []
   const nativeWorkflows = []
   const nativeIdeas = []
+  const nativeArticles = []
+  const nativeApprovals = []
   return {
     backend: 'postgres',
     async transaction(mutator) {
-      document ??= { system: {}, blogs: [], ideas: [], analytics: [], activities: [], aiUsage: [], workflows: [], jobs: [], locks: [] }
+      document ??= { system: {}, blogs: [], ideas: [], articles: [], approvals: [], analytics: [], activities: [], aiUsage: [], workflows: [], jobs: [], locks: [] }
       return mutator(document)
     },
     async read() {
       return {
         ...structuredClone(document),
         ideas: structuredClone(nativeIdeas),
+        articles: structuredClone(nativeArticles),
+        approvals: structuredClone(nativeApprovals),
         analytics: structuredClone(nativeAnalytics),
         activities: structuredClone(nativeActivities),
         aiUsage: structuredClone(nativeAiUsage),
@@ -73,6 +77,18 @@ function fakePostgresTarget() {
       nativeIdeas.unshift(structuredClone(idea))
       return structuredClone(idea)
     },
+    async articleUpsert(article) {
+      const index = nativeArticles.findIndex((item) => item.id === article.id)
+      if (index >= 0) nativeArticles.splice(index, 1)
+      nativeArticles.unshift(structuredClone(article))
+      return structuredClone(article)
+    },
+    async approvalUpsert(approval) {
+      const index = nativeApprovals.findIndex((item) => item.id === approval.id)
+      if (index >= 0) nativeApprovals.splice(index, 1)
+      nativeApprovals.unshift(structuredClone(approval))
+      return structuredClone(approval)
+    },
     async jobEnqueue(job, dedupeKey) {
       const existing = nativeJobs.find((item) => item.id === job.id || (dedupeKey && ['queued', 'running'].includes(item.status) && item.payload?.dedupeKey === dedupeKey))
       if (existing) return structuredClone(existing)
@@ -93,7 +109,25 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     const source = await new JsonStore(path).init()
     await source.mutate((state) => {
       state.blogs.push({ id: 'blog_1', name: 'Migrated Blog' })
-      state.articles.push({ id: 'article_1', blogId: 'blog_1', title: 'Hello' })
+      state.articles.push({
+        id: 'article_1',
+        blogId: 'blog_1',
+        ideaId: 'idea_1',
+        title: 'Hello',
+        status: 'draft',
+        createdAt: '2026-08-28T00:01:40.000Z',
+        updatedAt: '2026-08-28T00:01:40.000Z',
+      })
+      state.approvals.push({
+        id: 'approval_1',
+        blogId: 'blog_1',
+        articleId: 'article_1',
+        action: 'PUBLISH',
+        reason: 'review',
+        status: 'pending',
+        createdAt: '2026-08-28T00:01:50.000Z',
+        resolvedAt: null,
+      })
       state.ideas.push({
         id: 'idea_1',
         blogId: 'blog_1',
@@ -196,8 +230,13 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
 
     assert.equal(result.blogs, 1)
     assert.equal(result.articles, 1)
+    assert.equal(result.approvals, 1)
     assert.equal(result.migratedIdeas, 1)
     assert.equal(result.ideasKeptInStateDocument, 0)
+    assert.equal(result.migratedArticles, 1)
+    assert.equal(result.articlesKeptInStateDocument, 0)
+    assert.equal(result.migratedApprovals, 1)
+    assert.equal(result.approvalsKeptInStateDocument, 0)
     assert.equal(result.migratedAnalytics, 1)
     assert.equal(result.analyticsKeptInStateDocument, 0)
     assert.equal(result.migratedActivities, 1)
@@ -211,25 +250,21 @@ test('JSON to PostgreSQL migration promotes normalized collections, recovers run
     assert.equal(result.discardedOperationLeases, 1)
     assert.equal(migrated.system.scheduler.running, false)
     assert.equal(migrated.locks.length, 0)
-    assert.equal(document.ideas.length, 0, 'normalized ideas should not remain in the global state document')
-    assert.equal(document.analytics.length, 0, 'normalized analytics should not remain in the global state document')
-    assert.equal(document.activities.length, 0, 'normalized activities should not remain in the global state document')
-    assert.equal(document.aiUsage.length, 0, 'normalized AI usage should not remain in the global state document')
-    assert.equal(document.workflows.length, 0, 'normalized workflows should not remain in the global state document')
-    assert.equal(migrated.ideas.length, 1)
+    assert.equal(document.ideas.length, 0)
+    assert.equal(document.articles.length, 0)
+    assert.equal(document.approvals.length, 0)
+    assert.equal(document.analytics.length, 0)
+    assert.equal(document.activities.length, 0)
+    assert.equal(document.aiUsage.length, 0)
+    assert.equal(document.workflows.length, 0)
     assert.equal(migrated.ideas[0].id, 'idea_1')
-    assert.equal(migrated.ideas[0].title, 'Migration idea')
-    assert.equal(migrated.analytics.length, 1)
-    assert.equal(migrated.analytics[0].id, 'metric_1')
+    assert.equal(migrated.articles[0].id, 'article_1')
+    assert.equal(migrated.articles[0].status, 'draft')
+    assert.equal(migrated.approvals[0].id, 'approval_1')
+    assert.equal(migrated.approvals[0].status, 'pending')
     assert.equal(migrated.analytics[0].clicks, 42)
-    assert.equal(migrated.activities.length, 1)
-    assert.equal(migrated.activities[0].id, 'activity_1')
     assert.equal(migrated.activities[0].message, 'observed')
-    assert.equal(migrated.aiUsage.length, 1)
-    assert.equal(migrated.aiUsage[0].id, 'usage_1')
     assert.equal(migrated.aiUsage[0].estimatedCostUsd, 0.01)
-    assert.equal(migrated.workflows.length, 1)
-    assert.equal(migrated.workflows[0].id, 'workflow_1')
     assert.equal(migrated.workflows[0].status, 'completed')
 
     const recovered = migrated.jobs.find((job) => job.id === 'job_running')
