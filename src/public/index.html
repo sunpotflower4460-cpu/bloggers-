@@ -92,6 +92,17 @@
         <label>Application Passwordの環境変数<input name="passwordEnv" placeholder="WP_MUSIC_PASSWORD"></label>
       </div>
 
+      <div class="wide">
+        <p class="eyebrow">OPTIONAL ANALYTICS</p>
+        <p class="muted">未設定でもCMSの基本指標だけで動きます。アクセストークン自体は保存しません。</p>
+      </div>
+      <label>Search Console site URL<input name="gscSiteUrl" placeholder="https://example.com/"></label>
+      <label>GSC token環境変数<input name="gscTokenEnv" placeholder="GSC_ACCESS_TOKEN"></label>
+      <label>GA4 Property ID<input name="ga4PropertyId" placeholder="123456789"></label>
+      <label>GA4 token環境変数<input name="ga4TokenEnv" placeholder="GA4_ACCESS_TOKEN"></label>
+      <label>Custom Metrics URL<input name="metricsEndpoint" placeholder="https://metrics.example.com/blog"></label>
+      <label>Custom token環境変数<input name="metricsTokenEnv" placeholder="BLOG_METRICS_TOKEN"></label>
+
       <div class="form-actions wide">
         <button class="button button-primary" type="submit">Blog Brainを作成して接続</button>
       </div>
