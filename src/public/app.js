@@ -40,11 +40,24 @@ function fmtDate(value) {
   return new Intl.DateTimeFormat('ja-JP', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 }
 
-async function request(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
-  })
+function authToken() {
+  return sessionStorage.getItem('bloggersAdminToken') || ''
+}
+
+async function request(path, options = {}, allowPrompt = true) {
+  const token = authToken()
+  const headers = { 'Content-Type': 'application/json', ...(options.headers ?? {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
+
+  const response = await fetch(path, { ...options, headers })
+  if (response.status === 401 && allowPrompt) {
+    const entered = window.prompt('Bloggers HQ 管理トークンを入力してください')
+    if (entered) {
+      sessionStorage.setItem('bloggersAdminToken', entered.trim())
+      return request(path, options, false)
+    }
+  }
+
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
   return payload
@@ -89,12 +102,7 @@ function updateSystemState() {
 }
 
 function metric(label, value, detail = '') {
-  return `
-    <article class="metric-card">
-      <span>${h(label)}</span>
-      <strong>${h(value)}</strong>
-      <small>${h(detail)}</small>
-    </article>`
+  return `<article class="metric-card"><span>${h(label)}</span><strong>${h(value)}</strong><small>${h(detail)}</small></article>`
 }
 
 function renderHQ() {
@@ -102,24 +110,13 @@ function renderHQ() {
   const blogRows = data.blogs.length
     ? data.blogs.map((blog) => `
       <article class="blog-row">
-        <div>
-          <span class="connector-pill">${h(blog.connector)}</span>
-          <h3>${h(blog.name)}</h3>
-          <p>Autonomy L${h(blog.autonomyLevel)} · 承認待ち ${h(blog.pendingApprovals)}</p>
-        </div>
-        <div class="blog-row-status">
-          <strong>${blog.latestMetric ? `${h(blog.latestMetric.posts ?? 0)} posts` : '未観測'}</strong>
-          <small>${blog.lastWorkflow ? fmtDate(blog.lastWorkflow.finishedAt || blog.lastWorkflow.startedAt) : 'サイクル未実行'}</small>
-        </div>
+        <div><span class="connector-pill">${h(blog.connector)}</span><h3>${h(blog.name)}</h3><p>Autonomy L${h(blog.autonomyLevel)} · 承認待ち ${h(blog.pendingApprovals)}</p></div>
+        <div class="blog-row-status"><strong>${blog.latestMetric ? `${h(blog.latestMetric.posts ?? 0)} posts` : '未観測'}</strong><small>${blog.lastWorkflow ? fmtDate(blog.lastWorkflow.finishedAt || blog.lastWorkflow.startedAt) : 'サイクル未実行'}</small></div>
       </article>`).join('')
     : '<div class="empty-state"><strong>まだブログが接続されていません。</strong><p>Blogsから最初のBlog Brainを作成すると、AI編集部が動き始めます。</p></div>'
 
   const approvals = data.pendingApprovals.length
-    ? data.pendingApprovals.map((item) => `
-      <div class="approval-row">
-        <div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div>
-        <button class="button button-small" data-approve="${h(item.id)}">承認</button>
-      </div>`).join('')
+    ? data.pendingApprovals.map((item) => `<div class="approval-row"><div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div><button class="button button-small" data-approve="${h(item.id)}">承認</button></div>`).join('')
     : '<p class="muted">承認待ちはありません。</p>'
 
   view.innerHTML = `
@@ -129,26 +126,11 @@ function renderHQ() {
       ${metric('Published', data.totals.published, 'Bloggers経由の公開')}
       ${metric('Approvals', data.totals.pendingApprovals, '人間の判断待ち')}
     </div>
-
-    <div class="hero-panel">
-      <div>
-        <p class="eyebrow">PORTFOLIO BRAIN</p>
-        <h2>いま全体で何をすべきか</h2>
-      </div>
-      <p class="hero-message">${h(data.portfolioRecommendation)}</p>
-    </div>
-
+    <div class="hero-panel"><div><p class="eyebrow">PORTFOLIO BRAIN</p><h2>いま全体で何をすべきか</h2></div><p class="hero-message">${h(data.portfolioRecommendation)}</p></div>
     <div class="two-column">
-      <section class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">BLOG NETWORK</p><h2>ブログ群</h2></div></div>
-        <div class="stack">${blogRows}</div>
-      </section>
-      <section class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">HUMAN GATE</p><h2>承認待ち</h2></div></div>
-        <div class="stack">${approvals}</div>
-      </section>
-    </div>
-  `
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLOG NETWORK</p><h2>ブログ群</h2></div></div><div class="stack">${blogRows}</div></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">HUMAN GATE</p><h2>承認待ち</h2></div></div><div class="stack">${approvals}</div></section>
+    </div>`
 }
 
 function renderBlogs() {
@@ -156,10 +138,7 @@ function renderBlogs() {
   const cards = cache.blogs.length
     ? cache.blogs.map((blog) => `
       <article class="panel blog-card">
-        <div class="panel-heading">
-          <div><span class="connector-pill">${h(blog.connector.type)}</span><h2>${h(blog.name)}</h2></div>
-          <span class="state-badge">L${h(blog.autonomy.level)}</span>
-        </div>
+        <div class="panel-heading"><div><span class="connector-pill">${h(blog.connector.type)}</span><h2>${h(blog.name)}</h2></div><span class="state-badge">L${h(blog.autonomy.level)}</span></div>
         <dl class="brain-grid">
           <div><dt>Purpose</dt><dd>${h(blog.brain.purpose || '未設定')}</dd></div>
           <div><dt>Audience</dt><dd>${h(blog.brain.audience || '未設定')}</dd></div>
@@ -167,11 +146,7 @@ function renderBlogs() {
           <div><dt>Topics</dt><dd>${h((blog.brain.topics || []).join(' / ') || '未設定')}</dd></div>
         </dl>
         <div class="inline-controls">
-          <label>Autonomy
-            <select data-autonomy="${h(blog.id)}">
-              ${[0,1,2,3,4,5].map((level) => `<option value="${level}" ${level === Number(blog.autonomy.level) ? 'selected' : ''}>Level ${level}</option>`).join('')}
-            </select>
-          </label>
+          <label>Autonomy<select data-autonomy="${h(blog.id)}">${[0,1,2,3,4,5].map((level) => `<option value="${level}" ${level === Number(blog.autonomy.level) ? 'selected' : ''}>Level ${level}</option>`).join('')}</select></label>
           <button class="button button-ghost" data-test-blog="${h(blog.id)}">接続テスト</button>
           <button class="button button-primary" data-run-blog="${h(blog.id)}">このブログだけ運用</button>
         </div>
@@ -195,11 +170,7 @@ function renderContent() {
     ? cache.content.ideas.slice(0, 20).map((idea) => `<div class="idea-row"><strong>${h(idea.action)}</strong><div><h3>${h(idea.title || idea.topic)}</h3><p>${h(idea.rationale)}</p></div></div>`).join('')
     : '<p class="muted">企画はまだありません。</p>'
 
-  view.innerHTML = `
-    <div class="two-column">
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">ARTICLES</p><h2>制作物</h2></div></div><div class="stack">${articles}</div></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">OPPORTUNITIES</p><h2>AIの企画判断</h2></div></div><div class="stack">${ideas}</div></section>
-    </div>`
+  view.innerHTML = `<div class="two-column"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">ARTICLES</p><h2>制作物</h2></div></div><div class="stack">${articles}</div></section><section class="panel"><div class="panel-heading"><div><p class="eyebrow">OPPORTUNITIES</p><h2>AIの企画判断</h2></div></div><div class="stack">${ideas}</div></section></div>`
 }
 
 function renderAnalytics() {
@@ -210,11 +181,7 @@ function renderAnalytics() {
       }).join('')
     : '<tr><td colspan="6">まだ観測データがありません。AI運用サイクルを実行してください。</td></tr>'
 
-  view.innerHTML = `
-    <section class="panel">
-      <div class="panel-heading"><div><p class="eyebrow">MEASUREMENT</p><h2>観測スナップショット</h2></div><p class="muted">Search Console / GA接続は次段階で同じAnalytics Hubへ追加できます。</p></div>
-      <div class="table-wrap"><table><thead><tr><th>Blog</th><th>Source</th><th>Posts</th><th>Published</th><th>Views</th><th>Captured</th></tr></thead><tbody>${rows}</tbody></table></div>
-    </section>`
+  view.innerHTML = `<section class="panel"><div class="panel-heading"><div><p class="eyebrow">MEASUREMENT</p><h2>観測スナップショット</h2></div><p class="muted">Search Console / GA接続は次段階で同じAnalytics Hubへ追加できます。</p></div><div class="table-wrap"><table><thead><tr><th>Blog</th><th>Source</th><th>Posts</th><th>Published</th><th>Views</th><th>Captured</th></tr></thead><tbody>${rows}</tbody></table></div></section>`
 }
 
 function renderAI() {
@@ -225,31 +192,20 @@ function renderAI() {
       }).join('')
     : '<p class="muted">AI活動ログはまだありません。</p>'
 
-  view.innerHTML = `
-    <section class="panel">
-      <div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div><p class="muted">AIが何を観測し、なぜ判断したかを追跡します。</p></div>
-      <div class="timeline">${activities}</div>
-    </section>`
+  view.innerHTML = `<section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div><p class="muted">AIが何を観測し、なぜ判断したかを追跡します。</p></div><div class="timeline">${activities}</div></section>`
 }
 
 function renderSettings() {
   const settings = cache.settings
   view.innerHTML = `
     <div class="two-column">
-      <section class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">AI PROVIDER</p><h2>推論エンジン</h2></div></div>
-        <dl class="brain-grid">
-          <div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div>
-          <div><dt>Model</dt><dd>${h(settings.ai.model || 'ローカルルールベース')}</dd></div>
-        </dl>
-        <p class="muted">BLOGGERS_AI_BASE_URL / BLOGGERS_AI_API_KEY / BLOGGERS_AI_MODEL を設定すると、OpenAI互換APIへ切り替わります。</p>
-      </section>
-      <section class="panel">
-        <div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div>
-        <p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyの範囲内でのみ動きます。'}</p>
-        <p class="muted">削除操作はFoundation版では常に禁止です。資格情報は環境変数から読み込みます。</p>
-      </section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AI PROVIDER</p><h2>推論エンジン</h2></div></div><dl class="brain-grid"><div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div><div><dt>Model</dt><dd>${h(settings.ai.model || 'ローカルルールベース')}</dd></div></dl><p class="muted">BLOGGERS_AI_BASE_URL / BLOGGERS_AI_API_KEY / BLOGGERS_AI_MODEL を設定すると、OpenAI互換APIへ切り替わります。</p></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyの範囲内でのみ動きます。'}</p><p class="muted">削除操作はFoundation版では常に禁止です。外部公開時はBLOGGERS_ADMIN_TOKENでAPIを保護します。</p><button class="button button-ghost" id="forget-token">この端末の管理トークンを忘れる</button></section>
     </div>`
+  document.querySelector('#forget-token').addEventListener('click', () => {
+    sessionStorage.removeItem('bloggersAdminToken')
+    flash('このブラウザに保持した管理トークンを削除しました。')
+  })
 }
 
 function render() {
@@ -284,6 +240,7 @@ function bindBlogForm() {
     event.preventDefault()
     const data = new FormData(form)
     try {
+      const level = Number(data.get('autonomyLevel'))
       await request('/api/blogs', {
         method: 'POST',
         body: JSON.stringify({
@@ -301,28 +258,17 @@ function bindBlogForm() {
             usernameEnv: data.get('usernameEnv'),
             passwordEnv: data.get('passwordEnv'),
           },
-          autonomy: {
-            level: Number(data.get('autonomyLevel')),
-            allowCreate: true,
-            allowUpdate: true,
-            allowPublish: Number(data.get('autonomyLevel')) >= 4,
-          },
+          autonomy: { level, allowCreate: true, allowUpdate: true, allowPublish: level >= 4 },
         }),
       })
       await refresh('ブログを接続し、Blog Brainを作成しました。')
-    } catch (error) {
-      flash(error.message, 'error')
-    }
+    } catch (error) { flash(error.message, 'error') }
   })
 }
 
 document.addEventListener('click', async (event) => {
   const nav = event.target.closest('[data-view]')
-  if (nav) {
-    currentView = nav.dataset.view
-    render()
-    return
-  }
+  if (nav) { currentView = nav.dataset.view; render(); return }
 
   const runBlog = event.target.closest('[data-run-blog]')
   if (runBlog) {
@@ -357,10 +303,7 @@ document.addEventListener('change', async (event) => {
   if (!select) return
   const level = Number(select.value)
   try {
-    await request(`/api/blogs/${encodeURIComponent(select.dataset.autonomy)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ autonomy: { level, allowPublish: level >= 4 } }),
-    })
+    await request(`/api/blogs/${encodeURIComponent(select.dataset.autonomy)}`, { method: 'PATCH', body: JSON.stringify({ autonomy: { level, allowPublish: level >= 4 } }) })
     await refresh(`Autonomy Levelを${level}へ変更しました。`)
   } catch (error) { flash(error.message, 'error') }
 })
