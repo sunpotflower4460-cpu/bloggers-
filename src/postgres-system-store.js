@@ -21,6 +21,12 @@ function assertSection(section) {
   if (!SYSTEM_SECTIONS.includes(section)) throw new Error(`Unsupported system section: ${section}`)
 }
 
+function nonSystemFingerprint(state) {
+  const snapshot = clone(state)
+  delete snapshot.system
+  return JSON.stringify(snapshot)
+}
+
 export class PostgresSystemStore extends PostgresConfigStore {
   #systemPool
 
@@ -100,6 +106,33 @@ export class PostgresSystemStore extends PostgresConfigStore {
     )
   }
 
+  async #lockAllSections(client) {
+    const sections = {}
+    for (const section of SYSTEM_SECTIONS) {
+      await this.#ensureSection(client, section)
+      const locked = await client.query(
+        `SELECT document, revision
+         FROM bloggers_system_settings
+         WHERE setting_key = $1
+         FOR UPDATE`,
+        [section],
+      )
+      sections[section] = clone(decodeJson(locked.rows?.[0]?.document) ?? splitSystemSections(DEFAULT_STATE.system)[section])
+    }
+    return sections
+  }
+
+  async #writeSections(client, sections) {
+    for (const section of SYSTEM_SECTIONS) {
+      await client.query(
+        `UPDATE bloggers_system_settings
+         SET document = $2::jsonb, revision = revision + 1, updated_at = now()
+         WHERE setting_key = $1`,
+        [section, JSON.stringify(sections[section])],
+      )
+    }
+  }
+
   async read() {
     const [state, rows] = await Promise.all([
       super.read(),
@@ -116,6 +149,31 @@ export class PostgresSystemStore extends PostgresConfigStore {
     }
     state.system = mergeSystemSections(sections, state.system)
     return state
+  }
+
+  async mutate(mutator) {
+    if (typeof mutator !== 'function') throw new Error('state mutator must be a function')
+    const client = await this.#systemPool.connect()
+    try {
+      await client.query('BEGIN')
+      const sections = await this.#lockAllSections(client)
+      const state = await super.read()
+      state.system = mergeSystemSections(sections, state.system)
+      const before = nonSystemFingerprint(state)
+      const value = await mutator(state)
+      if (nonSystemFingerprint(state) !== before) {
+        throw new Error('Direct PostgresSystemStore.mutate() may only change state.system; use the native collection store for other state')
+      }
+      const nextSections = splitSystemSections(state.system)
+      await this.#writeSections(client, nextSections)
+      await client.query('COMMIT')
+      return value
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      client.release?.()
+    }
   }
 
   async systemRead(section) {
