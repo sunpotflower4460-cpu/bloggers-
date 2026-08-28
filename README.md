@@ -17,6 +17,7 @@ Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観�
 - 公開・改稿のHuman Gate
 - Emergency Pause / Resume
 - CMS + Search Console + GA4 + Custom HTTP Metrics
+- Google OAuth access tokenの自動refresh / メモリキャッシュ
 - Portfolio Brainによる優先順位付け
 - Experiment / Learning Engine
 - Blog Memoryへの実測学習
@@ -150,27 +151,30 @@ Portfolio cycle自体をJobとして保存し、個別ブログ失敗時はそ�
 
 現Foundationでは**JSON-backed queue + 同一Nodeプロセス内worker**です。Job自体は再起動耐性がありますが、複数workerによる分散実行やDB transactionを使う本番queueは将来のPostgreSQL/worker化で置換できます。
 
-## Analytics Hub
+## Analytics Hub / Google OAuth
 
-Blog Brainには任意で次を接続できます。
+Blog Brainには任意でSearch Console、GA4、Custom HTTP Metricsを接続できます。
 
-### Google Search Console
+### Google Search Console / GA4
 
-- site URL
-- OAuth access tokenを保持する環境変数名
+推奨構成では、Search ConsoleとGA4で共有するGoogle OAuth refresh credentialを環境変数へ置きます。
+
+```bash
+export GOOGLE_REFRESH_TOKEN="..."
+export GOOGLE_CLIENT_ID="..."
+export GOOGLE_CLIENT_SECRET="..."
+```
+
+Bloggersは固定のGoogle token endpointでaccess tokenを更新し、更新後tokenは**プロセスメモリにだけキャッシュ**します。`state.json` にはrefresh token・client secret・更新後access tokenの値を書きません。
+
+既存運用との互換性のため、すでに発行済みaccess tokenを使う方式もフォールバックとして残しています。
 
 ```bash
 export GSC_ACCESS_TOKEN="..."
-```
-
-### GA4
-
-- Property ID
-- OAuth access tokenを保持する環境変数名
-
-```bash
 export GA4_ACCESS_TOKEN="..."
 ```
+
+ブログ側ではSearch Consoleのsite URL、GA4 Property IDと、必要に応じてaccess-token環境変数名だけを登録します。
 
 ### Custom HTTP Metrics
 
@@ -184,8 +188,6 @@ export GA4_ACCESS_TOKEN="..."
 ```
 
 Analytics sourceの一部が取得失敗しても、利用可能データでcycleを続け、`analytics.partial` をAudit Logへ残します。
-
-**現在は発行済みOAuth access tokenを利用します。自動refresh / service-account OAuthは次のproduction-hardening対象です。**
 
 ## Experiment / Learning Engine
 
@@ -280,6 +282,7 @@ Connector Layer
 - `src/server.js` — HTTP/API/UI・認証
 - `src/store.js` — JSON永続化
 - `src/connectors.js` — CMS Connector
+- `src/oauth.js` — Google OAuth refresh / memory-only token cache
 - `src/analytics.js` — GSC / GA4 / Custom Metrics
 - `src/ai.js` — AI Router / Provider
 - `src/cost.js` — Usage Ledger / Cost Governor
@@ -293,10 +296,10 @@ Connector Layer
 
 ## 次のproduction-hardening候補
 
-- Google OAuth自動refresh / service account
 - secrets vault / encrypted credential store
+- Google service account対応
 - Ghost / microCMS Connector
-- 一次情報のtopic-aware discovery / fact claim検証
+- topic-aware Research discovery / claim-level fact verification
 - conversion / revenueを含むExperiment評価
 - PostgreSQL + transaction based queue
 - 独立worker / multi-instance lease
