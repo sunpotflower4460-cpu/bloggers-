@@ -69,14 +69,23 @@ test('connector writes are rejected before mutation when the execution fence is 
   })
 })
 
-test('Ghost write fencing happens before the outbound HTTP request', async () => {
+test('Ghost write fencing allows slug lookup but blocks the outbound write request', async () => {
   const before = process.env.GHOST_FENCE_KEY
   process.env.GHOST_FENCE_KEY = 'abc123:00112233445566778899aabbccddeeff'
-  let fetchCalls = 0
+  let readCalls = 0
+  let writeCalls = 0
   const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => {
-    fetchCalls += 1
-    throw new Error('fetch should not be reached')
+  globalThis.fetch = async (url, options = {}) => {
+    const method = String(options.method || 'GET').toUpperCase()
+    if (method === 'GET') {
+      readCalls += 1
+      return new Response(JSON.stringify({ errors: [{ message: 'Not found' }] }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    writeCalls += 1
+    throw new Error(`write fetch should not be reached: ${method} ${url}`)
   }
 
   try {
@@ -85,10 +94,11 @@ test('Ghost write fencing happens before the outbound HTTP request', async () =>
       store: null,
     })
     await assert.rejects(
-      () => withExecutionContext({ beforeExternalWrite: async () => { throw leaseLostError() } }, () => connector.createDraft({ title: 'Blocked', body: 'No HTTP' })),
+      () => withExecutionContext({ beforeExternalWrite: async () => { throw leaseLostError() } }, () => connector.createDraft({ id: 'article-fenced', title: 'Blocked', body: 'No write HTTP' })),
       (error) => error?.code === 'JOB_LEASE_LOST',
     )
-    assert.equal(fetchCalls, 0)
+    assert.equal(readCalls, 1)
+    assert.equal(writeCalls, 0)
   } finally {
     globalThis.fetch = originalFetch
     if (before === undefined) delete process.env.GHOST_FENCE_KEY
