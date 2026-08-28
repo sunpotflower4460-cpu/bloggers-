@@ -20,6 +20,7 @@ const SECURE_SESSION_COOKIE = '__Host-bloggers_session'
 const SECURE_FLOW_COOKIE = '__Host-bloggers_oidc_flow'
 const LOCAL_SESSION_COOKIE = 'bloggers_session'
 const LOCAL_FLOW_COOKIE = 'bloggers_oidc_flow'
+const MAX_PREVIOUS_SESSION_SECRETS = 2
 
 function clean(value) {
   return String(value ?? '').trim()
@@ -67,11 +68,16 @@ function signEnvelope(payload, secret) {
   return `${body}.${signature}`
 }
 
-function verifyEnvelope(value, secret, { kind, now }) {
+function verifyEnvelope(value, secrets, { kind, now }) {
   const parts = clean(value).split('.')
   if (parts.length !== 2) throw fail('OIDC_INVALID_COOKIE', 'Authentication cookie is malformed', 401)
-  const expected = createHmac('sha256', secret).update(parts[0]).digest('base64url')
-  if (!safeEqual(expected, parts[1])) throw fail('OIDC_INVALID_COOKIE', 'Authentication cookie signature is invalid', 401)
+  const candidates = Array.isArray(secrets) ? secrets : [secrets]
+  let signatureValid = false
+  for (const secret of candidates) {
+    const expected = createHmac('sha256', secret).update(parts[0]).digest('base64url')
+    signatureValid = safeEqual(expected, parts[1]) || signatureValid
+  }
+  if (!signatureValid) throw fail('OIDC_INVALID_COOKIE', 'Authentication cookie signature is invalid', 401)
   const payload = parseBase64UrlJson(parts[0], 'Authentication cookie')
   if (payload.kind !== kind) throw fail('OIDC_INVALID_COOKIE', 'Authentication cookie type is invalid', 401)
   if (!Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Math.floor(now / 1000)) {
@@ -150,6 +156,14 @@ function parseRoleRules(raw) {
   })
 }
 
+function parsePreviousSecretRefs(raw) {
+  return clean(raw)
+    .split(',')
+    .map((value) => clean(value))
+    .filter(Boolean)
+    .slice(0, MAX_PREVIOUS_SESSION_SECRETS)
+}
+
 function valuesOfClaim(value) {
   if (Array.isArray(value)) return value.map((item) => String(item))
   if (value === null || value === undefined) return []
@@ -222,7 +236,8 @@ export function loadOidcConfig(env = process.env) {
   const publicBaseRaw = clean(env.BLOGGERS_PUBLIC_BASE_URL)
   const sessionSecretRef = clean(env.BLOGGERS_SESSION_SECRET_REF)
   const clientSecretRef = clean(env.BLOGGERS_OIDC_CLIENT_SECRET_REF)
-  const requested = Boolean(issuerRaw || clientId || publicBaseRaw || sessionSecretRef || clientSecretRef)
+  const previousSessionSecretRefs = parsePreviousSecretRefs(env.BLOGGERS_SESSION_PREVIOUS_SECRET_REFS)
+  const requested = Boolean(issuerRaw || clientId || publicBaseRaw || sessionSecretRef || clientSecretRef || previousSessionSecretRefs.length)
 
   if (!requested) return { enabled: false }
   if (!issuerRaw || !clientId || !publicBaseRaw || !sessionSecretRef) {
@@ -234,6 +249,17 @@ export function loadOidcConfig(env = process.env) {
   const publicBaseUrl = checkedUrl(publicBaseRaw, 'BLOGGERS_PUBLIC_BASE_URL', { allowInsecureLocalhost }).toString().replace(/\/$/, '')
   const sessionSecret = resolveSecret(sessionSecretRef, { env, required: true, label: 'OIDC session signing secret' })
   if (Buffer.byteLength(sessionSecret) < 32) throw new Error('OIDC session signing secret must be at least 32 bytes')
+
+  const previousSessionSecrets = []
+  for (const reference of previousSessionSecretRefs) {
+    const secret = resolveSecret(reference, { env, required: true, label: `Previous OIDC session signing secret ${reference}` })
+    if (Buffer.byteLength(secret) < 32) throw new Error(`Previous OIDC session signing secret ${reference} must be at least 32 bytes`)
+    if (safeEqual(secret, sessionSecret)) continue
+    if (previousSessionSecrets.some((item) => safeEqual(item, secret))) continue
+    previousSessionSecrets.push(secret)
+  }
+  const sessionSecrets = [sessionSecret, ...previousSessionSecrets]
+
   const clientSecret = clientSecretRef
     ? resolveSecret(clientSecretRef, { env, required: true, label: 'OIDC client secret' })
     : null
@@ -252,6 +278,8 @@ export function loadOidcConfig(env = process.env) {
     roleRules: parseRoleRules(env.BLOGGERS_OIDC_ROLE_RULES_JSON),
     defaultRole,
     sessionSecret,
+    sessionSecrets,
+    previousSessionSecretCount: previousSessionSecrets.length,
     sessionTtlSeconds: clampInteger(env.BLOGGERS_SESSION_TTL_SECONDS, DEFAULT_SESSION_TTL_SECONDS, 900, 24 * 60 * 60),
     clockSkewSeconds: clampInteger(env.BLOGGERS_OIDC_CLOCK_SKEW_SECONDS, 60, 0, 300),
     timeoutMs: clampInteger(env.BLOGGERS_OIDC_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 1000, 60_000),
@@ -417,7 +445,7 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
     if (!code || !state) throw fail('OIDC_CALLBACK_INVALID', 'OIDC callback is missing code or state', 400)
 
     const cookies = parseCookies(cookieHeader)
-    const flow = verifyEnvelope(cookies[flowCookieName], config.sessionSecret, { kind: 'oidc-flow', now: clock() })
+    const flow = verifyEnvelope(cookies[flowCookieName], config.sessionSecrets, { kind: 'oidc-flow', now: clock() })
     if (!safeEqual(flow.state, state)) throw fail('OIDC_STATE_MISMATCH', 'OIDC state validation failed', 401)
 
     const metadata = await discovery()
@@ -476,7 +504,7 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
     const cookies = parseCookies(cookieHeader)
     if (!cookies[sessionCookieName]) return null
     try {
-      const session = verifyEnvelope(cookies[sessionCookieName], config.sessionSecret, { kind: 'oidc-session', now: clock() })
+      const session = verifyEnvelope(cookies[sessionCookieName], config.sessionSecrets, { kind: 'oidc-session', now: clock() })
       if (!ROLES.has(session.role) || !session.id || !session.name) return null
       return {
         id: session.id,
@@ -512,6 +540,7 @@ export function createOidcManager({ env = process.env, fetchFn = globalThis.fetc
       clientId: config.clientId,
       publicBaseUrl: config.publicBaseUrl,
       sessionTtlSeconds: config.sessionTtlSeconds,
+      previousSessionSecretCount: config.previousSessionSecretCount,
     } : { enabled: false },
     beginLogin,
     completeLogin,
