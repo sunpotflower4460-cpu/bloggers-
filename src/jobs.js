@@ -11,6 +11,10 @@ function leaseExpired(job, now) {
   return !job.leaseUntil || new Date(job.leaseUntil).getTime() <= now
 }
 
+function isActiveJob(job) {
+  return job.status === 'queued' || job.status === 'running'
+}
+
 export async function enqueueJob(store, input) {
   const job = {
     id: createId('job'),
@@ -33,7 +37,7 @@ export async function enqueueJob(store, input) {
   return store.mutate((state) => {
     state.jobs ??= []
     if (input.dedupeKey) {
-      const existing = state.jobs.find((item) => item.status === 'queued' && item.payload?.dedupeKey === input.dedupeKey)
+      const existing = state.jobs.find((item) => isActiveJob(item) && item.payload?.dedupeKey === input.dedupeKey)
       if (existing) return structuredClone(existing)
       job.payload = { ...(job.payload ?? {}), dedupeKey: input.dedupeKey }
     }
