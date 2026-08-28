@@ -23,8 +23,36 @@ function postContent(post) {
   return post?.content?.raw ?? post?.content?.rendered ?? post?.content ?? ''
 }
 
+function sourceContext(sources = []) {
+  return sources.map((source) => ({
+    id: source.id,
+    label: source.label,
+    url: source.url,
+    excerpt: source.excerpt,
+  }))
+}
+
+function internalLinkContext(items = []) {
+  return items.map((item) => ({ id: item.id, title: item.title, url: item.url }))
+}
+
+function appendReferences(lines, sources, internalLinks) {
+  if (sources.length > 0) {
+    lines.push('', '## 参考情報')
+    for (const source of sources.slice(0, 3)) lines.push(`- [${source.id}] ${source.label}: ${source.url}`)
+  }
+  if (internalLinks.length > 0) {
+    lines.push('', '## 関連記事')
+    for (const link of internalLinks.slice(0, 2)) lines.push(`- [${link.title}](${link.url})`)
+  }
+}
+
 export class RuleBasedProvider {
   name = 'rule-based-local'
+
+  drainUsage() {
+    return []
+  }
 
   async decide({ blog, posts, learnings = [] }) {
     const topics = blog.brain?.topics?.filter(Boolean) ?? []
@@ -47,85 +75,115 @@ export class RuleBasedProvider {
     }
   }
 
-  async draft({ blog, decision, learnings = [] }) {
+  async draft({ blog, decision, learnings = [], sources = [], internalLinks = [] }) {
     const audience = blog.brain?.audience || 'このテーマを知りたい読者'
     const voice = blog.brain?.voice || '明快で誠実'
-    const learningNote = learnings.length > 0
-      ? `\n\n## 過去の運用からの学び\n\n${learnings.slice(0, 3).map((item) => `- ${item.text}`).join('\n')}`
-      : ''
-    return {
-      title: decision.title,
-      body: [
-        `# ${decision.title}`,
-        '',
-        `${audience}に向けて、${decision.topic}を整理します。`,
-        '',
-        '## まず押さえたいこと',
-        '',
-        `${decision.topic}は、目的と前提を分けて考えると理解しやすくなります。`,
-        '',
-        '## 次に確認すること',
-        '',
-        '- 読者が今どこで迷っているか',
-        '- 一次情報や実測データで確認できることは何か',
-        '- この記事の次に読むべき情報は何か',
-        '',
-        `文体方針: ${voice}${learningNote}`,
-      ].join('\n'),
-      provider: this.name,
+    const lines = [
+      `# ${decision.title}`,
+      '',
+      `${audience}に向けて、${decision.topic}を整理します。${sources[0] ? ` [${sources[0].id}]` : ''}`,
+      '',
+      '## まず押さえたいこと',
+      '',
+      `${decision.topic}は、目的と前提を分けて考えると理解しやすくなります。`,
+      '',
+      '## 次に確認すること',
+      '',
+      '- 読者が今どこで迷っているか',
+      '- 一次情報や実測データで確認できることは何か',
+      '- この記事の次に読むべき情報は何か',
+      '',
+      `文体方針: ${voice}`,
+    ]
+    if (learnings.length > 0) {
+      lines.push('', '## 過去の運用からの学び', '', ...learnings.slice(0, 3).map((item) => `- ${item.text}`))
     }
+    appendReferences(lines, sources, internalLinks)
+    return { title: decision.title, body: lines.join('\n'), provider: this.name }
   }
 
-  async revise({ blog, decision, post, learnings = [] }) {
-    const current = postContent(post)
-    const note = learnings.length > 0
-      ? `\n\n## 今回反映する運用上の学び\n${learnings.slice(0, 3).map((item) => `- ${item.text}`).join('\n')}`
-      : ''
-    return {
-      title: postTitle(post) || decision.title,
-      body: [
-        current || `# ${postTitle(post) || decision.title}`,
-        '',
-        '## 更新メモ',
-        '',
-        `${decision.rationale} この方針に沿って、重複を増やさず既存記事をより明確に整理します。${note}`,
-      ].join('\n'),
-      provider: this.name,
-    }
+  async revise({ blog, decision, post, learnings = [], sources = [], internalLinks = [] }) {
+    const lines = [
+      postContent(post) || `# ${postTitle(post) || decision.title}`,
+      '',
+      '## 更新メモ',
+      '',
+      `${decision.rationale} この方針に沿って、重複を増やさず既存記事をより明確に整理します。${sources[0] ? ` [${sources[0].id}]` : ''}`,
+    ]
+    if (learnings.length > 0) lines.push('', '## 今回反映する運用上の学び', ...learnings.slice(0, 3).map((item) => `- ${item.text}`))
+    appendReferences(lines, sources, internalLinks)
+    return { title: postTitle(post) || decision.title, body: lines.join('\n'), provider: this.name }
+  }
+}
+
+function parsePricing() {
+  const fallback = {
+    input: Number(process.env.BLOGGERS_AI_INPUT_USD_PER_1M || 0),
+    output: Number(process.env.BLOGGERS_AI_OUTPUT_USD_PER_1M || 0),
+  }
+  try {
+    const parsed = JSON.parse(process.env.BLOGGERS_AI_PRICING_JSON || '{}')
+    return { models: parsed && typeof parsed === 'object' ? parsed : {}, fallback }
+  } catch {
+    return { models: {}, fallback }
   }
 }
 
 export class OpenAICompatibleProvider {
-  constructor({ baseUrl, apiKey, model }) {
+  constructor({ baseUrl, apiKey, models, pricing = parsePricing() }) {
     this.baseUrl = baseUrl.replace(/\/$/, '')
     this.apiKey = apiKey
-    this.model = model
-    this.name = `openai-compatible:${model}`
+    this.models = models
+    this.pricing = pricing
+    this.usage = []
+    this.name = 'openai-compatible:routed'
   }
 
-  async #complete(messages, { temperature = 0.3 } = {}) {
+  modelFor(operation) {
+    return this.models[operation] || this.models.default
+  }
+
+  #pricingFor(model) {
+    const configured = this.pricing.models?.[model] ?? {}
+    return {
+      input: Number(configured.input ?? this.pricing.fallback.input ?? 0),
+      output: Number(configured.output ?? this.pricing.fallback.output ?? 0),
+    }
+  }
+
+  #recordUsage(operation, model, usage = {}) {
+    const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0)
+    const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0)
+    const rates = this.#pricingFor(model)
+    const estimatedCostUsd = (inputTokens * rates.input + outputTokens * rates.output) / 1_000_000
+    this.usage.push({ operation, provider: this.name, model, inputTokens, outputTokens, estimatedCostUsd })
+  }
+
+  drainUsage() {
+    const entries = this.usage.splice(0)
+    return entries
+  }
+
+  async #complete(operation, messages, { temperature = 0.3 } = {}) {
+    const model = this.modelFor(operation)
+    if (!model) throw new Error(`AI model is not configured for ${operation}`)
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model: this.model, messages, temperature }),
+      body: JSON.stringify({ model, messages, temperature }),
     })
     const payload = await response.json()
-    if (!response.ok) {
-      throw new Error(payload?.error?.message || `AI provider HTTP ${response.status}`)
-    }
+    if (!response.ok) throw new Error(payload?.error?.message || `AI provider HTTP ${response.status}`)
+    this.#recordUsage(operation, model, payload?.usage)
     return payload?.choices?.[0]?.message?.content ?? ''
   }
 
   async decide({ blog, posts, metrics, learnings = [] }) {
-    const recentPosts = posts.slice(0, 20).map((post) => ({
-      id: post.id,
-      title: postTitle(post),
-      status: post.status,
-    }))
-    const content = await this.#complete([
+    const recentPosts = posts.slice(0, 20).map((post) => ({ id: post.id, title: postTitle(post), status: post.status }))
+    const content = await this.#complete('decide', [
       {
         role: 'system',
         content: 'You are the editorial director of one blog. Return JSON only. Never optimize for article count; WAIT is valid. Prefer improving an existing relevant article over creating a duplicate. Prefer measured learning over intuition.',
@@ -145,20 +203,18 @@ export class OpenAICompatibleProvider {
       },
     ])
     const decision = parseJson(content)
-    if (!decision || !['CREATE', 'UPDATE', 'WAIT'].includes(decision.action)) {
-      throw new Error('AI provider returned an invalid editorial decision')
-    }
+    if (!decision || !['CREATE', 'UPDATE', 'WAIT'].includes(decision.action)) throw new Error('AI provider returned an invalid editorial decision')
     if (decision.action === 'UPDATE' && !recentPosts.some((post) => String(post.id) === String(decision.targetPostId))) {
       throw new Error('AI provider returned UPDATE without a valid targetPostId')
     }
-    return { ...decision, provider: this.name }
+    return { ...decision, provider: `${this.name}:${this.modelFor('decide')}` }
   }
 
-  async draft({ blog, decision, learnings = [] }) {
-    const content = await this.#complete([
+  async draft({ blog, decision, learnings = [], sources = [], internalLinks = [] }) {
+    const content = await this.#complete('draft', [
       {
         role: 'system',
-        content: 'Write a useful blog draft. Follow the supplied editorial policy and voice. Do not fabricate facts or sources. Use measured learnings only when they are relevant.',
+        content: 'Write a useful blog draft. Follow the editorial policy and voice. Do not fabricate facts or sources. Cite supplied research with exact [S1] style IDs immediately after supported claims. Never invent source IDs. Add internal links only when relevant, using the exact supplied URLs.',
       },
       {
         role: 'user',
@@ -171,17 +227,19 @@ export class OpenAICompatibleProvider {
           editorialPolicy: blog.brain?.editorialPolicy,
           monetization: blog.brain?.monetization,
           recentLearnings: learnings,
+          researchSources: sourceContext(sources),
+          internalLinkCandidates: internalLinkContext(internalLinks),
         }),
       },
-    ], { temperature: 0.6 })
-    return { title: decision.title, body: content, provider: this.name }
+    ], { temperature: 0.55 })
+    return { title: decision.title, body: content, provider: `${this.name}:${this.modelFor('draft')}` }
   }
 
-  async revise({ blog, decision, post, learnings = [] }) {
-    const content = await this.#complete([
+  async revise({ blog, decision, post, learnings = [], sources = [], internalLinks = [] }) {
+    const content = await this.#complete('revise', [
       {
         role: 'system',
-        content: 'Revise an existing blog article. Preserve useful material, remove duplication, improve clarity and usefulness, and follow the supplied editorial policy. Do not fabricate facts or sources. Return the full revised article body only.',
+        content: 'Revise an existing blog article. Preserve useful material, remove duplication, improve clarity and usefulness, and follow the editorial policy. Do not fabricate facts or sources. Cite supplied research with exact [S1] style IDs. Never invent source IDs. Add supplied internal links only when relevant. Return the full revised body only.',
       },
       {
         role: 'user',
@@ -195,19 +253,27 @@ export class OpenAICompatibleProvider {
           voice: blog.brain?.voice,
           editorialPolicy: blog.brain?.editorialPolicy,
           recentLearnings: learnings,
+          researchSources: sourceContext(sources),
+          internalLinkCandidates: internalLinkContext(internalLinks),
         }),
       },
-    ], { temperature: 0.45 })
-    return { title: postTitle(post) || decision.title, body: content, provider: this.name }
+    ], { temperature: 0.4 })
+    return { title: postTitle(post) || decision.title, body: content, provider: `${this.name}:${this.modelFor('revise')}` }
   }
 }
 
 export function createAIProvider() {
   const baseUrl = process.env.BLOGGERS_AI_BASE_URL
   const apiKey = process.env.BLOGGERS_AI_API_KEY
-  const model = process.env.BLOGGERS_AI_MODEL
-  if (baseUrl && apiKey && model) {
-    return new OpenAICompatibleProvider({ baseUrl, apiKey, model })
+  const fallback = process.env.BLOGGERS_AI_MODEL
+  const models = {
+    default: fallback,
+    decide: process.env.BLOGGERS_AI_DECIDE_MODEL || fallback,
+    draft: process.env.BLOGGERS_AI_WRITE_MODEL || fallback,
+    revise: process.env.BLOGGERS_AI_REVISE_MODEL || process.env.BLOGGERS_AI_WRITE_MODEL || fallback,
+  }
+  if (baseUrl && apiKey && models.decide && models.draft && models.revise) {
+    return new OpenAICompatibleProvider({ baseUrl, apiKey, models })
   }
   return new RuleBasedProvider()
 }
