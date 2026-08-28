@@ -29,6 +29,7 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 - embedded Scheduler / standalone Worker
 - viewer / editor / admin token RBAC
 - OIDC Authorization Code + PKCE / HttpOnly signed Session
+- OIDC server-side Session registry / logout revocation / admin revoke-all
 - env / managed Secret Reference Resolver
 - literal-secret persistence guard
 - JSON Storeのcross-process transaction lock + atomic write
@@ -282,11 +283,23 @@ issuer / audience / azp / exp / nbf / iat検証
 明示Role mapping
   ↓
 HttpOnly signed Session
+  ↓
+server-side Session registryへfingerprint登録
 ```
 
 対応署名algは `RS256 / PS256 / ES256` です。JWKSは短時間cacheし、該当`kid`が見つからない場合は1回refreshしてkey rotationへ追従します。
 
 SessionはHMAC署名し、credentialやID token/access token自体はCookieへ保存しません。production HTTPSでは`__Host-bloggers_session` / `__Host-bloggers_oidc_flow`を使い、`Secure`を付与します。flow cookieは`SameSite=Lax`、login後Sessionは`SameSite=Strict`です。
+
+署名Cookieだけではなくserver-side registryも認証条件です。login callbackが正常完了したCookie fingerprintだけをactiveとして登録し、API利用時は**Cookie署名/期限が正しいこと + registryでactiveであること**の両方を要求します。導入前の未登録Cookieは再ログインが必要になります。
+
+`POST /auth/logout`はブラウザCookieを消すだけでなくserver-side registry上でも現在Sessionを失効します。そのため、同じCookieが別環境へコピーされていてもlogout後は使えません。adminは次のendpointで全OIDC Sessionを一括失効できます。
+
+```text
+POST /api/settings/sessions/revoke-all
+```
+
+Session registry本体にはfingerprint / principal ID / expiry等を保持しますが、HQ/Settingsのpublic system viewからは必ずredactします。admin向けSettingsにはactive/revoked件数のサマリだけを返します。
 
 Cookie認証ではCSRFを別途防ぐ必要があるため、POST/PATCH等のSession mutationは**`Origin`が`BLOGGERS_PUBLIC_BASE_URL`のoriginと完全一致する場合だけ許可**します。
 
@@ -294,6 +307,9 @@ Cookie認証ではCSRFを別途防ぐ必要があるため、POST/PATCH等のSes
 
 - OIDC有効時は開発用localhost-admin fallbackを使わない
 - 明示Bearer tokenが送られた場合はBearerを優先し、不正Bearerを有効Sessionへfallbackしない
+- 署名済みでもserver-side registry未登録/失効済みSessionは認証しない
+- logoutはserver-sideでも該当Sessionを失効する
+- registry fingerprint/subject情報をviewer向けsystem payloadへ出さない
 - `returnTo`は同一サイト内のrelative pathだけ許可し、open redirectを作らない
 - OIDC discovery issuerは設定issuerと完全一致必須
 - client secret / Session signing keyはSecret Resolverから取得
@@ -348,7 +364,7 @@ OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin f
 |---|---|
 | viewer | HQ / Blogs / Content / Analytics / Activity / Settings閲覧 |
 | editor | viewer + blog操作 / AI cycle / approval / Emergency Pause |
-| admin | editor + Resume / AI予算 / Scheduler設定 |
+| admin | editor + Resume / AI予算 / Scheduler設定 / 全OIDC Session失効 |
 
 従来の`BLOGGERS_ADMIN_TOKEN`はadmin互換です。RBAC tokenもenvまたはmanaged Secret Referenceで解決できます。
 
@@ -358,6 +374,8 @@ OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin f
                        Bloggers HQ / API
                               |
                  Token RBAC / OIDC Session
+                              |
+                signed cookie + server registry
                               |
                        Storage Contract
                      /                   \
@@ -392,6 +410,7 @@ Secrets: env / managed resolver → no literal credential persistence
 - `src/server.js` — HTTP/API/UI / auth route integration
 - `src/auth.js` — viewer/editor/admin authorization policy
 - `src/oidc.js` — OIDC discovery / PKCE / JWT/JWKS verification / signed Session
+- `src/oidc-session-store.js` — server-side Session registry / revoke / revoke-all
 - `src/secrets.js` — env / managed Secret Resolver
 - `src/worker.js` — standalone Worker
 - `src/storage.js` — storage factory / pool module loader
@@ -402,7 +421,7 @@ Secrets: env / managed resolver → no literal credential persistence
 - `src/postgres-learning-store.js` — PostgreSQL native experiments / memories + atomic learning transaction
 - `src/postgres-config-store.js` — PostgreSQL native Blog Brain + row-lock mutation
 - `src/postgres-system-store.js` — PostgreSQL native system sections + revision / section row locks
-- `src/system-store.js` — backend-neutral system section split/merge/mutation contract
+- `src/system-store.js` — backend-neutral system section split/merge/mutation + public redaction contract
 - `src/migrate-to-postgres.js` — JSON → PostgreSQL staged migration
 - `src/jobs.js` — leased Job Queue
 - `src/leases.js` / `src/runtime.js` — operation lease / exclusive runtime
@@ -426,7 +445,7 @@ Secrets: env / managed resolver → no literal credential persistence
 
 - PostgreSQL driverの正式依存化（guard制約変更の承認後）
 - system schema migration / revisionを使った管理UI上の競合検出
-- OIDC Sessionのserver-side revocation / key rotation grace window
+- OIDC Session signing-key rotation grace window / dedicated session table
 - AWS Secrets Manager / GCP Secret Manager / Vault等の具体provider module
 - microCMS / Contentful等の追加Connector
 - semantic / AI-assisted fact verification
