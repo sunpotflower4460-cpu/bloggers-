@@ -87,3 +87,35 @@ test('Scheduler runs a due portfolio cycle and advances nextRunAt', async () => 
     assert.ok(new Date(state.system.scheduler.nextRunAt).getTime() > Date.parse('2026-08-28T01:00:00.000Z'))
   })
 })
+
+test('Scheduler does not enqueue retries for monthly budget reserve failures', async () => {
+  await withStore(async (store) => {
+    await configureScheduler(store, { enabled: true, intervalMinutes: 15, maxRetries: 2, retryDelayMinutes: 1 })
+    await store.mutate((state) => {
+      state.system.scheduler.nextRunAt = '2026-08-28T00:00:00.000Z'
+    })
+
+    const scheduler = createScheduler({
+      store,
+      clock: () => Date.parse('2026-08-28T01:00:00.000Z'),
+      runPortfolioCycle: async () => ({
+        skipped: false,
+        results: [{
+          blogId: 'budget-blog',
+          ok: false,
+          error: 'AI monthly budget reserve reached. spent=$9.9000 budget=$10.00',
+        }],
+      }),
+      runBlogCycle: async () => ({ skipped: false }),
+      recordActivity: async () => undefined,
+    })
+
+    const result = await scheduler.tick()
+    const state = await store.read()
+    assert.equal(result.skipped, false)
+    assert.equal(state.jobs.filter((item) => item.type === 'blog-cycle').length, 0)
+    const portfolioJob = state.jobs.find((item) => item.type === 'portfolio-cycle')
+    assert.equal(portfolioJob.status, 'completed')
+    assert.deepEqual(portfolioJob.result.nonRetryableBlogs, ['budget-blog'])
+  })
+})
