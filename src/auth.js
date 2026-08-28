@@ -46,13 +46,14 @@ function parseRbacEntries(env) {
 
 export function loadAuthConfig(env = process.env) {
   const principals = parseRbacEntries(env)
-  const legacyAdmin = resolveSecret('BLOGGERS_ADMIN_TOKEN', { env, label: 'Legacy admin token' })
+  const legacyReference = clean(env.BLOGGERS_ADMIN_TOKEN_REF) || 'BLOGGERS_ADMIN_TOKEN'
+  const legacyAdmin = resolveSecret(legacyReference, { env, label: 'Legacy admin token' })
   if (legacyAdmin) {
     principals.push({
       id: 'legacy-admin',
       name: 'Legacy Admin Token',
       role: 'admin',
-      tokenEnv: 'BLOGGERS_ADMIN_TOKEN',
+      tokenEnv: legacyReference,
       token: legacyAdmin,
     })
   }
@@ -97,7 +98,7 @@ export function authorizeApiAccess({ method, pathname, token, loopback, config }
     return {
       ok: false,
       status: 403,
-      error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN or BLOGGERS_RBAC_JSON is configured.',
+      error: 'Remote API access is disabled until BLOGGERS_ADMIN_TOKEN / BLOGGERS_ADMIN_TOKEN_REF or BLOGGERS_RBAC_JSON is configured.',
     }
   }
 
