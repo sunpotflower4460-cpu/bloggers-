@@ -253,3 +253,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: 盗難・複製された有効期限内Cookieを、Cookie削除だけではserver側から即時無効化できないため。またSession識別情報をviewer向けHQ/Settingsへ露出しないため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: HMAC署名Cookieだけを有効期限まで無条件に信用する、logout時にブラウザCookieだけ削除する、session fingerprint一覧を一般Settingsレスポンスへ含める方式。
+
+### D-037
+- 日付: 2026-08-28
+- 決定: OIDC Session signing key rotationでは`BLOGGERS_SESSION_SECRET_REF`の現在鍵だけで新しいflow/session Cookieを署名し、`BLOGGERS_SESSION_PREVIOUS_SECRET_REFS`で最大2個の旧鍵を検証専用のgrace keyとして許可する。旧flow cookieはrotation中のcallback継続を許し、旧Session Cookieはserver-side registryでactiveな場合だけ継続利用できる。
+- 理由: Session signing keyを定期rotationするとき、全利用者の即時ログアウトや認証callback失敗を避けつつ、新規Cookieが旧鍵へ逆戻りすることを防ぐため。server-side revocationとのAND条件を維持することで、旧鍵を残しても失効済みSessionを復活させない。
+- 根拠（Q-ID）: Q-002
+- 却下した案: 1鍵だけを即時差し替えて全Session/flowを切断する、旧鍵でも新規Cookieを発行する、旧鍵が一致すればregistry失効状態を無視する方式。
