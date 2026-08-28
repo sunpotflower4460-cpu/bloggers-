@@ -2,47 +2,43 @@
 
 Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観測・判断・制作/改稿・公開・計測・実験・学習まで回すAI編集部OS**です。
 
-各ブログは独立した `Blog Brain` を持ち、読者・文体・目的・収益方針・Research Source・Analytics接続を分離します。その上に `Portfolio Brain` を置き、ブログ群全体を横断して「次にどのブログへ時間とAIコストを使うか」を判断します。
+各ブログは独立した `Blog Brain` を持ち、その上に `Portfolio Brain` を置きます。記事数を増やすこと自体を目的にせず、`観測 → 判断 → CREATE / UPDATE / WAIT → Research → 制作 → 品質検査 → 承認/公開 → 計測 → Experiment → Learning` を循環させます。
 
 ## 現在の実装
 
-Foundationは外部npm依存なし、Node.js標準機能だけで起動できます。
+FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規npm依存0**を維持しています。
 
 - Bloggers HQ 統合ダッシュボード
-- 複数ブログ登録 / 独立 Blog Brain
+- 複数ブログ / 独立 Blog Brain
+- Portfolio Brain
 - Memory / WordPress / Ghost Connector
-- CREATE / UPDATE / WAIT の編集判断
-- 既存記事の実改稿フロー
+- CREATE / UPDATE / WAIT
+- 既存記事の改稿
 - Autonomy Level 0〜5
-- 公開・改稿のHuman Gate
-- Emergency Pause / Resume
-- CMS + Search Console + GA4 + Custom HTTP Metrics
-- Google OAuth access tokenの自動refresh / メモリキャッシュ
-- Portfolio Brainによる優先順位付け
-- Experiment / Learning Engine
-- Blog Memoryへの実測学習
-- Research Source収集
-- `[S1]`形式のcitation quality gate
-- 数値・日付を含む主張のclaim-level citation検査
-- 引用先抜粋との数値不一致検出
-- 内部リンク候補抽出
-- Research URLのSSRF防御 / サイズ上限 / redirect拒否
-- 外部Source prompt-injection対策
-- Director / Writer / ReviserのAI model routing
-- AI token usage ledger / Cost Governor
-- 月間reserve到達直後の追加AI呼び出し停止
-- JSON-backed leased Job Queue
-- 定時Autonomous Scheduler / retry / non-retryable failure分類
-- blog cycle / approval のexclusive operation lease
-- AI Activity / Workflow / Job監査
-- viewer / editor / admin のtoken RBAC
-- Secret Reference Resolver / JSONへのliteral secret保存拒否
-- CMS / Analytics / AI / OAuth の有限timeout
-- Node標準テスト / 構文チェック
+- Human Gate / Emergency Pause
+- Search Console / GA4 / Custom HTTP Metrics
+- Google OAuth access token自動refresh（memory-only cache）
+- Experiment → Blog Memory
+- Research Source / `[S1]` citation gate
+- 数値・日付claimの文単位citation検査
+- citation先の数値不一致警告
+- 内部リンク候補
+- Research SSRF / redirect / size / prompt-injection対策
+- Director / Writer / Reviser AI Router
+- AI Usage Ledger / Cost Governor
+- persistent leased Job Queue
+- retry / non-retryable failure分類
+- blog cycle / approval exclusive lease
+- embedded Scheduler / standalone Worker
+- viewer / editor / admin RBAC
+- Secret Reference Resolver
+- JSON literal-secret persistence guard
+- JSON Storeのプロセス間transaction lock
+- PostgreSQL Store adapter / migration contract
+- Audit Log
+- Node標準テスト / GitHub Actions
 
 ## 起動
-
-必要環境: Node.js 20+
 
 ```bash
 npm start
@@ -60,7 +56,7 @@ http://localhost:3000
 npm run dev
 ```
 
-確認:
+検証:
 
 ```bash
 npm run check
@@ -69,119 +65,88 @@ npm run guard
 npm run guard:selftest
 ```
 
-## 最初の使い方
+## 自律運転
 
-1. `Blogs` でブログ名・目的・読者・文体・主要テーマを登録
-2. Connectorを `Memory / WordPress / Ghost` から選ぶ
-3. 必要ならSearch Console / GA4を接続
-4. 信頼するResearch Sourceを登録し、必要なら「出典必須」をON
-5. `AI運用サイクル` を一度手動実行
-6. `Content` で企画・下書き・quality判定を確認
-7. `Analytics` で観測・Experiment・Blog Memoryを確認
-8. `Settings` でAI予算とSchedulerを設定
-9. 問題があれば `PAUSE ALL AI` で全自動操作を即停止
+### Embedded mode
 
-## CMS Connector
-
-### Memory / Demo
-
-外部CMSを使わず、BloggersのJSON state内に疑似postを保存します。AIパイプライン・承認・Experimentを安全に試す用途です。
-
-### WordPress
-
-登録するもの:
-
-- WordPress URL
-- usernameを保持する環境変数名
-- Application Passwordを保持する環境変数名
+既定ではWebプロセス内でSchedulerも動きます。
 
 ```bash
-export WP_MUSIC_USER="editor"
-export WP_MUSIC_PASSWORD="xxxx xxxx xxxx xxxx"
+export BLOGGERS_SCHEDULER_MODE=embedded
+npm start
 ```
 
-Bloggersへ保存するのは `WP_MUSIC_USER` / `WP_MUSIC_PASSWORD` という**参照名だけ**です。
+小規模運用・ローカル検証向けです。
 
-### Ghost
+### Standalone Worker mode
 
-Ghost Admin APIのCustom Integrationを作成し、Admin API keyを環境変数へ置きます。
+Webと自律実行を分離できます。
+
+Web:
 
 ```bash
-export GHOST_MUSIC_ADMIN_KEY="<id>:<hex-secret>"
+export BLOGGERS_SCHEDULER_MODE=external
+npm start
 ```
 
-Blogs画面では次を登録します。
+Worker:
 
-- Ghost Admin URL（例 `https://your-site.ghost.io`）
-- Admin API keyを保持する環境変数名（例 `GHOST_MUSIC_ADMIN_KEY`）
-- Admin API version（既定 `v6.0`）
+```bash
+npm run worker
+```
 
-Ghost ConnectorはAdmin API keyから**有効期間5分のHS256 JWT**を都度生成し、`Authorization: Ghost <jwt>` で接続します。下書きはHTML sourceとして作成し、MarkdownベースのAI本文を基本HTMLへ変換します。既存記事の更新・公開前には最新postを再取得し、Ghostのcollision detectionに必要な `updated_at` を必ず送ります。
+WebとWorkerは同じStorageを共有します。Health / Settings APIには `schedulerMode` と現在のStorage backendを返します。
 
-Ghost Admin API keyそのものはJSONへ保存しません。
+## Storage / Transaction Boundary
 
-## Research / Citation / Claim Quality Gate
+### JSON — 現在の標準
 
-Blog Brainごとに最大6件の公開Research Sourceを登録できます。
+```bash
+export BLOGGERS_STORAGE_DRIVER=json
+export BLOGGERS_DATA_FILE=./data/state.json
+```
+
+`JsonStore` は同一Node内のqueueだけでなく、`state.json.lock` を使う**プロセス間transaction lock**を持ちます。
 
 ```text
-OpenAI Docs | https://platform.openai.com/docs
-https://example.com/primary-source
+Web process ─┐
+             ├─ filesystem transaction lock → state.json
+Worker A ────┤
+Worker B ────┘
 ```
 
-Writer / Reviserには本文の抜粋と `S1`, `S2` ... のsource IDだけを渡します。外部Sourceの本文は**未信頼データ**として扱い、そこに含まれる命令には従わないようAIへ明示します。
+書き込みは一時ファイルからatomic renameし、stale lockは期限後に回収します。lock ownerを記録するため、古いprocessが新しいprocessのlockを誤って解放しないようにしています。
 
-品質チェック:
-
-- 存在しない `[S9]` 等を引用していないか
-- 「出典必須」なのに利用可能Sourceが0件ではないか
-- 「出典必須」なのに本文にcitationがないか
-- 数値・割合・日付等を含む検証可能な主張の**同じ文**にcitationが付いているか
-- 引用したSource抜粋に本文が主張する数値が見つかるか
-- 関連する内部リンク候補があるのに利用されていないか
-
-`主張です。[S1]` のような句点直後citationも同じclaimへ結び付けて検証します。
-
-出典必須なのにclaim単位のcitationがない場合はblocking issueです。引用Sourceに数値が見つからない場合は現Foundationでは警告にし、人間または今後の強いFact Checkerで再確認できるよう `claimChecks` に残します。
-
-blocking issueがある場合、**Autonomy Level 4以上でも自動公開せずHuman Gateへ降格**します。
-
-Research fetchは `http/https` の公開URLだけを許可し、localhost、private IP、private addressへ解決されるhostを拒否します。redirectも自動追跡せず、1sourceあたりの取得量を制限します。
-
-## AI Router / Cost Governor
-
-外部AIはOpenAI互換 `/chat/completions` endpointへ接続します。
+設定:
 
 ```bash
-export BLOGGERS_AI_BASE_URL="https://provider.example/v1"
-export BLOGGERS_AI_API_KEY="..."
-export BLOGGERS_AI_MODEL="fallback-model"
+BLOGGERS_JSON_LOCK_TIMEOUT_MS=10000
+BLOGGERS_JSON_STALE_LOCK_MS=300000
 ```
 
-役割別routing:
+同一共有filesystem上のWeb + Worker分離には使えますが、複数ホストを跨ぐ本番クラスタ向けではありません。
 
-```bash
-export BLOGGERS_AI_DECIDE_MODEL="reasoning-model"
-export BLOGGERS_AI_WRITE_MODEL="writing-model"
-export BLOGGERS_AI_REVISE_MODEL="editing-model"
+### PostgreSQL — Adapter / Migration ready
+
+`src/postgres-store.js` に実Store adapter、`db/postgres/001_state_store.sql` に初期migrationを追加しています。
+
+PostgreSQL側ではmutationごとに、
+
+```sql
+BEGIN;
+SELECT document ... FOR UPDATE;
+-- mutation
+UPDATE bloggers_state ...;
+COMMIT;
 ```
 
-Pricingを設定するとAPIレスポンスのtoken usageから概算費用を保存します。
+というtransaction境界を使います。現在のstate documentを最初から細かく分解せず移行するため、既存ロジックを崩さずmulti-host transactionへ移せる構成です。
 
-```bash
-export BLOGGERS_AI_INPUT_USD_PER_1M="1.25"
-export BLOGGERS_AI_OUTPUT_USD_PER_1M="10"
-```
+ただし、現PRには `pg` 等のDB driverを**同梱していません**。これは `CONSTRAINTS.md` の「新規依存0」を守るためです。`PostgresStore` はpoolをdependency injectionする設計で、driver導入が承認された段階でstock runtimeから接続します。
 
-モデル別価格には `BLOGGERS_AI_PRICING_JSON` を利用できます。`Settings` では月間上限、1サイクル上限、reserveを設定できます。
+## Durable Job Queue
 
-Cost Governorはcycle開始時だけでなく**各AI呼び出しのusage保存直後にも月間残額を再評価**します。Director callでreserveへ到達した場合、そのusageは記録したうえでWriter/Reviserへの追加callを止めます。予算到達はSchedulerではnon-retryableとして扱います。
-
-APIキーがない場合は `RuleBasedProvider` がローカルで動き、費用0でシステムの流れを検証できます。
-
-## Durable Job Queue / Scheduler
-
-Schedulerは実行前にJobをJSONへ永続化してからleaseを取得します。
+Jobは実行前に永続化し、leaseを取得します。
 
 ```text
 queued
@@ -192,21 +157,80 @@ running
   └─ non-retryable failure → failed
 ```
 
-プロセスが `running` 中に終了しても、lease期限を過ぎたJobは次回worker tickで再び `queued` として回収されます。
+lease期限を過ぎた`running` Jobは次回tickで回収します。
 
-`Settings` からON/OFF、実行間隔（最短15分）、最大リトライ、リトライ間隔を設定できます。
+同じ`dedupeKey`を持つJobは、**queuedだけでなくrunning中もactive**として扱います。複数Workerが同じscheduled jobを同時登録しても、実行中Jobの横に重複Jobを生成しません。
 
-Portfolio cycle自体をJobとして保存し、個別ブログ失敗時はそのブログだけ `blog-cycle` Jobとして隔離します。月間AI予算reserve到達など、再試行しても直らない失敗は再キューしません。
+AI月間reserve到達など、再試行しても直らない失敗はnon-retryableです。
 
-blog cycleとapprovalには別のexclusive operation leaseがあり、手動実行とSchedulerの競合、承認の二重処理を抑えます。異常終了時はlease期限後に回収できます。
+## CMS Connector
 
-現Foundationでは**JSON-backed queue + 同一Nodeプロセス内worker**です。Job自体は再起動耐性がありますが、複数workerによる分散実行やDB transactionを使う本番queueは将来のPostgreSQL/worker化で置換します。
+### Memory / Demo
 
-## Analytics Hub / Google OAuth
+外部CMSなしでパイプラインを安全に検証します。
 
-Blog Brainには任意でSearch Console、GA4、Custom HTTP Metricsを接続できます。
+### WordPress
 
-推奨Google OAuth構成:
+保存するのはcredential値ではなく環境変数名です。
+
+```bash
+export WP_MUSIC_USER="editor"
+export WP_MUSIC_PASSWORD="xxxx xxxx xxxx xxxx"
+```
+
+### Ghost
+
+Custom Integration Admin API keyを環境変数に置きます。
+
+```bash
+export GHOST_MUSIC_ADMIN_KEY="<id>:<hex-secret>"
+```
+
+Ghost Connectorは短命HS256 JWTを生成し、HTML draft、既存記事UPDATE、publishに対応します。UPDATE / publish前には最新postを取得し、collision detection用 `updated_at` を送ります。
+
+## Research / Citation / Claim Quality Gate
+
+Research Source本文は**未信頼データ**として扱い、そこに含まれる命令をAIへ実行させない前提です。
+
+品質検査:
+
+- 存在しないsource ID
+- 出典必須なのにsourceなし
+- 出典必須なのに本文citationなし
+- 数値・割合・日付等を含むclaimの同一文citation
+- citation先抜粋で数値を確認できるか
+- 関連内部リンク候補
+
+`主張です。[S1]` のような句点直後citationも同じclaimへ結び付けます。
+
+blocking issueがあれば**Autonomy Level 4以上でも自動公開せずHuman Gateへ降格**します。
+
+Research fetchは公開HTTP(S)だけを許可し、localhost/private network、redirect、過大レスポンスを拒否します。
+
+## AI Router / Cost Governor
+
+OpenAI-compatible `/chat/completions` endpointを利用できます。
+
+```bash
+export BLOGGERS_AI_BASE_URL="https://provider.example/v1"
+export BLOGGERS_AI_API_KEY="..."
+export BLOGGERS_AI_MODEL="fallback-model"
+export BLOGGERS_AI_DECIDE_MODEL="reasoning-model"
+export BLOGGERS_AI_WRITE_MODEL="writing-model"
+export BLOGGERS_AI_REVISE_MODEL="editing-model"
+```
+
+モデル別pricingを設定するとusageから概算費用を記録します。
+
+Cost Governorはcycle開始時だけでなく**各AI callのusage保存直後**にも月間reserveを再判定します。Director callでreserveへ到達した場合、そのusageは記録し、同じcycleのWriter / Reviserを止めます。
+
+API key未設定時は費用0の`RuleBasedProvider`で流れを検証できます。
+
+## Analytics / Learning
+
+Analytics HubはCMS metricsに加えて、Search Console / GA4 / Custom HTTP Metricsを統合します。
+
+Google OAuth:
 
 ```bash
 export GOOGLE_REFRESH_TOKEN="..."
@@ -214,154 +238,85 @@ export GOOGLE_CLIENT_ID="..."
 export GOOGLE_CLIENT_SECRET="..."
 ```
 
-Bloggersは固定のGoogle token endpointでaccess tokenを更新し、更新後tokenは**プロセスメモリにだけキャッシュ**します。`state.json` にはrefresh token・client secret・更新後access tokenの値を書きません。
+refresh後access tokenはプロセスメモリだけへ保持します。
 
-互換用に発行済みaccess token方式も残しています。
+CREATE / UPDATEが実際に反映された時点でExperimentを開始し、`positive / negative / inconclusive` の完了結果だけをBlog Memoryへ昇格します。
 
-```bash
-export GSC_ACCESS_TOKEN="..."
-export GA4_ACCESS_TOKEN="..."
-```
+## RBAC / Secret Boundary
 
-Custom HTTP Metricsは数値JSONを返すendpointを統合できます。Analytics sourceの一部が取得失敗しても、利用可能データでcycleを続け、`analytics.partial` をAudit Logへ残します。
+認証未設定ではAPIはlocalhost限定です。
 
-## RBAC / API Security
-
-認証未設定では、APIはlocalhostからだけ利用でき、そのローカル接続をadminとして扱います。外部公開時はtoken認証を設定してください。
-
-従来方式の `BLOGGERS_ADMIN_TOKEN` は互換性のため残っており、常にadminです。
-
-複数ロールでは、**token値ではなくtokenを保持する環境変数名**を `BLOGGERS_RBAC_JSON` に登録します。
-
-```bash
-export BLOGGERS_VIEWER_TOKEN="..."
-export BLOGGERS_EDITOR_TOKEN="..."
-export BLOGGERS_RBAC_JSON='[
-  {"id":"reader","role":"viewer","tokenEnv":"BLOGGERS_VIEWER_TOKEN"},
-  {"id":"operator","role":"editor","tokenEnv":"BLOGGERS_EDITOR_TOKEN"}
-]'
-```
+ロール:
 
 | Role | 主な権限 |
 |---|---|
-| viewer | HQ / Blogs / Content / Analytics / Activity / Settingsの閲覧。Job詳細とAI usage詳細はredact |
-| editor | viewer + ブログ登録/更新、接続テスト、AI cycle、承認、Emergency Pause、Job閲覧 |
-| admin | editor + Resume、AI予算・Scheduler等のSettings変更 |
+| viewer | HQ / Blogs / Content / Analytics / Activity / Settings閲覧 |
+| editor | viewer + blog操作 / AI cycle / approval / Emergency Pause |
+| admin | editor + Resume / AI予算 / Scheduler設定 |
 
-Emergency Pauseは安全側へ倒す操作なのでeditorにも許可しますが、再開はadminだけです。HQ UIも現在のroleを表示し、権限のない主要操作をdisableします。サーバー側RBACが最終的な強制境界です。
+既存`BLOGGERS_ADMIN_TOKEN`はadmin互換です。複数ロールでは`BLOGGERS_RBAC_JSON`にtoken値ではなく**tokenを保持する環境変数名**を登録します。
 
-Web UIへ入力したBearer tokenは `sessionStorage` にだけ保持します。
-
-## Secret Reference Boundary
-
-Bloggersの永続データにはcredential値を置かず、`WP_MUSIC_PASSWORD` や `GHOST_MUSIC_ADMIN_KEY` のような**Secret Reference**だけを保存します。現在のResolver backendは環境変数です。
-
-```text
-state.json: passwordEnv = "WP_MUSIC_PASSWORD"
-process env: WP_MUSIC_PASSWORD = "actual secret"
-```
-
-`passwordEnv`, `accessTokenEnv`, `bearerTokenEnv`, `adminKeyEnv` などSecret Reference用フィールドへ実パスワードやAPIキーらしい文字列を書こうとすると、`JsonStore` が保存を拒否します。
-
-WordPress / Ghost / Google OAuth / Custom Analytics / RBAC / AI API key は共通Resolver境界を通して取得します。将来AWS Secrets Manager、GCP Secret Manager、1Password Connect、Vault等を追加する場合は、この境界へbackendを追加します。
-
-## Experiment / Learning Engine
-
-CREATE / UPDATEが実際に公開・反映された時点でbaselineを保存しExperimentを開始します。
-
-主要指標:
-
-```text
-clicks → views → sessions → impressions → users → published → posts
-```
-
-後続観測から `positive / negative / inconclusive` を判定し、完了結果だけを `Blog Memory` へ昇格します。次のDirector / Writer / Reviserはこの実測学習を受け取ります。
-
-## Portfolio Brain
-
-Portfolio Brainは観測値、成長率、直近失敗、承認待ち、進行中Experimentからブログをスコアリングします。手動Portfolio cycleとSchedulerはこのランキング順に実行します。
-
-## Autonomy Level
-
-| Level | 動作 |
-|---|---|
-| 0 | 観測のみ |
-| 1 | AI提案のみ |
-| 2 | 下書き/改稿案まで自動 |
-| 3 | 公開・改稿反映前に人間承認 |
-| 4 | 品質ゲートを通過した変更を自動反映 |
-| 5 | 将来の完全自律運営用 |
-
-品質ゲート・Cost Governor・Emergency Pause・RBAC・削除禁止はAutonomyより優先されます。
+Secret Reference用フィールドへ実password/API keyらしい値を書こうとするとStoreが保存を拒否します。WordPress / Ghost / Google OAuth / Custom Analytics / RBAC / AI API keyは共通Resolver境界を通します。
 
 ## アーキテクチャ
 
 ```text
-Portfolio Brain
-      |
-Persistent Job Queue + Scheduler
-      |
-Exclusive Operation Leases
-      |
-      +-- Blog Brain A ... N
-              |
-              +-- Observer / Analytics
-              +-- Director
-              +-- Research / Claim Quality Gate
-              +-- Writer / Reviser
-              +-- Publisher
-              +-- Experiment / Learner
+                    Bloggers HQ / API
+                           |
+                    Storage Contract
+                    /              \
+      JsonStore + fs lock       PostgresStore
+             |                 SELECT FOR UPDATE
+             |
+      Persistent Job Queue
+             |
+      Embedded / External Worker
+             |
+        Portfolio Brain
+             |
+       Blog Brain A ... N
+             |
+ Observer → Director → Research → Writer/Reviser
+             ↓
+ Quality Gate → Human Gate/Publisher
+             ↓
+ Analytics → Experiment → Learning
 
-AI Router
-      +-- Director model
-      +-- Writer model
-      +-- Reviser model
-      +-- Cost Governor / Usage Ledger
-
-Auth / Secret Boundary
-      +-- viewer / editor / admin
-      +-- Env Secret Resolver
-
-Connector Layer
-      +-- Memory
-      +-- WordPress
-      +-- Ghost
-      +-- future CMS
+Connector Layer: Memory / WordPress / Ghost
+AI Layer: Director / Writer / Reviser + Cost Governor
+Security: RBAC + Secret Resolver + Emergency Pause
 ```
 
 主要コード:
 
-- `src/server.js` — HTTP/API/UI・RBAC
-- `src/auth.js` — token authentication / role policy
-- `src/secrets.js` — Secret Reference validation / Resolver
-- `src/store.js` — JSON永続化 / secret-reference persistence guard
-- `src/connectors.js` — Memory / WordPress / Ghost Connector
-- `src/oauth.js` — Google OAuth refresh / memory-only token cache
-- `src/analytics.js` — GSC / GA4 / Custom Metrics
-- `src/ai.js` — AI Router / Provider
-- `src/cost.js` — Usage Ledger / Cost Governor
-- `src/quality.js` — Research / citation / claim / internal-link quality
-- `src/jobs.js` — persistent leased Job Queue
-- `src/leases.js` — exclusive operation leases
-- `src/runtime.js` — exclusive cycle / approval wrappers
-- `src/experiments.js` — Experiment / Learning
-- `src/portfolio.js` — Portfolio Brain
-- `src/orchestrator.js` — Blog運用ループ / Human Gate / Emergency Brake
-- `src/scheduler.js` — Job worker / 定時運転
-- `src/public/` — 統合HP
+- `src/server.js` — HTTP/API/UI
+- `src/worker.js` — standalone autonomous worker
+- `src/storage.js` — Storage factory / backend contract
+- `src/store.js` — JsonStore / process lock / atomic persistence
+- `src/postgres-store.js` — injected PostgreSQL adapter
+- `db/postgres/001_state_store.sql` — PostgreSQL initial migration
+- `src/jobs.js` — leased Job Queue
+- `src/scheduler.js` — Scheduler / Worker loop
+- `src/runtime.js` / `src/leases.js` — operation exclusivity
+- `src/connectors.js` — CMS connectors
+- `src/orchestrator.js` — editorial loop
+- `src/quality.js` — research / citation / claim checks
+- `src/analytics.js` / `src/experiments.js` — measurement / learning
+- `src/auth.js` / `src/secrets.js` — RBAC / secret boundary
 
 ## 次のproduction-hardening候補
 
-- PostgreSQL + transaction based queue
-- 独立worker / multi-instance DB lease
-- 実Vault backend / managed secret store
-- OIDC / session-based multi-user identity
+- PostgreSQL driver導入承認後のstock runtime接続
+- state documentからjobs / locks / blogs等を段階的に正規化
+- PostgreSQL `SKIP LOCKED` を使う高並列Job lease
+- managed Secrets backend
+- OIDC / session-based identity
 - microCMS / Contentful等の追加Connector
-- semantic / AI-assisted claim fact verification
-- Google service account対応
-- conversion / revenueを含むExperiment評価
-- provider固有Adapterとより精密な価格表
+- semantic / AI-assisted fact verification
+- Google service account
+- conversion / revenue中心のExperiment評価
+- provider固有Adapter / pricing registry
 
 ## Guardrail
 
-`AGENTS.md`、`docs/` の台帳、GitHub Actions guardを残し、実装を承認済みfeature IDへ紐づけています。
+`AGENTS.md`、`docs/` の台帳、GitHub Actions guardを維持し、承認済みfeature IDの範囲だけを実装します。
