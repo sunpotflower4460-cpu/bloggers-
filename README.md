@@ -1,31 +1,35 @@
 # Bloggers — AI Editorial Operating System
 
-Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観測・判断・制作・公開・計測・学習を回すためのAI編集部OS**です。
+Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観測・判断・制作/改稿・公開・計測・実験・学習まで回すAI編集部OS**です。
 
-単なる記事生成や一括投稿ではなく、各ブログに独立した `Blog Brain` を持たせ、ブログごとの読者・文体・目的・収益方針を混線させずに運用します。その上に `Portfolio Brain` を置き、ブログ群全体を横断して「次にどのブログへ時間を使うか」まで判断します。
+各ブログは独立した `Blog Brain` を持ち、読者・文体・目的・収益方針・Research Source・Analytics接続を分離します。その上に `Portfolio Brain` を置き、ブログ群全体を横断して「次にどのブログへ時間とAIコストを使うか」を判断します。
 
 ## 現在の実装
 
-現在のFoundationは、外部npm依存を追加せず Node.js 標準機能だけで起動できます。
+現在のFoundationは外部npm依存なし、Node.js標準機能だけで起動できます。
 
 - Bloggers HQ 統合ダッシュボード
-- 複数ブログ登録 / 独立した Blog Brain
+- 複数ブログ登録 / 独立 Blog Brain
 - Memory / WordPress Connector
-- AI Provider abstraction
-- ローカルのルールベースAI（APIキーなしでも動作）
-- OpenAI互換 Chat Completions API
-- 観測 → 判断 → 企画 → 下書き → 承認/公開 → 計測 → 学習 の運用サイクル
-- Portfolio Brainによるブログ横断スコアリングと実行順決定
+- CREATE / UPDATE / WAIT の編集判断
+- 既存記事の実改稿フロー
 - Autonomy Level 0〜5
-- 公開承認キュー
+- 公開・改稿のHuman Gate
 - Emergency Pause / Resume
-- CMS + Google Search Console + GA4 + Custom HTTP Metrics のAnalytics Hub
-- Experiment Engine
-- 実験結果から Blog Memory へ学習を昇格するLearning Engine
-- 定時Autonomous Scheduler
-- 失敗ブログの再試行キュー
-- AI Activity / Workflow監査ログ
-- JSON永続化
+- CMS + Search Console + GA4 + Custom HTTP Metrics
+- Portfolio Brainによる優先順位付け
+- Experiment / Learning Engine
+- Blog Memoryへの実測学習
+- Research Source収集
+- `[S1]`形式のcitation quality gate
+- 内部リンク候補抽出
+- Research URLのSSRF防御 / サイズ上限 / redirect拒否
+- 外部Source prompt-injection対策
+- Director / Writer / ReviserのAI model routing
+- AI token usage ledger / Cost Governor
+- JSON-backed leased Job Queue
+- 定時Autonomous Scheduler / retry
+- AI Activity / Workflow / Job監査
 - 管理トークンによるAPI保護
 - Node標準テスト / 構文チェック
 
@@ -37,13 +41,13 @@ Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観�
 npm start
 ```
 
-ブラウザで次を開きます。
+ブラウザ:
 
 ```text
 http://localhost:3000
 ```
 
-開発中:
+開発:
 
 ```bash
 npm run dev
@@ -60,17 +64,80 @@ npm run guard:selftest
 
 ## 最初の使い方
 
-1. `Blogs` でブログ名・目的・読者・文体・主要テーマを登録する
-2. 最初は `Memory / Demo` Connector でもよい
-3. 必要ならWordPressとSearch Console / GA4を接続する
-4. `AI運用サイクル` を一度手動実行する
-5. `Content` で企画と下書きを確認する
-6. `Analytics` で観測・実験・Blog Memoryを見る
-7. `Settings` で定時SchedulerをONにする
-8. `HQ` でPortfolio Brainの優先順位と承認待ちを見る
-9. 問題があれば `PAUSE ALL AI` で全自動操作を即停止する
+1. `Blogs` でブログ名・目的・読者・文体・主要テーマを登録
+2. 最初は `Memory / Demo` Connectorでもよい
+3. 必要ならWordPress / Search Console / GA4を接続
+4. 信頼するResearch Sourceを登録し、必要なら「出典必須」をON
+5. `AI運用サイクル` を一度手動実行
+6. `Content` で企画・下書き・quality判定を確認
+7. `Analytics` で観測・Experiment・Blog Memoryを確認
+8. `Settings` でAI予算とSchedulerを設定
+9. 問題があれば `PAUSE ALL AI` で全自動操作を即停止
 
-## Autonomous Scheduler
+## Research / Citation Quality Gate
+
+Blog Brainごとに最大6件の公開Research Sourceを登録できます。
+
+```text
+OpenAI Docs | https://platform.openai.com/docs
+https://example.com/primary-source
+```
+
+Writer / Reviserには本文の抜粋と `S1`, `S2` ... のsource IDだけを渡します。外部Sourceの本文は**未信頼データ**として扱い、そこに含まれる命令には従わないようAIへ明示します。
+
+品質チェックでは次を確認します。
+
+- 存在しない `[S9]` 等を引用していないか
+- 「出典必須」なのに利用可能Sourceが0件ではないか
+- 「出典必須」なのに本文にcitationがないか
+- 関連する内部リンク候補があるのに利用されていないか
+
+blocking issueがある場合、**Autonomy Level 4以上でも自動公開せずHuman Gateへ降格**します。人間が内容を確認したうえで明示承認することはできます。
+
+Research fetchは `http/https` の公開URLだけを許可し、localhost、private IP、private addressへ解決されるhostを拒否します。redirectも自動追跡せず、1sourceあたりの取得量を制限します。
+
+## AI Router / Cost Governor
+
+外部AIはOpenAI互換 `/chat/completions` endpointへ接続します。
+
+```bash
+export BLOGGERS_AI_BASE_URL="https://provider.example/v1"
+export BLOGGERS_AI_API_KEY="..."
+export BLOGGERS_AI_MODEL="fallback-model"
+```
+
+役割別routingもできます。
+
+```bash
+export BLOGGERS_AI_DECIDE_MODEL="reasoning-model"
+export BLOGGERS_AI_WRITE_MODEL="writing-model"
+export BLOGGERS_AI_REVISE_MODEL="editing-model"
+```
+
+Pricingを設定するとAPIレスポンスのtoken usageから概算費用を保存します。
+
+```bash
+export BLOGGERS_AI_INPUT_USD_PER_1M="1.25"
+export BLOGGERS_AI_OUTPUT_USD_PER_1M="10"
+```
+
+モデル別価格を使う場合は `BLOGGERS_AI_PRICING_JSON` を利用できます。`Settings` では月間上限、1サイクル上限、reserveを設定できます。月間reserveへ到達した外部AI cycleは開始しません。
+
+APIキーがない場合は `RuleBasedProvider` がローカルで動き、費用0でシステムの流れを検証できます。
+
+## Durable Job Queue / Scheduler
+
+Schedulerは実行前にJobをJSONへ永続化してからleaseを取得します。
+
+```text
+queued
+  ↓ lease
+running
+  ├─ success → completed
+  └─ failure → queued(retry) → failed
+```
+
+プロセスが `running` 中に終了しても、lease期限を過ぎたJobは次回worker tickで再び `queued` として回収されます。
 
 `Settings` から次を設定できます。
 
@@ -79,30 +146,24 @@ npm run guard:selftest
 - 最大リトライ回数
 - リトライ間隔
 
-Schedulerはプロセス起動中、期限になったらPortfolio Brainのランキング順でブログを処理します。1ブログだけ失敗した場合は、全体を止めずそのブログだけ再試行キューへ入れます。
+Portfolio cycle自体をJobとして保存し、個別ブログ失敗時はそのブログだけ `blog-cycle` Jobとして隔離します。HQ / AI画面ではqueued・running・failed Jobを確認できます。
 
-現FoundationのSchedulerは**プロセス内タイマー + JSON永続化された次回時刻/再試行キュー**です。サーバー停止中そのものを実行するdurable job workerではないため、本番の高可用性構成では後に専用queue/workerへ置換する前提です。
+現Foundationでは**JSON-backed queue + 同一Nodeプロセス内worker**です。Job自体は再起動耐性がありますが、複数workerによる分散実行やDB transactionを使う本番queueは将来のPostgreSQL/worker化で置換できます。
 
 ## Analytics Hub
 
-各Blog Brainには任意で次のAnalytics sourceを追加できます。
+Blog Brainには任意で次を接続できます。
 
 ### Google Search Console
 
-登録する値:
-
 - site URL
 - OAuth access tokenを保持する環境変数名
-
-例:
 
 ```bash
 export GSC_ACCESS_TOKEN="..."
 ```
 
 ### GA4
-
-登録する値:
 
 - Property ID
 - OAuth access tokenを保持する環境変数名
@@ -113,7 +174,7 @@ export GA4_ACCESS_TOKEN="..."
 
 ### Custom HTTP Metrics
 
-数値を持つJSON objectを返すHTTP endpointも統合できます。
+数値JSONを返すendpointを統合できます。
 
 ```json
 {
@@ -122,94 +183,56 @@ export GA4_ACCESS_TOKEN="..."
 }
 ```
 
-Bearer tokenが必要なら、そのtokenを保持する環境変数名だけBloggersへ登録します。
+Analytics sourceの一部が取得失敗しても、利用可能データでcycleを続け、`analytics.partial` をAudit Logへ残します。
 
-**重要:** 現Foundationでは、Google用にすでに発行済みのOAuth access tokenを利用します。自動refresh / service-account OAuthは次のproduction-hardeningで追加します。
-
-Analytics sourceの一部が取得失敗しても、CMSなど利用可能なデータがあれば運用サイクルは止めず、`analytics.partial` としてAudit Logへ残します。
+**現在は発行済みOAuth access tokenを利用します。自動refresh / service-account OAuthは次のproduction-hardening対象です。**
 
 ## Experiment / Learning Engine
 
-AIが実際に `CREATE` を実行すると、その時点の主要指標をbaselineとして実験が始まります。
+CREATE / UPDATEが実際に公開・反映された時点でbaselineを保存しExperimentを開始します。
 
-主要指標は次の優先順位で選びます。
+主要指標の優先順位:
 
 ```text
 clicks → views → sessions → impressions → users → published → posts
 ```
 
-その後の観測で変化を追い、一定回数の観測後に:
-
-- positive
-- negative
-- inconclusive
-
-へ分類します。完了した結果は `Blog Memory` に保存され、次回のAI Director / Writerへコンテキストとして戻ります。
-
-つまり、同じAIでも運用を続けるほど、**そのブログ自身の実測結果から学ぶ**構造です。
+後続観測から `positive / negative / inconclusive` を判定し、完了結果だけを `Blog Memory` へ昇格します。次のDirector / Writer / Reviserはこの実測学習を受け取ります。
 
 ## Portfolio Brain
 
-Portfolio Brainは全ブログを横断して、現在の観測値、成長率、直近失敗、承認待ち、進行中実験をもとにスコアを計算します。
-
-Schedulerと手動Portfolio cycleは、このランキング順でブログを処理します。
-
-HQでは:
-
-- Portfolio score
-- 成長シグナル
-- 優先順位
-- 推奨アクション
-
-を確認できます。
+Portfolio Brainは観測値、成長率、直近失敗、承認待ち、進行中Experimentからブログをスコアリングします。手動Portfolio cycleとSchedulerはこのランキング順に実行します。
 
 ## 外部公開時のセキュリティ
 
-Bloggersには記事公開やAI自動運用を実行するAPIがあるため、**localhost以外へ公開する場合は `BLOGGERS_ADMIN_TOKEN` を必ず設定**します。
+記事公開やAI自動運用APIがあるため、localhost以外へ公開する場合は `BLOGGERS_ADMIN_TOKEN` を必ず設定します。
 
 ```bash
 export BLOGGERS_ADMIN_TOKEN="十分に長いランダム値"
 ```
 
-挙動:
+- 未設定: APIはlocalhostからのみ
+- 設定済み: `/api/health` 以外はBearer認証必須
+- Web UIのtokenは `sessionStorage` のみ
+- WordPress / Google / AIのcredential値はJSONへ保存しない
+- 削除操作は常に禁止
 
-- `BLOGGERS_ADMIN_TOKEN` 未設定: APIはlocalhostからだけ利用可能
-- `BLOGGERS_ADMIN_TOKEN` 設定済み: `/api/health` 以外のAPIはBearer認証必須
-- Web UIは401を受けると管理トークン入力を求める
-- 入力したトークンはブラウザの `sessionStorage` にだけ保持する
-
-インターネットへ公開する場合は、HTTPS・リバースプロキシ・ネットワーク側のアクセス制御も使用してください。Foundation版はまだマルチユーザー認証を持ちません。
+インターネットへ公開する場合はHTTPS・リバースプロキシ・ネットワーク制御も併用してください。Foundationはまだマルチユーザー認証を持ちません。
 
 ## WordPress接続
 
-ブログ登録時に Connector を `WordPress` にして以下を登録します。
+登録するもの:
 
 - WordPress URL
-- WordPressユーザー名を格納する環境変数名
-- Application Passwordを格納する環境変数名
-
-例:
+- usernameを保持する環境変数名
+- Application Passwordを保持する環境変数名
 
 ```bash
 export WP_MUSIC_USER="editor"
 export WP_MUSIC_PASSWORD="xxxx xxxx xxxx xxxx"
 ```
 
-BloggersのJSONデータには資格情報そのものを保存しません。
-
-## AI Provider
-
-AI設定がない場合は `RuleBasedProvider` がローカルで動き、システム全体の動作を確認できます。
-
-外部AIを使用する場合:
-
-```bash
-export BLOGGERS_AI_BASE_URL="https://provider.example/v1"
-export BLOGGERS_AI_API_KEY="..."
-export BLOGGERS_AI_MODEL="model-name"
-```
-
-Foundation版の外部AI Adapter は OpenAI互換の `/chat/completions` を使用します。Provider層は分離されているため、Claude / Gemini / OpenAI固有Adapterなどを中核ロジックを変更せず追加できます。
+資格情報そのものはBloggersのJSONへ保存しません。
 
 ## Autonomy Level
 
@@ -217,43 +240,34 @@ Foundation版の外部AI Adapter は OpenAI互換の `/chat/completions` を使�
 |---|---|
 | 0 | 観測のみ |
 | 1 | AI提案のみ |
-| 2 | 下書きまで自動 |
-| 3 | 公開前に人間承認 |
-| 4 | 許可された記事を自動公開 |
+| 2 | 下書き/改稿案まで自動 |
+| 3 | 公開・改稿反映前に人間承認 |
+| 4 | 品質ゲートを通過した変更を自動反映 |
 | 5 | 将来の完全自律運営用 |
 
-削除操作はFoundation版では常に禁止しています。
+品質ゲート・Emergency Pause・削除禁止はAutonomyより優先されます。
 
 ## アーキテクチャ
 
 ```text
 Portfolio Brain
       |
-      +---- priority ranking
+Persistent Job Queue + Scheduler
       |
-Autonomous Scheduler
-      |
-      +-- Blog Brain A
-      |      +-- Observer
-      |      +-- Director
-      |      +-- Writer
-      |      +-- Publisher
-      |      +-- Learner
-      |
-      +-- Blog Brain B ... N
+      +-- Blog Brain A ... N
+              |
+              +-- Observer / Analytics
+              +-- Director
+              +-- Research / Quality Gate
+              +-- Writer / Reviser
+              +-- Publisher
+              +-- Experiment / Learner
 
-Analytics Hub
-      +-- CMS metrics
-      +-- Search Console
-      +-- GA4
-      +-- Custom HTTP
-
-Experiment Engine
-      |
-      +-- measured result
-      +-- Blog Memory
-             |
-             +--> next Director / Writer decision
+AI Router
+      +-- Director model
+      +-- Writer model
+      +-- Reviser model
+      +-- Cost Governor / Usage Ledger
 
 Connector Layer
       +-- Memory
@@ -263,33 +277,32 @@ Connector Layer
 
 主要コード:
 
-- `src/server.js` — HTTP/API/UI配信・API認証
-- `src/store.js` — 永続化
-- `src/connectors.js` — CMS Connector abstraction
-- `src/analytics.js` — Search Console / GA4 / Custom Metrics
-- `src/ai.js` — AI Provider abstraction
-- `src/experiments.js` — Experiment / Learning Engine
+- `src/server.js` — HTTP/API/UI・認証
+- `src/store.js` — JSON永続化
+- `src/connectors.js` — CMS Connector
+- `src/analytics.js` — GSC / GA4 / Custom Metrics
+- `src/ai.js` — AI Router / Provider
+- `src/cost.js` — Usage Ledger / Cost Governor
+- `src/quality.js` — Research / citation / internal-link quality
+- `src/jobs.js` — persistent leased Job Queue
+- `src/experiments.js` — Experiment / Learning
 - `src/portfolio.js` — Portfolio Brain
-- `src/orchestrator.js` — Blog運用ループ / 承認 / Emergency Brake
-- `src/scheduler.js` — 定時運転 / retry queue
+- `src/orchestrator.js` — Blog運用ループ / Human Gate / Emergency Brake
+- `src/scheduler.js` — Job worker / 定時運転
 - `src/public/` — 統合HP
 
-## 次の拡張
+## 次のproduction-hardening候補
 
-次の優先候補は以下です。
-
-- OAuth refresh / secrets vault
+- Google OAuth自動refresh / service account
+- secrets vault / encrypted credential store
 - Ghost / microCMS Connector
-- 既存記事リライト・統合・内部リンク改善
-- Source / citation管理とファクトチェック
-- durable queue / worker化
-- 収益・conversionを使ったExperiment評価
-- AIモデルRouting / Cost Governor
-- マルチユーザー認証
-- PostgreSQLへの永続化移行
+- 一次情報のtopic-aware discovery / fact claim検証
+- conversion / revenueを含むExperiment評価
+- PostgreSQL + transaction based queue
+- 独立worker / multi-instance lease
+- マルチユーザー認証 / RBAC
+- provider固有Adapterとより精密な価格表
 
 ## Guardrail
 
-このリポジトリでは、AI開発による意図しない仕様逸脱を防ぐため、`AGENTS.md` と `docs/` の台帳、GitHub Actionsのguardを残しています。
-
-現在の実装対象は `FEATURES.md` の承認済み機能IDに紐づいています。
+`AGENTS.md`、`docs/` の台帳、GitHub Actions guardを残し、実装を承認済みfeature IDへ紐づけています。
