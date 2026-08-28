@@ -25,7 +25,7 @@ export async function resolveGoogleAccessToken(input = {}, { fetchImpl = fetch, 
   const clientSecret = resolveSecret(auth.clientSecretEnv, { label: 'Google OAuth client secret' })
 
   if (!refreshToken || !clientId) {
-    if (direct) return { accessToken: direct, source: 'access-token-reference', expiresAt: null }
+    if (direct) return { accessToken: direct, source: 'access-token-env', expiresAt: null }
     const missing = []
     if (!refreshToken) missing.push(auth.refreshTokenEnv)
     if (!clientId) missing.push(auth.clientIdEnv)
