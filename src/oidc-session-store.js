@@ -96,14 +96,29 @@ export async function registerOidcSession(store, { cookieHeader, principal, cloc
   const now = nowSeconds(clock)
   if (expiresAt <= now) throw new Error('OIDC session is already expired')
 
+  const session = {
+    fingerprint,
+    principalId: principal.id,
+    subject: principal.subject ?? payload.subject ?? null,
+    issuer: principal.issuer ?? payload.issuer ?? null,
+    role: principal.role,
+    issuedAt,
+    expiresAt,
+    revokedAt: null,
+    revokedBy: null,
+  }
+  if (typeof store.oidcSessionRegister === 'function') {
+    return store.oidcSessionRegister(session, { now })
+  }
+
   return mutateSystemSection(store, 'core', (core) => {
     const registry = normalizeRegistry(core.oidcSessions)
     pruneRegistry(registry, now)
     registry.sessions[fingerprint] = {
-      principalId: principal.id,
-      subject: principal.subject ?? payload.subject ?? null,
-      issuer: principal.issuer ?? payload.issuer ?? null,
-      role: principal.role,
+      principalId: session.principalId,
+      subject: session.subject,
+      issuer: session.issuer,
+      role: session.role,
       issuedAt,
       expiresAt,
       revokedAt: null,
@@ -117,11 +132,15 @@ export async function registerOidcSession(store, { cookieHeader, principal, cloc
 export async function oidcSessionIsActive(store, { cookieHeader, principal, clock = () => Date.now() }) {
   const fingerprint = oidcSessionFingerprint(cookieHeader)
   if (!fingerprint || !principal?.id) return false
+  const now = nowSeconds(clock)
+  if (typeof store.oidcSessionActive === 'function') {
+    return store.oidcSessionActive({ fingerprint, principalId: principal.id, now })
+  }
+
   const core = await readSystemSection(store, 'core')
   const registry = normalizeRegistry(core.oidcSessions)
   const session = registry.sessions[fingerprint]
   if (!session) return false
-  const now = nowSeconds(clock)
   return session.principalId === principal.id
     && !session.revokedAt
     && Number(session.expiresAt || 0) > now
@@ -131,6 +150,10 @@ export async function revokeOidcSession(store, { cookieHeader, actor = null, clo
   const fingerprint = oidcSessionFingerprint(cookieHeader)
   if (!fingerprint) return { revoked: false, reason: 'session-cookie-missing' }
   const now = nowSeconds(clock)
+  if (typeof store.oidcSessionRevoke === 'function') {
+    return store.oidcSessionRevoke({ fingerprint, actor, now })
+  }
+
   return mutateSystemSection(store, 'core', (core) => {
     const registry = normalizeRegistry(core.oidcSessions)
     pruneRegistry(registry, now)
@@ -148,6 +171,10 @@ export async function revokeOidcSession(store, { cookieHeader, actor = null, clo
 
 export async function revokeAllOidcSessions(store, { actor = null, clock = () => Date.now() } = {}) {
   const now = nowSeconds(clock)
+  if (typeof store.oidcSessionsRevokeAll === 'function') {
+    return store.oidcSessionsRevokeAll({ actor, now })
+  }
+
   return mutateSystemSection(store, 'core', (core) => {
     const previous = normalizeRegistry(core.oidcSessions)
     const revokedCount = Object.values(previous.sessions).filter((session) => Number(session?.expiresAt || 0) > now && !session?.revokedAt).length
@@ -164,6 +191,10 @@ export async function revokeAllOidcSessions(store, { actor = null, clock = () =>
 
 export async function oidcSessionRegistrySummary(store, { clock = () => Date.now() } = {}) {
   const now = nowSeconds(clock)
+  if (typeof store.oidcSessionSummary === 'function') {
+    return store.oidcSessionSummary({ now })
+  }
+
   const core = await readSystemSection(store, 'core')
   const registry = normalizeRegistry(core.oidcSessions)
   const sessions = Object.values(registry.sessions)
