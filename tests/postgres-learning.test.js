@@ -164,7 +164,7 @@ test('PostgresLearningStore promotes legacy experiments and memories and hydrate
   assert.equal(hydrated.memories[0].text, 'legacy learning')
 })
 
-test('experiment completion and Blog Memory promotion commit in one native transaction', async () => {
+test('experiment completion and Blog Memory promotion commit in one serialized native transaction', async () => {
   const pool = fakePool()
   const store = await new PostgresLearningStore(pool).init()
   await store.experimentUpsert({
@@ -188,7 +188,8 @@ test('experiment completion and Blog Memory promotion commit in one native trans
   const before = pool.snapshot().queries.length
   const result = await evaluateExperiments(store, 'blog-1', { clicks: 12 })
   const after = pool.snapshot()
-  const transactionQueries = after.queries.slice(before).map((item) => item.text)
+  const transaction = after.queries.slice(before)
+  const transactionQueries = transaction.map((item) => item.text)
 
   assert.equal(result.completed.length, 1)
   assert.equal(result.completed[0].result, 'positive')
@@ -197,11 +198,14 @@ test('experiment completion and Blog Memory promotion commit in one native trans
   assert.equal(after.memories[0].sourceExperimentId, 'experiment-1')
 
   const begin = transactionQueries.indexOf('BEGIN')
+  const advisoryLock = transactionQueries.findIndex((text) => text.includes('pg_advisory_xact_lock'))
   const experimentWrite = transactionQueries.findIndex((text) => text.includes('INSERT INTO bloggers_experiments'))
   const memoryWrite = transactionQueries.findIndex((text) => text.includes('INSERT INTO bloggers_memories'))
   const commit = transactionQueries.lastIndexOf('COMMIT')
   assert.ok(begin >= 0)
-  assert.ok(experimentWrite > begin)
+  assert.ok(advisoryLock > begin)
+  assert.deepEqual(transaction[advisoryLock].params, ['bloggers-learning:blog-1'])
+  assert.ok(experimentWrite > advisoryLock)
   assert.ok(memoryWrite > experimentWrite)
   assert.ok(commit > memoryWrite)
 
