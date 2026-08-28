@@ -30,6 +30,7 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 - viewer / editor / admin token RBAC
 - OIDC Authorization Code + PKCE / HttpOnly signed Session
 - OIDC server-side Session registry / logout revocation / admin revoke-all
+- OIDC Session signing-key rotation grace（previous keysはverification-only、最大2）
 - env / managed Secret Reference Resolver
 - literal-secret persistence guard
 - JSON Storeのcross-process transaction lock + atomic write
@@ -301,6 +302,21 @@ POST /api/settings/sessions/revoke-all
 
 Session registry本体にはfingerprint / principal ID / expiry等を保持しますが、HQ/Settingsのpublic system viewからは必ずredactします。admin向けSettingsにはactive/revoked件数のサマリだけを返します。
 
+### Session signing key rotation
+
+Session signing keyをrotationするときは、新しい鍵を現在鍵へ変更し、直前の鍵を`BLOGGERS_SESSION_PREVIOUS_SECRET_REFS`へ一時的に置きます。最大2個までです。
+
+```bash
+BLOGGERS_SESSION_SECRET_REF=NEW_SESSION_SECRET
+BLOGGERS_SESSION_PREVIOUS_SECRET_REFS=OLD_SESSION_SECRET
+NEW_SESSION_SECRET='new-32-byte-or-longer-secret...'
+OLD_SESSION_SECRET='old-32-byte-or-longer-secret...'
+```
+
+新規flow/session Cookieは**現在鍵だけ**で署名します。previous keyは検証専用です。そのためrotation前に開始していたOIDC callbackや、まだserver-side registryでactiveな既存Sessionはgrace中だけ継続できます。失効済みSessionはprevious keyで署名が検証できてもregistry判定で拒否されるため復活しません。
+
+旧鍵referenceは、必要なgrace window（通常は最大Session TTLを上限にした運用期間）が終わったら削除します。旧鍵を長期間残し続けません。
+
 Cookie認証ではCSRFを別途防ぐ必要があるため、POST/PATCH等のSession mutationは**`Origin`が`BLOGGERS_PUBLIC_BASE_URL`のoriginと完全一致する場合だけ許可**します。
 
 安全境界:
@@ -310,6 +326,8 @@ Cookie認証ではCSRFを別途防ぐ必要があるため、POST/PATCH等のSes
 - 署名済みでもserver-side registry未登録/失効済みSessionは認証しない
 - logoutはserver-sideでも該当Sessionを失効する
 - registry fingerprint/subject情報をviewer向けsystem payloadへ出さない
+- rotation後の新規Cookieは現在鍵だけで署名する
+- previous signing keyは最大2個・検証専用
 - `returnTo`は同一サイト内のrelative pathだけ許可し、open redirectを作らない
 - OIDC discovery issuerは設定issuerと完全一致必須
 - client secret / Session signing keyはSecret Resolverから取得
@@ -375,7 +393,7 @@ OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin f
                               |
                  Token RBAC / OIDC Session
                               |
-                signed cookie + server registry
+          signed cookie + server registry + key grace
                               |
                        Storage Contract
                      /                   \
@@ -409,7 +427,7 @@ Secrets: env / managed resolver → no literal credential persistence
 
 - `src/server.js` — HTTP/API/UI / auth route integration
 - `src/auth.js` — viewer/editor/admin authorization policy
-- `src/oidc.js` — OIDC discovery / PKCE / JWT/JWKS verification / signed Session
+- `src/oidc.js` — OIDC discovery / PKCE / JWT/JWKS verification / signed Session / signing-key grace
 - `src/oidc-session-store.js` — server-side Session registry / revoke / revoke-all
 - `src/secrets.js` — env / managed Secret Resolver
 - `src/worker.js` — standalone Worker
@@ -445,7 +463,7 @@ Secrets: env / managed resolver → no literal credential persistence
 
 - PostgreSQL driverの正式依存化（guard制約変更の承認後）
 - system schema migration / revisionを使った管理UI上の競合検出
-- OIDC Session signing-key rotation grace window / dedicated session table
+- dedicated OIDC session table / per-user session management UI
 - AWS Secrets Manager / GCP Secret Manager / Vault等の具体provider module
 - microCMS / Contentful等の追加Connector
 - semantic / AI-assisted fact verification
