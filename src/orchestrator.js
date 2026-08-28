@@ -13,6 +13,7 @@ import { createAIProvider } from './ai.js'
 import { collectAnalytics } from './analytics.js'
 import { appendAnalyticsSnapshot } from './analytics-store.js'
 import { appendActivity } from './activity-store.js'
+import { resolveApprovalAndArticle, saveApproval, saveArticle } from './article-approval-store.js'
 import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
@@ -222,8 +223,13 @@ function needsApproval(blog, action) {
 }
 
 async function createApproval(store, { id = null, blogId, articleId, action, reason, targetRemoteId = null }) {
+  const approvalId = id ?? createId('approval')
+  const state = await store.read()
+  const existing = state.approvals.find((item) => item.id === approvalId)
+  if (existing) return structuredClone(existing)
+
   const approval = {
-    id: id ?? createId('approval'),
+    id: approvalId,
     blogId,
     articleId: articleId ?? null,
     targetRemoteId,
@@ -233,17 +239,7 @@ async function createApproval(store, { id = null, blogId, articleId, action, rea
     createdAt: nowIso(),
     resolvedAt: null,
   }
-  let saved = null
-  await store.mutate((state) => {
-    const existing = state.approvals.find((item) => item.id === approval.id)
-    if (existing) {
-      saved = structuredClone(existing)
-      return
-    }
-    state.approvals.unshift(approval)
-    saved = structuredClone(approval)
-  })
-  return saved
+  return saveApproval(store, approval, { limit: 3000 })
 }
 
 async function startLiveExperiment(store, { blog, article, action, snapshot = null }) {
@@ -304,6 +300,11 @@ function articleSourceMetadata(sources) {
 }
 
 async function createDraftArticle(store, { id = null, blog, idea, action, draft, remoteId = null, qualityContext }) {
+  const articleId = id ?? createId('article')
+  const state = await store.read()
+  const existing = state.articles.find((item) => item.id === articleId)
+  if (existing) return structuredClone(existing)
+
   const quality = evaluateContentQuality({
     body: draft.body,
     research: blog.research,
@@ -311,7 +312,7 @@ async function createDraftArticle(store, { id = null, blog, idea, action, draft,
     internalLinks: qualityContext.internalLinks,
   })
   const article = {
-    id: id ?? createId('article'),
+    id: articleId,
     blogId: blog.id,
     ideaId: idea.id,
     action,
@@ -325,17 +326,7 @@ async function createDraftArticle(store, { id = null, blog, idea, action, draft,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   }
-  let saved = null
-  await store.mutate((state) => {
-    const existing = state.articles.find((item) => item.id === article.id)
-    if (existing) {
-      saved = structuredClone(existing)
-      return
-    }
-    state.articles.unshift(article)
-    saved = structuredClone(article)
-  })
-  return saved
+  return saveArticle(store, article, { limit: 5000 })
 }
 
 function qualityApprovalReason(article, fallback) {
@@ -371,7 +362,11 @@ export async function runBlogCycle(store, blogId, options = {}) {
   let idea = cycleKey ? initial.ideas.find((item) => item.id === ideaId) ?? null : null
   let article = articleId ? initial.articles.find((item) => item.id === articleId) ?? null : null
   let approval = priorWorkflow?.approvalId ? initial.approvals.find((item) => item.id === priorWorkflow.approvalId) ?? null : null
-  let experiment = priorWorkflow?.experimentId ? initial.experiments.find((item) => item.id === priorWorkflow.experimentId) ?? null : null
+  let experiment = priorWorkflow?.experimentId
+    ? initial.experiments.find((item) => item.id === priorWorkflow.experimentId) ?? null
+    : article
+      ? initial.experiments.find((item) => item.articleId === article.id && item.action === article.action) ?? null
+      : null
   let snapshot = cycleKey ? initial.analytics.find((item) => item.id === metricId) ?? null : null
   let decision = priorWorkflow?.decision ?? decisionFromIdea(idea)
   let evaluation = { updated: [], completed: [] }
@@ -499,21 +494,14 @@ export async function runBlogCycle(store, blogId, options = {}) {
 
         if (article.status === 'published') {
           published = article.remoteId ? { id: article.remoteId } : null
-          experiment ??= initial.experiments.find((item) => item.articleId === article.id && item.action === 'CREATE') ?? null
+          if (!experiment) experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE', snapshot })
         } else {
           const canAutoPublish = canExecute(blog, 'PUBLISH') && article.quality.ok
           if (canAutoPublish) {
             const remote = await connector.createDraft(article)
             published = await connector.publishPost(remote.id)
-            const updatedAt = nowIso()
-            await store.mutate((state) => {
-              const saved = state.articles.find((item) => item.id === article.id)
-              if (!saved) throw new Error('Article disappeared before publish completion')
-              saved.status = 'published'
-              saved.remoteId = remote.id
-              saved.updatedAt = updatedAt
-            })
-            article = { ...article, status: 'published', remoteId: remote.id, updatedAt }
+            article = { ...article, status: 'published', remoteId: remote.id, updatedAt: nowIso() }
+            await saveArticle(store, article, { limit: 5000 })
             experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE', snapshot })
             await recordActivity(store, { blogId, agent: 'publisher', type: 'content.published', message: `「${article.title}」を自動公開しました。`, detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null } })
           } else if (needsApproval(blog, 'PUBLISH') || !article.quality.ok) {
@@ -556,19 +544,13 @@ export async function runBlogCycle(store, blogId, options = {}) {
 
         if (article.status === 'published') {
           published = article.remoteId ? { id: article.remoteId } : { id: target.id }
-          experiment ??= initial.experiments.find((item) => item.articleId === article.id && item.action === 'UPDATE') ?? null
+          if (!experiment) experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE', snapshot })
         } else {
           const canAutoUpdate = canExecute(blog, 'PUBLISH') && article.quality.ok
           if (canAutoUpdate) {
             published = await connector.updatePost(target.id, { title: article.title, content: article.body })
-            const updatedAt = nowIso()
-            await store.mutate((state) => {
-              const saved = state.articles.find((item) => item.id === article.id)
-              if (!saved) throw new Error('Article disappeared before update completion')
-              saved.status = 'published'
-              saved.updatedAt = updatedAt
-            })
-            article = { ...article, status: 'published', updatedAt }
+            article = { ...article, status: 'published', updatedAt: nowIso() }
+            await saveArticle(store, article, { limit: 5000 })
             experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE', snapshot })
             await recordActivity(store, { blogId, agent: 'publisher', type: 'content.updated', message: `「${article.title}」の改稿を自動反映しました。`, detail: { articleId: article.id, remoteId: target.id, experimentId: experiment?.id ?? null } })
           } else {
@@ -667,10 +649,9 @@ export async function resolveApproval(store, approvalId, approved) {
   if (approval.status !== 'pending') throw new Error('Approval is already resolved')
 
   if (!approved) {
-    await store.mutate((state) => {
-      const saved = state.approvals.find((item) => item.id === approvalId)
-      saved.status = 'rejected'
-      saved.resolvedAt = nowIso()
+    await resolveApprovalAndArticle(store, {
+      approvalId,
+      approvalPatch: { status: 'rejected', resolvedAt: nowIso() },
     })
     return { status: 'rejected' }
   }
@@ -682,16 +663,15 @@ export async function resolveApproval(store, approvalId, approved) {
     const connector = createConnector({ blog, store })
     const remote = await connector.createDraft(article)
     await connector.publishPost(remote.id)
-    await store.mutate((state) => {
-      const savedApproval = state.approvals.find((item) => item.id === approvalId)
-      savedApproval.status = 'approved'
-      savedApproval.resolvedAt = nowIso()
-      const savedArticle = state.articles.find((item) => item.id === article.id)
-      savedArticle.status = 'published'
-      savedArticle.remoteId = remote.id
-      savedArticle.updatedAt = nowIso()
+    const updatedAt = nowIso()
+    const resolved = await resolveApprovalAndArticle(store, {
+      approvalId,
+      approvalPatch: { status: 'approved', resolvedAt: updatedAt },
+      articleId: article.id,
+      articlePatch: { status: 'published', remoteId: remote.id, updatedAt },
     })
-    const experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE' })
+    const liveArticle = resolved.article ?? { ...article, status: 'published', remoteId: remote.id, updatedAt }
+    const experiment = await startLiveExperiment(store, { blog, article: liveArticle, action: 'CREATE' })
     await recordActivity(store, { blogId: blog.id, agent: 'publisher', type: 'content.published.after-approval', message: `承認後に「${article.title}」を公開しました。`, detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null } })
     return { status: 'approved', published: true, remoteId: remote.id, experimentId: experiment?.id ?? null }
   }
@@ -699,23 +679,22 @@ export async function resolveApproval(store, approvalId, approved) {
   if (approval.action === 'UPDATE' && blog && article && approval.targetRemoteId !== null) {
     const connector = createConnector({ blog, store })
     const remote = await connector.updatePost(approval.targetRemoteId, { title: article.title, content: article.body })
-    await store.mutate((state) => {
-      const savedApproval = state.approvals.find((item) => item.id === approvalId)
-      savedApproval.status = 'approved'
-      savedApproval.resolvedAt = nowIso()
-      const savedArticle = state.articles.find((item) => item.id === article.id)
-      savedArticle.status = 'published'
-      savedArticle.updatedAt = nowIso()
+    const updatedAt = nowIso()
+    const resolved = await resolveApprovalAndArticle(store, {
+      approvalId,
+      approvalPatch: { status: 'approved', resolvedAt: updatedAt },
+      articleId: article.id,
+      articlePatch: { status: 'published', updatedAt },
     })
-    const experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE' })
+    const liveArticle = resolved.article ?? { ...article, status: 'published', updatedAt }
+    const experiment = await startLiveExperiment(store, { blog, article: liveArticle, action: 'UPDATE' })
     await recordActivity(store, { blogId: blog.id, agent: 'publisher', type: 'content.updated.after-approval', message: `承認後に「${article.title}」の改稿を反映しました。`, detail: { articleId: article.id, remoteId: approval.targetRemoteId, experimentId: experiment?.id ?? null } })
     return { status: 'approved', updated: true, remoteId: remote.id ?? approval.targetRemoteId, experimentId: experiment?.id ?? null }
   }
 
-  await store.mutate((state) => {
-    const saved = state.approvals.find((item) => item.id === approvalId)
-    saved.status = 'approved'
-    saved.resolvedAt = nowIso()
+  await resolveApprovalAndArticle(store, {
+    approvalId,
+    approvalPatch: { status: 'approved', resolvedAt: nowIso() },
   })
   return { status: 'approved', note: 'Action approved; it will be considered by the next cycle.' }
 }
