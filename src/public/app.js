@@ -85,7 +85,12 @@ async function request(path, options = {}, allowPrompt = true) {
     }
   }
   const payload = await response.json()
-  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
+  if (!response.ok) {
+    const error = new Error(payload.error || `HTTP ${response.status}`)
+    error.code = payload.code || null
+    error.status = response.status
+    throw error
+  }
   return payload
 }
 
@@ -109,6 +114,16 @@ async function loadAll() {
   ])
   cache = { hq, blogs: blogs.blogs, content, analytics, activity, settings, jobs: jobs.jobs, jobsRestricted: Boolean(jobs.restricted) }
   updateSystemState()
+}
+
+async function handleSettingsSaveError(error) {
+  if (error.code === 'SYSTEM_VERSION_CONFLICT' || error.status === 409) {
+    await loadAll()
+    render()
+    flash('別の画面で設定が更新されたため、この変更は保存しませんでした。最新値を読み込みました。', 'error')
+    return
+  }
+  flash(error.message, 'error')
 }
 
 function updateSystemState() {
@@ -274,14 +289,18 @@ function renderSettings() {
   const usage = cache.hq.ai?.usage || {}
   const models = settings.ai.models || {}
   const principal = settings.security?.currentPrincipal || { name: 'Unknown', role: currentRole() }
+  const oidcSessions = settings.security?.oidcSessions
   const canAdmin = roleAtLeast('admin')
+  const sessionControls = settings.security?.oidc?.enabled
+    ? `<div class="wide"><p class="muted">OIDC Sessions: ${h(oidcSessions?.active ?? '—')} active${oidcSessions ? ` · ${h(oidcSessions.revoked)} revoked` : ''}</p><button class="button button-danger" id="revoke-all-sessions" ${canAdmin ? '' : 'disabled'}>全OIDC Sessionを失効</button></div>`
+    : ''
   view.innerHTML = `
     <div class="two-column">
       <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AI ROUTER</p><h2>推論エンジン</h2></div></div><dl class="brain-grid"><div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div><div><dt>Director</dt><dd>${h(models.decide || 'local')}</dd></div><div><dt>Writer</dt><dd>${h(models.write || 'local')}</dd></div><div><dt>Reviser</dt><dd>${h(models.revise || 'local')}</dd></div></dl><p class="muted">役割ごとに別モデルを指定できます。token usageはCost Governorへ記録されます。</p></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY & RBAC</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyと品質ゲートの範囲内でのみ動きます。'}</p><dl class="brain-grid"><div><dt>Principal</dt><dd>${h(principal.name)}</dd></div><div><dt>Role</dt><dd>${h(principal.role)}</dd></div></dl><p class="muted">viewerは閲覧、editorは運用/停止、adminは再開とSettings変更まで可能です。</p><button class="button button-ghost" id="forget-token">この端末のアクセストークンを忘れる</button></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY & RBAC</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyと品質ゲートの範囲内でのみ動きます。'}</p><dl class="brain-grid"><div><dt>Principal</dt><dd>${h(principal.name)}</dd></div><div><dt>Role</dt><dd>${h(principal.role)}</dd></div></dl><p class="muted">viewerは閲覧、editorは運用/停止、adminは再開とSettings変更まで可能です。</p><button class="button button-ghost" id="forget-token">この端末のアクセストークンを忘れる</button>${sessionControls}</section>
     </div>
     <form class="panel form-grid" id="budget-form">
-      <div class="panel-heading"><div><p class="eyebrow">COST GOVERNOR</p><h2>AI予算</h2></div><p class="muted">今月 ${usd(usage.totalUsd)} / ${usage.calls || 0} calls。設定変更はadminのみです。</p></div>
+      <div class="panel-heading"><div><p class="eyebrow">COST GOVERNOR</p><h2>AI予算</h2></div><p class="muted">今月 ${usd(usage.totalUsd)} / ${usage.calls || 0} calls。古い画面からの上書きは拒否します。</p></div>
       <label>状態<select name="enabled"><option value="true" ${budget.enabled === false ? '' : 'selected'}>ON</option><option value="false" ${budget.enabled === false ? 'selected' : ''}>OFF</option></select></label>
       <label>月間上限 USD<input name="monthlyUsd" type="number" min="0" step="0.01" value="${h(budget.monthlyUsd ?? 20)}"></label>
       <label>1サイクル上限 USD<input name="perCycleUsd" type="number" min="0" step="0.01" value="${h(budget.perCycleUsd ?? 2)}"></label>
@@ -289,7 +308,7 @@ function renderSettings() {
       <div class="form-actions wide"><button class="button button-primary" type="submit" ${canAdmin ? '' : 'disabled'}>AI予算を保存</button></div>
     </form>
     <form class="panel form-grid" id="scheduler-form">
-      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">永続Job Queueへ先に登録してから実行します。設定変更はadminのみです。</p></div>
+      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">永続Job Queueへ先に登録してから実行します。古い画面からの上書きは拒否します。</p></div>
       <label>状態<select name="enabled"><option value="false" ${scheduler.enabled ? '' : 'selected'}>OFF</option><option value="true" ${scheduler.enabled ? 'selected' : ''}>ON</option></select></label>
       <label>間隔（分）<input name="intervalMinutes" type="number" min="15" max="10080" value="${h(scheduler.intervalMinutes ?? 360)}"></label>
       <label>最大リトライ<input name="maxRetries" type="number" min="0" max="5" value="${h(scheduler.maxRetries ?? 2)}"></label>
@@ -303,21 +322,30 @@ function renderSettings() {
     sessionStorage.removeItem('bloggersAdminToken')
     flash('このブラウザに保持したアクセストークンを削除しました。')
   })
+  document.querySelector('#revoke-all-sessions')?.addEventListener('click', async () => {
+    if (!window.confirm('現在のOIDC Sessionを含む、すべてのOIDC Sessionを失効します。続けますか？')) return
+    try {
+      const result = await request('/api/settings/sessions/revoke-all', { method: 'POST', body: '{}' })
+      flash(`${result.revokedCount}件のOIDC Sessionを失効しました。`, 'success')
+      if (principal.authType === 'oidc') window.location.reload()
+      else await refresh()
+    } catch (error) { flash(error.message, 'error') }
+  })
   document.querySelector('#budget-form').addEventListener('submit', async (event) => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
     try {
-      await request('/api/settings/ai-budget', { method: 'PATCH', body: JSON.stringify({ enabled: data.get('enabled') === 'true', monthlyUsd: Number(data.get('monthlyUsd')), perCycleUsd: Number(data.get('perCycleUsd')), reserveUsd: Number(data.get('reserveUsd')) }) })
+      await request('/api/settings/ai-budget', { method: 'PATCH', body: JSON.stringify({ expectedVersion: settings.systemVersions?.aiBudget ?? null, enabled: data.get('enabled') === 'true', monthlyUsd: Number(data.get('monthlyUsd')), perCycleUsd: Number(data.get('perCycleUsd')), reserveUsd: Number(data.get('reserveUsd')) }) })
       await refresh('AI予算を保存しました。')
-    } catch (error) { flash(error.message, 'error') }
+    } catch (error) { await handleSettingsSaveError(error) }
   })
   document.querySelector('#scheduler-form').addEventListener('submit', async (event) => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
     try {
-      await request('/api/settings/scheduler', { method: 'PATCH', body: JSON.stringify({ enabled: data.get('enabled') === 'true', intervalMinutes: Number(data.get('intervalMinutes')), maxRetries: Number(data.get('maxRetries')), retryDelayMinutes: Number(data.get('retryDelayMinutes')) }) })
+      await request('/api/settings/scheduler', { method: 'PATCH', body: JSON.stringify({ expectedVersion: settings.systemVersions?.scheduler ?? null, enabled: data.get('enabled') === 'true', intervalMinutes: Number(data.get('intervalMinutes')), maxRetries: Number(data.get('maxRetries')), retryDelayMinutes: Number(data.get('retryDelayMinutes')) }) })
       await refresh('Scheduler設定を保存しました。')
-    } catch (error) { flash(error.message, 'error') }
+    } catch (error) { await handleSettingsSaveError(error) }
   })
 }
 
