@@ -1,4 +1,5 @@
 // @feature F-011
+import { transactExperimentMemory } from './experiment-memory-store.js'
 import { createId, nowIso } from './store.js'
 
 const METRIC_PRIORITY = ['clicks', 'views', 'sessions', 'impressions', 'users', 'published', 'posts']
@@ -42,27 +43,22 @@ export async function startExperiment(store, { blog, decision, snapshot, ideaId 
     completedAt: null,
   }
 
-  let saved = null
-  await store.mutate((state) => {
+  return transactExperimentMemory(store, blog.id, ({ experiments }) => {
     const existing = articleId
-      ? state.experiments.find((item) => item.articleId === articleId && item.action === decision.action)
+      ? experiments.find((item) => item.articleId === articleId && item.action === decision.action)
       : null
-    if (existing) {
-      saved = structuredClone(existing)
-      return
-    }
-    state.experiments.unshift(experiment)
-    saved = structuredClone(experiment)
+    if (existing) return structuredClone(existing)
+    experiments.unshift(experiment)
+    return structuredClone(experiment)
   })
-  return saved
 }
 
 export async function evaluateExperiments(store, blogId, snapshot) {
-  const completed = []
-  const updated = []
-  await store.mutate((state) => {
-    const experiments = state.experiments.filter((item) => item.blogId === blogId && item.status === 'running')
-    for (const experiment of experiments) {
+  return transactExperimentMemory(store, blogId, ({ experiments, memories }) => {
+    const completed = []
+    const updated = []
+    const running = experiments.filter((item) => item.blogId === blogId && item.status === 'running')
+    for (const experiment of running) {
       const current = Number(snapshot[experiment.targetMetric])
       if (!Number.isFinite(current)) continue
 
@@ -89,23 +85,25 @@ export async function evaluateExperiments(store, blogId, snapshot) {
 
       if (experiment.status === 'completed') {
         experiment.completedAt = nowIso()
-        const memory = {
-          id: createId('memory'),
-          scope: 'blog',
-          blogId,
-          type: 'experiment-learning',
-          createdAt: nowIso(),
-          confidence: experiment.confidence,
-          text: `${experiment.action}「${experiment.hypothesis}」は ${experiment.targetMetric} が ${Number(experiment.deltaPct || 0).toFixed(1)}% 変化し、結果は ${experiment.result}。`,
-          sourceExperimentId: experiment.id,
+        const existingMemory = memories.find((item) => item.sourceExperimentId === experiment.id)
+        if (!existingMemory) {
+          memories.unshift({
+            id: createId('memory'),
+            scope: 'blog',
+            blogId,
+            type: 'experiment-learning',
+            createdAt: nowIso(),
+            confidence: experiment.confidence,
+            text: `${experiment.action}「${experiment.hypothesis}」は ${experiment.targetMetric} が ${Number(experiment.deltaPct || 0).toFixed(1)}% 変化し、結果は ${experiment.result}。`,
+            sourceExperimentId: experiment.id,
+          })
         }
-        state.memories.unshift(memory)
-        state.memories = state.memories.slice(0, 2000)
         completed.push(structuredClone(experiment))
       }
     }
+    memories.splice(2000)
+    return { updated, completed }
   })
-  return { updated, completed }
 }
 
 export function recentLearnings(state, blogId, limit = 8) {
