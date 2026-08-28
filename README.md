@@ -32,7 +32,7 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 - literal-secret persistence guard
 - JSON Storeのcross-process transaction lock + atomic write
 - PostgreSQL state adapter + normalized jobs / operation leases
-- PostgreSQL native analytics / activities / AI usage / workflow history
+- PostgreSQL native analytics / activities / AI usage / workflow history / Director ideas
 - `FOR UPDATE SKIP LOCKED` worker leasing
 - JSON → PostgreSQL migration command
 - deployment-provided PostgreSQL pool module hook
@@ -103,15 +103,16 @@ Worker B ────┘
 - `bloggers_activities` — append-only Audit Activity Log
 - `bloggers_ai_usage` — AI Usage Ledger
 - `bloggers_workflows` — running → completed/failed のworkflow lifecycle
+- `bloggers_ideas` — Directorのappend-only企画判断履歴
 - queued Jobの `FOR UPDATE SKIP LOCKED`
 - queued/runningを対象にしたactive dedupe partial unique index
 - Job heartbeat / owner fencing
 - Operation lease heartbeat / owner fencing
 - JSON → PostgreSQL migration
 
-高頻度かつ独立性の高いappend/upsert hot pathはglobal `bloggers_state`行をロックせず専用tableへ直接書き込みます。`PostgresRuntimeStore.read()`ではそれらを従来の`state.analytics` / `state.activities` / `state.aiUsage` / `state.workflows`へ透過hydrateするため、上位のPortfolio BrainやHQはbackend差を意識しません。
+高頻度かつ独立性の高いappend/upsert hot pathはglobal `bloggers_state`行をロックせず専用tableへ直接書き込みます。`PostgresRuntimeStore` / `PostgresEditorialStore` の `read()` ではそれらを従来の`state.analytics` / `state.activities` / `state.aiUsage` / `state.workflows` / `state.ideas`へ透過hydrateするため、上位のPortfolio BrainやHQはbackend差を意識しません。
 
-一方、`blogs / ideas / articles / approvals / experiments / memories / system`等は現在も一般state transactionに残しています。特に`Experiment → Blog Memory`のように複数collectionの原子性が必要な境界は、専用transaction設計を作る前に無理に分離しません。
+一方、`blogs / articles / approvals / experiments / memories / system`等は現在も一般state transactionに残しています。特に`Experiment → Blog Memory`や公開承認のように複数entityの原子性が必要な境界は、専用transaction設計を作る前に無理に分離しません。
 
 現PRは「新規npm依存0」を守るため `pg` 等を同梱していません。デプロイ環境側のESM pool moduleを読み込みます。
 
@@ -132,7 +133,7 @@ export BLOGGERS_MIGRATION_JSON_FILE=./data/state.json
 npm run migrate:postgres
 ```
 
-移行時に`running`だったJobは`queued`へ戻して旧ownerを破棄し、旧operation leaseも引き継ぎません。Analytics / Activity / AI Usage / Workflowがnative capabilityを持つStoreでは、これらもglobal documentへ二重保持せず専用tableへ直接移します。
+移行時に`running`だったJobは`queued`へ戻して旧ownerを破棄し、旧operation leaseも引き継ぎません。Analytics / Activity / AI Usage / Workflow / Ideaがnative capabilityを持つStoreでは、これらもglobal documentへ二重保持せず専用tableへ直接移します。
 
 ## Durable execution / side-effect fencing
 
@@ -316,7 +317,7 @@ API key未設定時は`RuleBasedProvider`でパイプラインを検証できま
 
 Analytics HubはCMS metrics + Search Console + GA4 + Custom HTTP Metricsを統合します。Google refresh後access tokenはmemory-onlyです。
 
-PostgreSQLでは観測snapshotを`bloggers_analytics`へ直接appendし、Audit Logは`bloggers_activities`、Workflow lifecycleは`bloggers_workflows`へ分離しています。
+PostgreSQLでは観測snapshotを`bloggers_analytics`へ直接appendし、Audit Logは`bloggers_activities`、Workflow lifecycleは`bloggers_workflows`、Directorの企画判断は`bloggers_ideas`へ分離しています。
 
 CREATE / UPDATEが実際に反映された時点でExperimentを開始し、`positive / negative / inconclusive` の結果を評価します。完了した実測結果だけをBlog Memoryへ昇格し、次のDirector/Writer/Reviserへ戻します。ExperimentとMemoryの原子的な昇格境界は現在も一般state transactionに残しています。
 
@@ -346,7 +347,8 @@ OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin f
                state.json    bloggers_state    normalized hot paths
                                              jobs / leases / analytics
                                              activities / AI usage
-                                             workflows / SKIP LOCKED
+                                             workflows / ideas
+                                             SKIP LOCKED
                      \                   /
                       Embedded / External Worker
                               |
@@ -374,7 +376,8 @@ Secrets: env / managed resolver → no literal credential persistence
 - `src/storage.js` — storage factory / pool module loader
 - `src/store.js` — JsonStore
 - `src/postgres-store.js` — PostgreSQL state / native jobs / leases
-- `src/postgres-runtime-store.js` — PostgreSQL native hot paths / operation lease renewal
+- `src/postgres-runtime-store.js` — PostgreSQL native runtime hot paths / operation lease renewal
+- `src/postgres-editorial-store.js` — PostgreSQL native editorial history (`ideas`)
 - `src/migrate-to-postgres.js` — JSON → PostgreSQL staged migration
 - `src/jobs.js` — leased Job Queue
 - `src/leases.js` / `src/runtime.js` — operation lease / exclusive runtime
@@ -388,11 +391,12 @@ Secrets: env / managed resolver → no literal credential persistence
 - `src/activity-store.js` — backend-neutral Audit Activity persistence
 - `src/ai-usage-store.js` — backend-neutral AI Usage Ledger persistence
 - `src/workflow-store.js` — backend-neutral Workflow lifecycle persistence
+- `src/idea-store.js` — backend-neutral Director Idea persistence
 
 ## 次のproduction-hardening候補
 
 - PostgreSQL driverの正式依存化（guard制約変更の承認後）
-- blogs / ideas / articles / approvalsの段階的なPostgreSQL正規化
+- blogs / articles / approvalsの段階的なPostgreSQL正規化
 - Experiment → Memoryを同一DB transactionで扱うnative設計
 - OIDC Sessionのserver-side revocation / key rotation grace window
 - AWS Secrets Manager / GCP Secret Manager / Vault等の具体provider module
