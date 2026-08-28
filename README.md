@@ -22,7 +22,8 @@ Foundation版では、外部npm依存を追加せず Node.js 標準機能だけ�
 - Analyticsスナップショット基盤
 - AI Activity / Workflow監査ログ
 - JSON永続化
-- Node標準テスト
+- 管理トークンによるAPI保護
+- Node標準テスト / 構文チェック
 
 ## 起動
 
@@ -44,9 +45,10 @@ http://localhost:3000
 npm run dev
 ```
 
-テスト:
+確認:
 
 ```bash
+npm run check
 npm test
 npm run guard
 npm run guard:selftest
@@ -61,6 +63,23 @@ npm run guard:selftest
 5. `Content` でAIの企画と下書きを確認する
 6. `HQ` で承認待ちやPortfolio Brainの状態を見る
 7. 必要なら `PAUSE ALL AI` で全自動操作を即時停止する
+
+## 外部公開時のセキュリティ
+
+Bloggersには記事公開やAI自動運用を実行するAPIがあるため、**localhost以外へ公開する場合は `BLOGGERS_ADMIN_TOKEN` を必ず設定**します。
+
+```bash
+export BLOGGERS_ADMIN_TOKEN="十分に長いランダム値"
+```
+
+挙動:
+
+- `BLOGGERS_ADMIN_TOKEN` 未設定: APIはlocalhostからだけ利用可能
+- `BLOGGERS_ADMIN_TOKEN` 設定済み: `/api/health` 以外のAPIはBearer認証必須
+- Web UIは401を受けると管理トークン入力を求める
+- 入力したトークンはブラウザの `sessionStorage` にだけ保持する
+
+インターネットへ公開する場合は、これに加えてHTTPS・リバースプロキシ・ネットワーク側のアクセス制御を使用してください。Foundation版はまだマルチユーザー認証を持ちません。
 
 ## WordPress接続
 
@@ -140,7 +159,7 @@ JsonStore
 
 主要コード:
 
-- `src/server.js` — HTTP/API/UI配信
+- `src/server.js` — HTTP/API/UI配信・API認証
 - `src/store.js` — 永続化
 - `src/connectors.js` — CMS Connector abstraction
 - `src/ai.js` — AI Provider abstraction
