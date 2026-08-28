@@ -16,6 +16,7 @@ import { appendActivity } from './activity-store.js'
 import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
+import { appendIdea } from './idea-store.js'
 import { summarizeJobs } from './jobs.js'
 import { buildPortfolioPlan } from './portfolio.js'
 import { buildInternalLinkCandidates, evaluateContentQuality, gatherResearchSources } from './quality.js'
@@ -382,10 +383,7 @@ export async function runBlogCycle(store, blogId, options = {}) {
       status: decision.action === 'WAIT' ? 'observing' : 'proposed',
       createdAt: nowIso(),
     }
-    await store.mutate((state) => {
-      state.ideas.unshift(idea)
-      state.ideas = state.ideas.slice(0, 3000)
-    })
+    await appendIdea(store, idea, { limit: 3000 })
 
     let article = null
     let approval = null
