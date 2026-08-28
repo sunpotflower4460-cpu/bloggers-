@@ -1,5 +1,6 @@
 // @feature F-004
 // @feature F-005
+// @feature F-006
 // @feature F-007
 // @feature F-009
 // @feature F-012
@@ -38,6 +39,8 @@ export async function migrateJsonToPostgres({
   const sourceAiUsage = structuredClone(sourceState.aiUsage ?? [])
   const sourceWorkflows = structuredClone(sourceState.workflows ?? [])
   const sourceIdeas = structuredClone(sourceState.ideas ?? [])
+  const sourceArticles = structuredClone(sourceState.articles ?? [])
+  const sourceApprovals = structuredClone(sourceState.approvals ?? [])
   const portableState = structuredClone(sourceState)
   portableState.jobs = []
   portableState.locks = []
@@ -56,11 +59,15 @@ export async function migrateJsonToPostgres({
   const nativeAiUsage = typeof target.aiUsageAppend === 'function'
   const nativeWorkflows = typeof target.workflowUpsert === 'function'
   const nativeIdeas = typeof target.ideaAppend === 'function'
+  const nativeArticles = typeof target.articleUpsert === 'function'
+  const nativeApprovals = typeof target.approvalUpsert === 'function'
   if (nativeAnalytics) portableState.analytics = []
   if (nativeActivities) portableState.activities = []
   if (nativeAiUsage) portableState.aiUsage = []
   if (nativeWorkflows) portableState.workflows = []
   if (nativeIdeas) portableState.ideas = []
+  if (nativeArticles) portableState.articles = []
+  if (nativeApprovals) portableState.approvals = []
 
   await target.transaction((state) => {
     for (const key of Object.keys(state)) delete state[key]
@@ -105,6 +112,22 @@ export async function migrateJsonToPostgres({
     }
   }
 
+  let migratedArticles = 0
+  if (nativeArticles) {
+    for (const article of sourceArticles) {
+      await target.articleUpsert(article, { limit: 5000 })
+      migratedArticles += 1
+    }
+  }
+
+  let migratedApprovals = 0
+  if (nativeApprovals) {
+    for (const approval of sourceApprovals) {
+      await target.approvalUpsert(approval, { limit: 3000 })
+      migratedApprovals += 1
+    }
+  }
+
   const existing = await target.read()
   const existingJobIds = new Set((existing.jobs ?? []).map((job) => job.id))
   let migratedJobs = 0
@@ -125,8 +148,9 @@ export async function migrateJsonToPostgres({
 
   return {
     source: absoluteSource,
-    blogs: portableState.blogs?.length ?? 0,
-    articles: portableState.articles?.length ?? 0,
+    blogs: sourceState.blogs?.length ?? 0,
+    articles: sourceArticles.length,
+    approvals: sourceApprovals.length,
     migratedAnalytics,
     analyticsKeptInStateDocument: nativeAnalytics ? 0 : sourceAnalytics.length,
     migratedActivities,
@@ -137,6 +161,10 @@ export async function migrateJsonToPostgres({
     workflowsKeptInStateDocument: nativeWorkflows ? 0 : sourceWorkflows.length,
     migratedIdeas,
     ideasKeptInStateDocument: nativeIdeas ? 0 : sourceIdeas.length,
+    migratedArticles,
+    articlesKeptInStateDocument: nativeArticles ? 0 : sourceArticles.length,
+    migratedApprovals,
+    approvalsKeptInStateDocument: nativeApprovals ? 0 : sourceApprovals.length,
     migratedJobs,
     skippedJobs,
     recoveredRunningJobs,
