@@ -1,4 +1,5 @@
 // @feature F-007
+// @feature F-009
 // @feature F-012
 import { PostgresStore } from './postgres-store.js'
 import { normalizeState } from './store.js'
@@ -25,10 +26,18 @@ function analyticsDocument(row) {
   return document
 }
 
-function safeLimit(value, fallback = 5000) {
+function activityDocument(row) {
+  const document = structuredClone(decodeJson(row.document) ?? {})
+  document.id ??= row.id
+  document.blogId ??= row.blog_id ?? null
+  document.createdAt ??= iso(row.created_at)
+  return document
+}
+
+function safeLimit(value, fallback = 5000, max = 50_000) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
-  return Math.max(1, Math.min(50_000, Math.round(parsed)))
+  return Math.max(1, Math.min(max, Math.round(parsed)))
 }
 
 export class PostgresRuntimeStore extends PostgresStore {
@@ -40,7 +49,12 @@ export class PostgresRuntimeStore extends PostgresStore {
   }
 
   get capabilities() {
-    return { ...super.capabilities, nativeLeaseRenew: true, nativeAnalytics: true }
+    return {
+      ...super.capabilities,
+      nativeLeaseRenew: true,
+      nativeAnalytics: true,
+      nativeActivities: true,
+    }
   }
 
   async init() {
@@ -63,11 +77,28 @@ export class PostgresRuntimeStore extends PostgresStore {
       CREATE INDEX IF NOT EXISTS bloggers_analytics_time_idx
       ON bloggers_analytics (captured_at DESC)
     `)
-    await this.#promoteLegacyAnalytics()
+    await this.#runtimePool.query(`
+      CREATE TABLE IF NOT EXISTS bloggers_activities (
+        id text PRIMARY KEY,
+        blog_id text,
+        created_at timestamptz NOT NULL,
+        document jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `)
+    await this.#runtimePool.query(`
+      CREATE INDEX IF NOT EXISTS bloggers_activities_blog_time_idx
+      ON bloggers_activities (blog_id, created_at DESC)
+    `)
+    await this.#runtimePool.query(`
+      CREATE INDEX IF NOT EXISTS bloggers_activities_time_idx
+      ON bloggers_activities (created_at DESC)
+    `)
+    await this.#promoteLegacyCollections()
     return this
   }
 
-  async #promoteLegacyAnalytics() {
+  async #promoteLegacyCollections() {
     const client = await this.#runtimePool.connect()
     try {
       await client.query('BEGIN')
@@ -77,10 +108,12 @@ export class PostgresRuntimeStore extends PostgresStore {
       )
       const raw = decodeJson(locked.rows?.[0]?.document) ?? {}
       const state = normalizeState(raw)
-      const legacy = Array.isArray(state.analytics) ? state.analytics : []
+      const legacyAnalytics = Array.isArray(state.analytics) ? state.analytics : []
+      const legacyActivities = Array.isArray(state.activities) ? state.activities : []
+      let changed = false
 
-      if (legacy.length > 0) {
-        for (const snapshot of legacy) {
+      if (legacyAnalytics.length > 0) {
+        for (const snapshot of legacyAnalytics) {
           if (!snapshot?.id || !snapshot?.blogId || !snapshot?.capturedAt) continue
           await client.query(
             `INSERT INTO bloggers_analytics
@@ -95,6 +128,29 @@ export class PostgresRuntimeStore extends PostgresStore {
           )
         }
         state.analytics = []
+        changed = true
+      }
+
+      if (legacyActivities.length > 0) {
+        for (const activity of legacyActivities) {
+          if (!activity?.id || !activity?.createdAt) continue
+          await client.query(
+            `INSERT INTO bloggers_activities
+               (id, blog_id, created_at, document, updated_at)
+             VALUES ($1, $2, $3::timestamptz, $4::jsonb, now())
+             ON CONFLICT (id) DO UPDATE SET
+               blog_id = EXCLUDED.blog_id,
+               created_at = EXCLUDED.created_at,
+               document = EXCLUDED.document,
+               updated_at = now()`,
+            [activity.id, activity.blogId ?? null, activity.createdAt, JSON.stringify(activity)],
+          )
+        }
+        state.activities = []
+        changed = true
+      }
+
+      if (changed) {
         await client.query(
           `UPDATE bloggers_state
            SET document = $2::jsonb, version = $3, updated_at = now()
@@ -113,11 +169,13 @@ export class PostgresRuntimeStore extends PostgresStore {
   }
 
   async read() {
-    const [state, analytics] = await Promise.all([
+    const [state, analytics, activities] = await Promise.all([
       super.read(),
       this.analyticsList({ limit: 5000 }),
+      this.activityList({ limit: 1000 }),
     ])
     state.analytics = analytics
+    state.activities = activities
     return state
   }
 
@@ -176,6 +234,62 @@ export class PostgresRuntimeStore extends PostgresStore {
       params,
     )
     return (result.rows ?? []).map(analyticsDocument)
+  }
+
+  async activityAppend(activity, { limit = 1000 } = {}) {
+    if (!activity?.id) throw new Error('Activity id is required')
+    if (!activity?.createdAt) throw new Error('Activity createdAt is required')
+    const keep = safeLimit(limit, 1000, 20_000)
+    const client = await this.#runtimePool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `INSERT INTO bloggers_activities
+           (id, blog_id, created_at, document, updated_at)
+         VALUES ($1, $2, $3::timestamptz, $4::jsonb, now())
+         ON CONFLICT (id) DO UPDATE SET
+           blog_id = EXCLUDED.blog_id,
+           created_at = EXCLUDED.created_at,
+           document = EXCLUDED.document,
+           updated_at = now()`,
+        [activity.id, activity.blogId ?? null, activity.createdAt, JSON.stringify(activity)],
+      )
+      await client.query(
+        `DELETE FROM bloggers_activities
+         WHERE id IN (
+           SELECT id FROM bloggers_activities
+           ORDER BY created_at DESC, id DESC
+           OFFSET $1
+         )`,
+        [keep],
+      )
+      await client.query('COMMIT')
+      return structuredClone(activity)
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      client.release?.()
+    }
+  }
+
+  async activityList({ blogId = null, limit = 1000 } = {}) {
+    const take = safeLimit(limit, 1000, 20_000)
+    const params = blogId ? [blogId, take] : [take]
+    const result = await this.#runtimePool.query(
+      blogId
+        ? `SELECT id, blog_id, created_at, document
+           FROM bloggers_activities
+           WHERE blog_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`
+        : `SELECT id, blog_id, created_at, document
+           FROM bloggers_activities
+           ORDER BY created_at DESC, id DESC
+           LIMIT $1`,
+      params,
+    )
+    return (result.rows ?? []).map(activityDocument)
   }
 
   async leaseRenew(key, owner, { ttlMs, now = Date.now() } = {}) {
