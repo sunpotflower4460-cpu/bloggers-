@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Bloggers — AIが複数ブログを運用する統合編集部OS">
+  <title>Bloggers HQ</title>
+  <link rel="stylesheet" href="/tokens.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <div>
+          <strong>Bloggers</strong>
+          <small>Editorial OS</small>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="メインナビゲーション">
+        <button class="nav-item is-active" data-view="hq">HQ</button>
+        <button class="nav-item" data-view="blogs">Blogs</button>
+        <button class="nav-item" data-view="content">Content</button>
+        <button class="nav-item" data-view="analytics">Analytics</button>
+        <button class="nav-item" data-view="ai">AI</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <span class="status-dot" id="system-dot"></span>
+        <span id="system-label">接続中…</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="view-eyebrow">PORTFOLIO CONTROL</p>
+          <h1 id="view-title">Bloggers HQ</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="button button-ghost" id="refresh-button">更新</button>
+          <button class="button button-primary" id="cycle-button">AI運用サイクル</button>
+          <button class="button button-danger" id="pause-button">PAUSE ALL AI</button>
+        </div>
+      </header>
+
+      <section id="notice" class="notice" hidden></section>
+      <section id="view" class="view" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <template id="blog-form-template">
+    <form class="panel form-grid" id="blog-form">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">CONNECT A BLOG</p>
+          <h2>ブログを追加</h2>
+        </div>
+        <p class="muted">資格情報そのものは保存せず、環境変数名だけを登録します。</p>
+      </div>
+
+      <label>ブログ名<input name="name" required placeholder="例: Music Journal"></label>
+      <label>目的<input name="purpose" placeholder="このブログが誰に何を届けるか"></label>
+      <label>読者<input name="audience" placeholder="例: 宅録を始めた音楽制作者"></label>
+      <label>文体<input name="voice" placeholder="例: 静かで具体的、専門用語は噛み砕く"></label>
+      <label class="wide">主要テーマ<input name="topics" placeholder="録音, ミックス, 作曲"></label>
+      <label class="wide">編集方針<textarea name="editorialPolicy" rows="3" placeholder="一次情報を優先し、分からないことを断定しない"></textarea></label>
+
+      <label>Connector
+        <select name="connectorType">
+          <option value="memory">Memory / Demo</option>
+          <option value="wordpress">WordPress</option>
+        </select>
+      </label>
+      <label>自動運用レベル
+        <select name="autonomyLevel">
+          <option value="0">0 — 観測のみ</option>
+          <option value="1">1 — 提案のみ</option>
+          <option value="2" selected>2 — 下書きまで</option>
+          <option value="3">3 — 公開前承認</option>
+          <option value="4">4 — 自動公開</option>
+          <option value="5">5 — 自律運営</option>
+        </select>
+      </label>
+
+      <div class="wordpress-fields wide" hidden>
+        <label>WordPress URL<input name="endpoint" placeholder="https://example.com"></label>
+        <label>ユーザー名の環境変数<input name="usernameEnv" placeholder="WP_MUSIC_USER"></label>
+        <label>Application Passwordの環境変数<input name="passwordEnv" placeholder="WP_MUSIC_PASSWORD"></label>
+      </div>
+
+      <div class="form-actions wide">
+        <button class="button button-primary" type="submit">Blog Brainを作成して接続</button>
+      </div>
+    </form>
+  </template>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
