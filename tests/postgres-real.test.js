@@ -4,6 +4,13 @@ import { spawnSync } from 'node:child_process'
 import { addBlog, setPaused, updateBlog } from '../src/orchestrator.js'
 import { createConnector } from '../src/connectors.js'
 import {
+  registerOidcSession,
+  oidcSessionIsActive,
+  oidcSessionRegistrySummary,
+  revokeAllOidcSessions,
+  revokeOidcSession,
+} from '../src/oidc-session-store.js'
+import {
   configureAiBudgetVersioned,
   configureSchedulerVersioned,
   settingsVersions,
@@ -99,9 +106,32 @@ class PsqlPool {
   }
 }
 
+function sessionCookie({
+  id = 'oidc:integration-user',
+  subject = 'integration-user',
+  role = 'admin',
+  issuedAt = 1_800_000_000,
+  expiresAt = issuedAt + 3600,
+} = {}) {
+  const payload = Buffer.from(JSON.stringify({
+    kind: 'oidc-session',
+    id,
+    name: 'Integration Admin',
+    role,
+    authType: 'oidc',
+    subject,
+    issuer: 'https://issuer.example.com',
+    iat: issuedAt,
+    exp: expiresAt,
+  })).toString('base64url')
+  return `__Host-bloggers_session=${payload}.integration-signature`
+}
+
 async function dropFoundationTables(pool) {
   await pool.query(`
     DROP TABLE IF EXISTS
+      bloggers_oidc_sessions,
+      bloggers_oidc_session_control,
       bloggers_system_settings,
       bloggers_blogs,
       bloggers_memories,
@@ -128,6 +158,35 @@ test('real PostgreSQL accepts the layered store SQL and round-trips core domains
       env: { ...process.env, BLOGGERS_STORAGE_DRIVER: 'postgres' },
       postgresPool: pool,
     })
+    assert.equal(store.capabilities.nativeOidcSessions, true)
+
+    const oidcPrincipal = {
+      id: 'oidc:integration-user',
+      name: 'Integration Admin',
+      role: 'admin',
+      authType: 'oidc',
+      subject: 'integration-user',
+      issuer: 'https://issuer.example.com',
+    }
+    const oidcClock = () => 1_800_000_100_000
+    const firstSession = sessionCookie()
+    await registerOidcSession(store, { cookieHeader: firstSession, principal: oidcPrincipal, clock: oidcClock })
+    assert.equal(await oidcSessionIsActive(store, { cookieHeader: firstSession, principal: oidcPrincipal, clock: oidcClock }), true)
+    assert.deepEqual(await oidcSessionRegistrySummary(store, { clock: oidcClock }), { generation: 1, active: 1, revoked: 0 })
+
+    const revoked = await revokeOidcSession(store, { cookieHeader: firstSession, actor: oidcPrincipal.id, clock: oidcClock })
+    assert.equal(revoked.revoked, true)
+    assert.equal(await oidcSessionIsActive(store, { cookieHeader: firstSession, principal: oidcPrincipal, clock: oidcClock }), false)
+    assert.deepEqual(await oidcSessionRegistrySummary(store, { clock: oidcClock }), { generation: 1, active: 0, revoked: 1 })
+
+    const secondPrincipal = { ...oidcPrincipal, id: 'oidc:integration-user-2', subject: 'integration-user-2' }
+    const secondSession = sessionCookie({ id: secondPrincipal.id, subject: secondPrincipal.subject })
+    await registerOidcSession(store, { cookieHeader: secondSession, principal: secondPrincipal, clock: oidcClock })
+    const revokeAll = await revokeAllOidcSessions(store, { actor: oidcPrincipal.id, clock: oidcClock })
+    assert.equal(revokeAll.revokedCount, 1)
+    assert.equal(revokeAll.generation, 2)
+    assert.equal(await oidcSessionIsActive(store, { cookieHeader: secondSession, principal: secondPrincipal, clock: oidcClock }), false)
+    assert.deepEqual(await oidcSessionRegistrySummary(store, { clock: oidcClock }), { generation: 2, active: 0, revoked: 0 })
 
     const blog = await addBlog(store, {
       name: 'Integration Blog',
@@ -181,6 +240,7 @@ test('real PostgreSQL accepts the layered store SQL and round-trips core domains
     assert.equal(stateAfterBlog.system.scheduler.intervalMinutes, 30)
     assert.equal(stateAfterBlog.system.aiBudget.monthlyUsd, 35)
     assert.equal(stateAfterBlog.system.paused, false)
+    assert.equal(Object.hasOwn(stateAfterBlog.system, 'oidcSessions'), false)
 
     const connector = createConnector({ blog: liveBlog, store })
     const article = { id: 'article-integration', title: 'Integration draft', body: 'body' }
@@ -210,11 +270,15 @@ test('real PostgreSQL accepts the layered store SQL and round-trips core domains
       SELECT
         (SELECT count(*) FROM bloggers_blogs) AS blogs,
         (SELECT count(*) FROM bloggers_system_settings) AS system_sections,
+        (SELECT count(*) FROM bloggers_oidc_session_control) AS oidc_control,
+        (SELECT count(*) FROM bloggers_oidc_sessions) AS oidc_sessions,
         (SELECT count(*) FROM bloggers_experiments) AS experiments,
         (SELECT count(*) FROM bloggers_memories) AS memories
     `)
     assert.equal(Number(normalized.rows[0].blogs), 1)
     assert.equal(Number(normalized.rows[0].system_sections), 3)
+    assert.equal(Number(normalized.rows[0].oidc_control), 1)
+    assert.equal(Number(normalized.rows[0].oidc_sessions), 0)
     assert.equal(Number(normalized.rows[0].experiments), 1)
     assert.equal(Number(normalized.rows[0].memories), 1)
   } finally {
