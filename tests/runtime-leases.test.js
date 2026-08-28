@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { acquireLease, releaseLease } from '../src/leases.js'
+import { acquireLease, releaseLease, renewLease } from '../src/leases.js'
 import { addBlog } from '../src/orchestrator.js'
 import { runBlogCycleExclusive } from '../src/runtime.js'
 import { JsonStore } from '../src/store.js'
@@ -49,6 +49,28 @@ test('only one editorial cycle may run for the same blog at a time', async () =>
     const result = await first
     assert.equal(result.decision.action, 'WAIT')
     assert.equal((await store.read()).locks.length, 0)
+  })
+})
+
+test('operation lease renewal extends ownership and fences other owners', async () => {
+  await withStore(async (store) => {
+    const first = await acquireLease(store, 'blog-cycle:b1', { owner: 'worker-a', ttlMs: 1000, now: 1000 })
+    assert.equal(first.acquired, true)
+
+    const renewed = await renewLease(store, 'blog-cycle:b1', 'worker-a', { ttlMs: 1000, now: 1500 })
+    assert.equal(renewed.expiresAt, new Date(2500).toISOString())
+
+    const blocked = await acquireLease(store, 'blog-cycle:b1', { owner: 'worker-b', ttlMs: 1000, now: 2200 })
+    assert.equal(blocked.acquired, false)
+
+    await assert.rejects(
+      () => renewLease(store, 'blog-cycle:b1', 'worker-b', { ttlMs: 1000, now: 2200 }),
+      (error) => error?.code === 'OPERATION_LEASE_LOST',
+    )
+
+    const reclaimed = await acquireLease(store, 'blog-cycle:b1', { owner: 'worker-b', ttlMs: 1000, now: 2600 })
+    assert.equal(reclaimed.acquired, true)
+    assert.equal(await releaseLease(store, 'blog-cycle:b1', 'worker-b'), true)
   })
 })
 
