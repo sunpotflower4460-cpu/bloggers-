@@ -8,11 +8,21 @@ function envValue(name) {
   return String(process.env[name] || '').trim() || null
 }
 
+function normalizedAuth(auth = {}) {
+  return {
+    accessTokenEnv: auth.accessTokenEnv || null,
+    refreshTokenEnv: auth.refreshTokenEnv || 'GOOGLE_REFRESH_TOKEN',
+    clientIdEnv: auth.clientIdEnv || 'GOOGLE_CLIENT_ID',
+    clientSecretEnv: auth.clientSecretEnv || 'GOOGLE_CLIENT_SECRET',
+  }
+}
+
 function cacheKey(auth) {
   return [auth.clientIdEnv, auth.clientSecretEnv, auth.refreshTokenEnv].filter(Boolean).join('|')
 }
 
-export async function resolveGoogleAccessToken(auth = {}, { fetchImpl = fetch, now = () => Date.now() } = {}) {
+export async function resolveGoogleAccessToken(input = {}, { fetchImpl = fetch, now = () => Date.now() } = {}) {
+  const auth = normalizedAuth(input)
   const direct = envValue(auth.accessTokenEnv)
   const refreshToken = envValue(auth.refreshTokenEnv)
   const clientId = envValue(auth.clientIdEnv)
@@ -21,11 +31,8 @@ export async function resolveGoogleAccessToken(auth = {}, { fetchImpl = fetch, n
   if (!refreshToken || !clientId) {
     if (direct) return { accessToken: direct, source: 'access-token-env', expiresAt: null }
     const missing = []
-    if (!auth.refreshTokenEnv && !auth.accessTokenEnv) missing.push('accessTokenEnv or refreshTokenEnv')
-    else {
-      if (!refreshToken) missing.push(auth.refreshTokenEnv || 'refreshTokenEnv')
-      if (!clientId) missing.push(auth.clientIdEnv || 'clientIdEnv')
-    }
+    if (!refreshToken) missing.push(auth.refreshTokenEnv)
+    if (!clientId) missing.push(auth.clientIdEnv)
     throw new Error(`Google OAuth credential env is missing: ${missing.join(', ')}`)
   }
 
@@ -35,11 +42,7 @@ export async function resolveGoogleAccessToken(auth = {}, { fetchImpl = fetch, n
     return { accessToken: cached.accessToken, source: 'refreshed-cache', expiresAt: cached.expiresAt }
   }
 
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    client_id: clientId,
-  })
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId })
   if (clientSecret) body.set('client_secret', clientSecret)
 
   const response = await fetchImpl('https://oauth2.googleapis.com/token', {
@@ -56,10 +59,7 @@ export async function resolveGoogleAccessToken(auth = {}, { fetchImpl = fetch, n
   }
 
   const expiresIn = Math.max(60, Number(payload.expires_in || 3600))
-  const token = {
-    accessToken: payload.access_token,
-    expiresAt: now() + expiresIn * 1000,
-  }
+  const token = { accessToken: payload.access_token, expiresAt: now() + expiresIn * 1000 }
   googleTokenCache.set(key, token)
   return { ...token, source: 'refresh-token' }
 }
