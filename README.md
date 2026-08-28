@@ -1,6 +1,6 @@
 # Bloggers — AI Editorial Operating System
 
-Bloggers は、**AIが複数のブログへ接続し、1つの統合HPから観測・判断・制作/改稿・公開・計測・実験・学習まで回すAI編集部OS**です。
+Bloggers は、**AIが複数ブログへ接続し、1つの統合HPから観測・判断・制作/改稿・公開・計測・実験・学習まで回すAI編集部OS**です。
 
 各ブログは独立した `Blog Brain` を持ち、その上に `Portfolio Brain` を置きます。記事数を増やすこと自体を目的にせず、`観測 → 判断 → CREATE / UPDATE / WAIT → Research → 制作 → 品質検査 → 承認/公開 → 計測 → Experiment → Learning` を循環させます。
 
@@ -20,12 +20,14 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 - Director / Writer / Reviser AI Router
 - AI Usage Ledger / Cost Governor
 - persistent leased Job Queue / retry / non-retryable分類
+- bounded Worker concurrency（default 4 / 1〜20）
 - Job owner / heartbeat / stale-worker fencing
 - blog cycle / approval operation lease + heartbeat
 - Connector書き込み直前のJob + Operation二重fence
 - WordPress / Ghost remote draftのretry-idempotency
 - embedded Scheduler / standalone Worker
-- viewer / editor / admin RBAC
+- viewer / editor / admin token RBAC
+- OIDC Authorization Code + PKCE / HttpOnly signed Session
 - env / managed Secret Reference Resolver
 - literal-secret persistence guard
 - JSON Storeのcross-process transaction lock + atomic write
@@ -42,7 +44,11 @@ FoundationはNode.js 20+で動き、既存guardrailの制約に従って**新規
 npm start
 ```
 
-ブラウザは `http://localhost:3000` です。
+既定のローカルURL:
+
+```text
+http://localhost:3000
+```
 
 Standalone Workerを使う場合:
 
@@ -134,7 +140,9 @@ running
   └─ non-retryable failure → failed
 ```
 
-同じ`dedupeKey`はqueued/runningの両方をactiveとして扱います。長いJobはheartbeatでleaseを更新し、別Workerへownerが移った後は古いWorkerの`complete/fail`を拒否します。
+同じ`dedupeKey`はqueued/runningの両方をactiveとして扱います。Workerは`BLOGGERS_WORKER_CONCURRENCY`件だけJobをleaseし、その件数をすぐ並列処理します。大量Jobを先取りしてheartbeat前に期限切れさせる構造は取りません。
+
+長いJobはheartbeatでleaseを更新し、別Workerへownerが移った後は古いWorkerの`complete/fail`を拒否します。
 
 さらに、完了時だけでは不十分なので、**CMSへの外部書き込み直前にもlease ownershipを再検証**します。
 
@@ -180,7 +188,6 @@ Secret Referenceは以下を使えます。
 
 ```text
 WP_MUSIC_PASSWORD
-
 env:WP_MUSIC_PASSWORD
 managed:bloggers/music/wp-password
 ```
@@ -191,17 +198,80 @@ managed backendはデプロイ環境側のESM moduleを起動時に読み込み�
 export BLOGGERS_SECRET_PROVIDER_MODULE=./deploy/secrets.mjs
 ```
 
-moduleは `createSecretResolver({ env })` / `resolver` / `default` のいずれかをexportできます。起動時preloadは非同期で構いませんが、runtimeの`resolve(key)`は同期である必要があります。これによりConnectorの既存同期credential境界を維持しながらVault等へ差し替えられます。
+moduleは `createSecretResolver({ env })` / `resolver` / `default` のいずれかをexportできます。起動時preloadは非同期で構いませんが、runtimeの`resolve(key)`は同期である必要があります。
 
-AI / RBAC / Google OAuthにもreference overrideがあります。
+AI / RBAC / Google OAuth / OIDCにもreference overrideを使えます。
 
 ```bash
 BLOGGERS_ADMIN_TOKEN_REF=managed:bloggers/admin-token
 BLOGGERS_AI_API_KEY_REF=managed:bloggers/ai/api-key
 GOOGLE_REFRESH_TOKEN_REF=managed:bloggers/google/refresh-token
+BLOGGERS_OIDC_CLIENT_SECRET_REF=managed:bloggers/oidc/client-secret
+BLOGGERS_SESSION_SECRET_REF=managed:bloggers/session-signing-key
 ```
 
 Secret Reference用フィールドへ実password/API keyらしいliteral値を書こうとするとStoreが永続化を拒否します。
+
+## Browser identity — OIDC + HttpOnly Session
+
+従来のBearer token RBACは維持しつつ、ブラウザ利用者はOIDCでログインできます。OIDCは未設定なら完全に無効です。
+
+```bash
+BLOGGERS_OIDC_ISSUER=https://idp.example.com
+BLOGGERS_OIDC_CLIENT_ID=bloggers
+BLOGGERS_OIDC_CLIENT_SECRET_REF=OIDC_CLIENT_SECRET
+BLOGGERS_PUBLIC_BASE_URL=https://bloggers.example.com
+BLOGGERS_SESSION_SECRET_REF=BLOGGERS_SESSION_SECRET
+
+OIDC_CLIENT_SECRET='...'
+BLOGGERS_SESSION_SECRET='32-bytes-or-longer-random-secret...'
+```
+
+Role mappingはIdPのclaimを**明示的にBloggers roleへ対応付ける**方式です。
+
+```bash
+BLOGGERS_OIDC_ROLE_RULES_JSON='[
+  {"claim":"groups","value":"bloggers-admins","role":"admin"},
+  {"claim":"groups","value":"bloggers-editors","role":"editor"},
+  {"claim":"groups","value":"bloggers-viewers","role":"viewer"}
+]'
+```
+
+ruleが1件も一致しないidentityはログイン拒否です。全IdPユーザーへroleを付けたい場合だけ`BLOGGERS_OIDC_DEFAULT_ROLE=viewer`等を明示します。
+
+認証フロー:
+
+```text
+Browser
+  ↓ /auth/login
+Authorization Code + PKCE
+  ↓ callback
+state + nonce検証
+  ↓
+ID token JWKS署名検証
+  ↓
+issuer / audience / azp / exp / nbf / iat検証
+  ↓
+明示Role mapping
+  ↓
+HttpOnly signed Session
+```
+
+対応署名algは `RS256 / PS256 / ES256` です。JWKSは短時間cacheし、該当`kid`が見つからない場合は1回refreshしてkey rotationへ追従します。
+
+SessionはHMAC署名し、credentialやID token/access token自体はCookieへ保存しません。productionではHTTPSを前提に`Secure`、flow cookieは`SameSite=Lax`、login後Sessionは`SameSite=Strict`です。
+
+Cookie認証ではCSRFを別途防ぐ必要があるため、POST/PATCH等のSession mutationは**`Origin`が`BLOGGERS_PUBLIC_BASE_URL`のoriginと完全一致する場合だけ許可**します。
+
+安全境界:
+
+- OIDC有効時は開発用localhost-admin fallbackを使わない
+- 明示Bearer tokenが送られた場合はBearerを優先し、不正Bearerを有効Sessionへfallbackしない
+- `returnTo`は同一サイト内のrelative pathだけ許可し、open redirectを作らない
+- OIDC discovery issuerは設定issuerと完全一致必須
+- client secret / Session signing keyはSecret Resolverから取得
+
+ローカルOIDC検証でHTTPが必要な場合だけ`BLOGGERS_OIDC_ALLOW_INSECURE_LOCALHOST=true`を明示してください。productionでは使用しません。
 
 ## Research / Citation / Quality Gate
 
@@ -243,7 +313,7 @@ CREATE / UPDATEが実際に反映された時点でExperimentを開始し、`pos
 
 ## RBAC
 
-認証未設定ではAPIはlocalhost限定です。
+OIDCもBearer tokenも未設定の場合だけ、APIはlocalhost限定のadmin fallbackを使います。OIDCを有効化した時点でこのfallbackは無効です。
 
 | Role | 主な権限 |
 |---|---|
@@ -257,6 +327,8 @@ CREATE / UPDATEが実際に反映された時点でExperimentを開始し、`pos
 
 ```text
                        Bloggers HQ / API
+                              |
+                 Token RBAC / OIDC Session
                               |
                        Storage Contract
                      /                   \
@@ -283,7 +355,10 @@ Secrets: env / managed resolver → no literal credential persistence
 
 主要コード:
 
-- `src/server.js` — HTTP/API/UI
+- `src/server.js` — HTTP/API/UI / auth route integration
+- `src/auth.js` — viewer/editor/admin authorization policy
+- `src/oidc.js` — OIDC discovery / PKCE / JWT/JWKS verification / signed Session
+- `src/secrets.js` — env / managed Secret Resolver
 - `src/worker.js` — standalone Worker
 - `src/storage.js` — storage factory / pool module loader
 - `src/store.js` — JsonStore
@@ -298,13 +373,12 @@ Secrets: env / managed resolver → no literal credential persistence
 - `src/orchestrator.js` — editorial loop
 - `src/quality.js` — Research / Citation / Claim checks
 - `src/analytics.js` / `src/experiments.js` — measurement / learning
-- `src/auth.js` / `src/secrets.js` — RBAC / Secret Boundary
 
 ## 次のproduction-hardening候補
 
 - PostgreSQL driverの正式依存化（guard制約変更の承認後）
 - blogs / articles / analytics / experiments等の段階的なPostgreSQL正規化
-- OIDC / session-based identity
+- OIDC Sessionのserver-side revocation / key rotation grace window
 - AWS Secrets Manager / GCP Secret Manager / Vault等の具体provider module
 - microCMS / Contentful等の追加Connector
 - semantic / AI-assisted fact verification
