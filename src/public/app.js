@@ -5,6 +5,8 @@
 // @feature F-007
 // @feature F-008
 // @feature F-009
+// @feature F-010
+// @feature F-011
 const view = document.querySelector('#view')
 const title = document.querySelector('#view-title')
 const eyebrow = document.querySelector('#view-eyebrow')
@@ -15,7 +17,14 @@ const systemDot = document.querySelector('#system-dot')
 const systemLabel = document.querySelector('#system-label')
 
 let currentView = 'hq'
-let cache = { hq: null, blogs: [], content: null, analytics: [], activity: null, settings: null }
+let cache = {
+  hq: null,
+  blogs: [],
+  content: null,
+  analytics: { analytics: [], experiments: [], memories: [] },
+  activity: null,
+  settings: null,
+}
 
 const labels = {
   hq: ['PORTFOLIO CONTROL', 'Bloggers HQ'],
@@ -80,21 +89,19 @@ async function loadAll() {
     request('/api/activity?limit=120'),
     request('/api/settings'),
   ])
-  cache = {
-    hq,
-    blogs: blogs.blogs,
-    content,
-    analytics: analytics.analytics,
-    activity,
-    settings,
-  }
+  cache = { hq, blogs: blogs.blogs, content, analytics, activity, settings }
   updateSystemState()
 }
 
 function updateSystemState() {
   const paused = Boolean(cache.hq?.system?.paused)
+  const scheduler = cache.hq?.system?.scheduler
   systemDot.classList.toggle('is-paused', paused)
-  systemLabel.textContent = paused ? 'AI停止中' : 'AI稼働可能'
+  systemLabel.textContent = paused
+    ? 'AI停止中'
+    : scheduler?.enabled
+      ? `自律運転 ON · ${scheduler.intervalMinutes}分`
+      : 'AI稼働可能'
   pauseButton.textContent = paused ? 'RESUME AI' : 'PAUSE ALL AI'
   pauseButton.classList.toggle('button-danger', !paused)
   pauseButton.classList.toggle('button-primary', paused)
@@ -110,8 +117,15 @@ function renderHQ() {
   const blogRows = data.blogs.length
     ? data.blogs.map((blog) => `
       <article class="blog-row">
-        <div><span class="connector-pill">${h(blog.connector)}</span><h3>${h(blog.name)}</h3><p>Autonomy L${h(blog.autonomyLevel)} · 承認待ち ${h(blog.pendingApprovals)}</p></div>
-        <div class="blog-row-status"><strong>${blog.latestMetric ? `${h(blog.latestMetric.posts ?? 0)} posts` : '未観測'}</strong><small>${blog.lastWorkflow ? fmtDate(blog.lastWorkflow.finishedAt || blog.lastWorkflow.startedAt) : 'サイクル未実行'}</small></div>
+        <div>
+          <span class="connector-pill">${h(blog.connector)}</span>
+          <h3>${h(blog.name)}</h3>
+          <p>Autonomy L${h(blog.autonomyLevel)} · Score ${h(blog.portfolioScore ?? '—')} · 承認待ち ${h(blog.pendingApprovals)}</p>
+        </div>
+        <div class="blog-row-status">
+          <strong>${blog.latestMetric ? `${h(blog.latestMetric.clicks ?? blog.latestMetric.views ?? blog.latestMetric.posts ?? 0)} ${blog.latestMetric.clicks !== undefined ? 'clicks' : blog.latestMetric.views !== undefined ? 'views' : 'posts'}` : '未観測'}</strong>
+          <small>${blog.lastWorkflow ? fmtDate(blog.lastWorkflow.finishedAt || blog.lastWorkflow.startedAt) : 'サイクル未実行'}</small>
+        </div>
       </article>`).join('')
     : '<div class="empty-state"><strong>まだブログが接続されていません。</strong><p>Blogsから最初のBlog Brainを作成すると、AI編集部が動き始めます。</p></div>'
 
@@ -119,18 +133,33 @@ function renderHQ() {
     ? data.pendingApprovals.map((item) => `<div class="approval-row"><div><strong>${h(item.action)}</strong><p>${h(item.reason)}</p></div><button class="button button-small" data-approve="${h(item.id)}">承認</button></div>`).join('')
     : '<p class="muted">承認待ちはありません。</p>'
 
+  const ranking = data.portfolio?.ranking?.length
+    ? data.portfolio.ranking.slice(0, 5).map((item, index) => `<div class="idea-row"><strong>#${index + 1}</strong><div><h3>${h(item.name)}</h3><p>score ${h(item.score)} · ${h(item.signal || '観測待ち')} ${h(item.growthPct)}%</p></div></div>`).join('')
+    : '<p class="muted">Portfolio rankingはまだありません。</p>'
+
   view.innerHTML = `
     <div class="metrics-grid">
       ${metric('Blogs', data.totals.blogs, `${data.totals.activeBlogs} active`)}
       ${metric('Drafts', data.totals.drafts, 'AIが作成した下書き')}
       ${metric('Published', data.totals.published, 'Bloggers経由の公開')}
       ${metric('Approvals', data.totals.pendingApprovals, '人間の判断待ち')}
+      ${metric('Experiments', data.totals.runningExperiments, '検証中')}
+      ${metric('Learnings', data.totals.learnings, 'Blog Memoryへ昇格')}
     </div>
     <div class="hero-panel"><div><p class="eyebrow">PORTFOLIO BRAIN</p><h2>いま全体で何をすべきか</h2></div><p class="hero-message">${h(data.portfolioRecommendation)}</p></div>
     <div class="two-column">
       <section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLOG NETWORK</p><h2>ブログ群</h2></div></div><div class="stack">${blogRows}</div></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">HUMAN GATE</p><h2>承認待ち</h2></div></div><div class="stack">${approvals}</div></section>
-    </div>`
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">PORTFOLIO ORDER</p><h2>優先順位</h2></div></div><div class="stack">${ranking}</div></section>
+    </div>
+    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">HUMAN GATE</p><h2>承認待ち</h2></div></div><div class="stack">${approvals}</div></section>`
+}
+
+function analyticsLabels(blog) {
+  const labels = []
+  if (blog.analytics?.searchConsole?.siteUrl) labels.push('GSC')
+  if (blog.analytics?.ga4?.propertyId) labels.push('GA4')
+  if (blog.analytics?.http?.endpoint) labels.push('HTTP')
+  return labels.length ? labels.join(' + ') : 'CMS only'
 }
 
 function renderBlogs() {
@@ -144,6 +173,7 @@ function renderBlogs() {
           <div><dt>Audience</dt><dd>${h(blog.brain.audience || '未設定')}</dd></div>
           <div><dt>Voice</dt><dd>${h(blog.brain.voice || '未設定')}</dd></div>
           <div><dt>Topics</dt><dd>${h((blog.brain.topics || []).join(' / ') || '未設定')}</dd></div>
+          <div><dt>Analytics</dt><dd>${h(analyticsLabels(blog))}</dd></div>
         </dl>
         <div class="inline-controls">
           <label>Autonomy<select data-autonomy="${h(blog.id)}">${[0,1,2,3,4,5].map((level) => `<option value="${level}" ${level === Number(blog.autonomy.level) ? 'selected' : ''}>Level ${level}</option>`).join('')}</select></label>
@@ -174,14 +204,27 @@ function renderContent() {
 }
 
 function renderAnalytics() {
-  const rows = cache.analytics.length
-    ? cache.analytics.map((item) => {
+  const rows = cache.analytics.analytics.length
+    ? cache.analytics.analytics.map((item) => {
         const blog = cache.blogs.find((entry) => entry.id === item.blogId)
-        return `<tr><td>${h(blog?.name || item.blogId)}</td><td>${h(item.source)}</td><td>${h(item.posts ?? '—')}</td><td>${h(item.published ?? '—')}</td><td>${h(item.views ?? '未接続')}</td><td>${fmtDate(item.capturedAt)}</td></tr>`
+        return `<tr><td>${h(blog?.name || item.blogId)}</td><td>${h(item.source)}</td><td>${h(item.clicks ?? '—')}</td><td>${h(item.views ?? '—')}</td><td>${h(item.impressions ?? '—')}</td><td>${h(item.posts ?? '—')}</td><td>${fmtDate(item.capturedAt)}</td></tr>`
       }).join('')
-    : '<tr><td colspan="6">まだ観測データがありません。AI運用サイクルを実行してください。</td></tr>'
+    : '<tr><td colspan="7">まだ観測データがありません。AI運用サイクルを実行してください。</td></tr>'
 
-  view.innerHTML = `<section class="panel"><div class="panel-heading"><div><p class="eyebrow">MEASUREMENT</p><h2>観測スナップショット</h2></div><p class="muted">Search Console / GA接続は次段階で同じAnalytics Hubへ追加できます。</p></div><div class="table-wrap"><table><thead><tr><th>Blog</th><th>Source</th><th>Posts</th><th>Published</th><th>Views</th><th>Captured</th></tr></thead><tbody>${rows}</tbody></table></div></section>`
+  const experiments = cache.analytics.experiments.length
+    ? cache.analytics.experiments.slice(0, 20).map((item) => `<div class="idea-row"><strong>${h(item.status)}</strong><div><h3>${h(item.action)} · ${h(item.targetMetric)}</h3><p>${h(item.hypothesis)} / Δ ${h(Number(item.deltaPct || 0).toFixed(1))}% / obs ${h(item.observations)}</p></div></div>`).join('')
+    : '<p class="muted">まだ実験はありません。実行されたCREATE施策から自動で始まります。</p>'
+
+  const memories = cache.analytics.memories.length
+    ? cache.analytics.memories.slice(0, 20).map((item) => `<div class="activity-row"><time>${fmtDate(item.createdAt)}</time><span class="agent-name">learned</span><div><p>${h(item.text)}</p><small>confidence ${h(Number(item.confidence || 0).toFixed(2))}</small></div></div>`).join('')
+    : '<p class="muted">確定した学習はまだありません。</p>'
+
+  view.innerHTML = `
+    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">MEASUREMENT</p><h2>観測スナップショット</h2></div><p class="muted">CMS + Search Console + GA4 + Custom Metricsを同一スナップショットへ統合します。</p></div><div class="table-wrap"><table><thead><tr><th>Blog</th><th>Source</th><th>Clicks</th><th>Views</th><th>Impressions</th><th>Posts</th><th>Captured</th></tr></thead><tbody>${rows}</tbody></table></div></section>
+    <div class="two-column">
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EXPERIMENTS</p><h2>仮説 → 検証</h2></div></div><div class="stack">${experiments}</div></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLOG MEMORY</p><h2>学習済み知見</h2></div></div><div class="timeline">${memories}</div></section>
+    </div>`
 }
 
 function renderAI() {
@@ -192,19 +235,47 @@ function renderAI() {
       }).join('')
     : '<p class="muted">AI活動ログはまだありません。</p>'
 
-  view.innerHTML = `<section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div><p class="muted">AIが何を観測し、なぜ判断したかを追跡します。</p></div><div class="timeline">${activities}</div></section>`
+  view.innerHTML = `<section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div><p class="muted">Observer / Director / Writer / Publisher / Learner / Scheduler の判断を追跡します。</p></div><div class="timeline">${activities}</div></section>`
 }
 
 function renderSettings() {
   const settings = cache.settings
+  const scheduler = settings.system.scheduler || {}
   view.innerHTML = `
     <div class="two-column">
       <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AI PROVIDER</p><h2>推論エンジン</h2></div></div><dl class="brain-grid"><div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div><div><dt>Model</dt><dd>${h(settings.ai.model || 'ローカルルールベース')}</dd></div></dl><p class="muted">BLOGGERS_AI_BASE_URL / BLOGGERS_AI_API_KEY / BLOGGERS_AI_MODEL を設定すると、OpenAI互換APIへ切り替わります。</p></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyの範囲内でのみ動きます。'}</p><p class="muted">削除操作はFoundation版では常に禁止です。外部公開時はBLOGGERS_ADMIN_TOKENでAPIを保護します。</p><button class="button button-ghost" id="forget-token">この端末の管理トークンを忘れる</button></section>
-    </div>`
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyの範囲内でのみ動きます。'}</p><p class="muted">削除操作は常に禁止です。外部公開時はBLOGGERS_ADMIN_TOKENでAPIを保護します。</p><button class="button button-ghost" id="forget-token">この端末の管理トークンを忘れる</button></section>
+    </div>
+    <form class="panel form-grid" id="scheduler-form">
+      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">プロセス起動中、Portfolio Brainの優先順位で自動サイクルを回します。</p></div>
+      <label>状態<select name="enabled"><option value="false" ${scheduler.enabled ? '' : 'selected'}>OFF</option><option value="true" ${scheduler.enabled ? 'selected' : ''}>ON</option></select></label>
+      <label>間隔（分）<input name="intervalMinutes" type="number" min="15" max="10080" value="${h(scheduler.intervalMinutes ?? 360)}"></label>
+      <label>最大リトライ<input name="maxRetries" type="number" min="0" max="5" value="${h(scheduler.maxRetries ?? 2)}"></label>
+      <label>リトライ間隔（分）<input name="retryDelayMinutes" type="number" min="1" max="1440" value="${h(scheduler.retryDelayMinutes ?? 10)}"></label>
+      <div><dt>Last run</dt><dd>${fmtDate(scheduler.lastRunAt)}</dd></div>
+      <div><dt>Next run</dt><dd>${fmtDate(scheduler.nextRunAt)}</dd></div>
+      <div class="form-actions wide"><button class="button button-primary" type="submit">Scheduler設定を保存</button></div>
+    </form>`
+
   document.querySelector('#forget-token').addEventListener('click', () => {
     sessionStorage.removeItem('bloggersAdminToken')
     flash('このブラウザに保持した管理トークンを削除しました。')
+  })
+  document.querySelector('#scheduler-form').addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(event.currentTarget)
+    try {
+      await request('/api/settings/scheduler', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          enabled: data.get('enabled') === 'true',
+          intervalMinutes: Number(data.get('intervalMinutes')),
+          maxRetries: Number(data.get('maxRetries')),
+          retryDelayMinutes: Number(data.get('retryDelayMinutes')),
+        }),
+      })
+      await refresh('Scheduler設定を保存しました。')
+    } catch (error) { flash(error.message, 'error') }
   })
 }
 
@@ -258,6 +329,11 @@ function bindBlogForm() {
             usernameEnv: data.get('usernameEnv'),
             passwordEnv: data.get('passwordEnv'),
           },
+          analytics: {
+            searchConsole: { siteUrl: data.get('gscSiteUrl'), accessTokenEnv: data.get('gscTokenEnv') },
+            ga4: { propertyId: data.get('ga4PropertyId'), accessTokenEnv: data.get('ga4TokenEnv') },
+            http: { endpoint: data.get('metricsEndpoint'), bearerTokenEnv: data.get('metricsTokenEnv') },
+          },
           autonomy: { level, allowCreate: true, allowUpdate: true, allowPublish: level >= 4 },
         }),
       })
@@ -284,7 +360,8 @@ document.addEventListener('click', async (event) => {
   if (testBlog) {
     try {
       const result = await request(`/api/blogs/${encodeURIComponent(testBlog.dataset.testBlog)}/test-connection`, { method: 'POST', body: '{}' })
-      flash(`接続OK: ${result.connector} / ${result.samplePosts}件を確認`, 'success')
+      const warnings = result.metrics?.warnings?.length || 0
+      flash(`接続OK: ${result.connector} / ${result.samplePosts}件${warnings ? ` / Analytics警告 ${warnings}` : ''}`, 'success')
     } catch (error) { flash(error.message, 'error') }
     return
   }
@@ -311,7 +388,7 @@ document.addEventListener('change', async (event) => {
 document.querySelector('#refresh-button').addEventListener('click', () => refresh('最新状態へ更新しました。'))
 cycleButton.addEventListener('click', async () => {
   try {
-    flash('全ブログのAI運用サイクルを実行しています…')
+    flash('Portfolio Brainの優先順位で全ブログを運用しています…')
     await request('/api/workflows/run', { method: 'POST', body: '{}' })
     await refresh('Portfolio運用サイクルが完了しました。')
   } catch (error) { flash(error.message, 'error') }
