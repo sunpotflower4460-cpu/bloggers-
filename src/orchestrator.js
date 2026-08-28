@@ -16,6 +16,7 @@ import { appendActivity } from './activity-store.js'
 import { assertAiBudget, budgetStatus, normalizeAiBudget, recordAiUsage } from './cost.js'
 import { createConnector } from './connectors.js'
 import { evaluateExperiments, recentLearnings, startExperiment } from './experiments.js'
+import { stableId } from './idempotency.js'
 import { appendIdea } from './idea-store.js'
 import { summarizeJobs } from './jobs.js'
 import { buildPortfolioPlan } from './portfolio.js'
@@ -38,6 +39,22 @@ function cleanString(value) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback
+}
+
+function cycleId(prefix, key, scope = prefix) {
+  return key ? stableId(prefix, `${key}:${scope}`) : createId(prefix)
+}
+
+function decisionFromIdea(idea) {
+  if (!idea) return null
+  return {
+    action: idea.action,
+    topic: idea.topic ?? '',
+    title: idea.title ?? '',
+    rationale: idea.rationale ?? '',
+    confidence: Number(idea.confidence ?? 0),
+    targetPostId: idea.targetPostId ?? null,
+  }
 }
 
 function sanitizeAnalytics(input = {}) {
@@ -204,9 +221,9 @@ function needsApproval(blog, action) {
   return level <= 1
 }
 
-async function createApproval(store, { blogId, articleId, action, reason, targetRemoteId = null }) {
+async function createApproval(store, { id = null, blogId, articleId, action, reason, targetRemoteId = null }) {
   const approval = {
-    id: createId('approval'),
+    id: id ?? createId('approval'),
     blogId,
     articleId: articleId ?? null,
     targetRemoteId,
@@ -216,8 +233,17 @@ async function createApproval(store, { blogId, articleId, action, reason, target
     createdAt: nowIso(),
     resolvedAt: null,
   }
-  await store.mutate((state) => state.approvals.unshift(approval))
-  return approval
+  let saved = null
+  await store.mutate((state) => {
+    const existing = state.approvals.find((item) => item.id === approval.id)
+    if (existing) {
+      saved = structuredClone(existing)
+      return
+    }
+    state.approvals.unshift(approval)
+    saved = structuredClone(approval)
+  })
+  return saved
 }
 
 async function startLiveExperiment(store, { blog, article, action, snapshot = null }) {
@@ -277,7 +303,7 @@ function articleSourceMetadata(sources) {
   return sources.map((item) => ({ id: item.id, label: item.label, url: item.url }))
 }
 
-async function createDraftArticle(store, { blog, idea, action, draft, remoteId = null, qualityContext }) {
+async function createDraftArticle(store, { id = null, blog, idea, action, draft, remoteId = null, qualityContext }) {
   const quality = evaluateContentQuality({
     body: draft.body,
     research: blog.research,
@@ -285,7 +311,7 @@ async function createDraftArticle(store, { blog, idea, action, draft, remoteId =
     internalLinks: qualityContext.internalLinks,
   })
   const article = {
-    id: createId('article'),
+    id: id ?? createId('article'),
     blogId: blog.id,
     ideaId: idea.id,
     action,
@@ -299,8 +325,17 @@ async function createDraftArticle(store, { blog, idea, action, draft, remoteId =
     createdAt: nowIso(),
     updatedAt: nowIso(),
   }
-  await store.mutate((state) => state.articles.unshift(article))
-  return article
+  let saved = null
+  await store.mutate((state) => {
+    const existing = state.articles.find((item) => item.id === article.id)
+    if (existing) {
+      saved = structuredClone(existing)
+      return
+    }
+    state.articles.unshift(article)
+    saved = structuredClone(article)
+  })
+  return saved
 }
 
 function qualityApprovalReason(article, fallback) {
@@ -327,130 +362,239 @@ export async function runBlogCycle(store, blogId, options = {}) {
   if (!blog) throw new Error('Blog not found')
   if (!blog.active) return { skipped: true, reason: 'blog-inactive' }
 
+  const cycleKey = cleanString(options.idempotencyKey)
+  const workflowId = cycleId('workflow', cycleKey, 'workflow')
+  const ideaId = cycleId('idea', cycleKey, 'idea')
+  const metricId = cycleId('metric', cycleKey, 'metric')
+  const articleId = cycleKey ? cycleId('article', cycleKey, 'article') : null
+  const priorWorkflow = cycleKey ? initial.workflows.find((item) => item.id === workflowId) ?? null : null
+  let idea = cycleKey ? initial.ideas.find((item) => item.id === ideaId) ?? null : null
+  let article = articleId ? initial.articles.find((item) => item.id === articleId) ?? null : null
+  let approval = priorWorkflow?.approvalId ? initial.approvals.find((item) => item.id === priorWorkflow.approvalId) ?? null : null
+  let experiment = priorWorkflow?.experimentId ? initial.experiments.find((item) => item.id === priorWorkflow.experimentId) ?? null : null
+  let snapshot = cycleKey ? initial.analytics.find((item) => item.id === metricId) ?? null : null
+  let decision = priorWorkflow?.decision ?? decisionFromIdea(idea)
+  let evaluation = { updated: [], completed: [] }
+  let published = article?.status === 'published' && article.remoteId ? { id: article.remoteId } : null
+
+  if (priorWorkflow?.status === 'completed') {
+    return {
+      workflowId,
+      resumed: true,
+      decision,
+      idea,
+      article,
+      approval,
+      published,
+      experiment,
+      evaluation,
+      metrics: snapshot,
+      aiCostUsd: Number(priorWorkflow.aiCostUsd || 0),
+      budgetExceeded: false,
+    }
+  }
+
   const provider = options.provider ?? createAIProvider()
   if (String(provider.name || '').startsWith('openai-compatible')) assertAiBudget(initial)
 
   const workflow = {
-    id: createId('workflow'),
+    ...(priorWorkflow ?? {}),
+    id: workflowId,
     blogId,
-    trigger: options.trigger || 'manual',
+    trigger: options.trigger || priorWorkflow?.trigger || 'manual',
+    idempotencyKey: cycleKey || null,
+    attempt: Number(priorWorkflow?.attempt || 0) + 1,
     status: 'running',
-    startedAt,
+    startedAt: priorWorkflow?.startedAt ?? startedAt,
     finishedAt: null,
-    decision: null,
-    experimentId: null,
-    aiCostUsd: 0,
+    decision,
+    metricId: snapshot?.id ?? priorWorkflow?.metricId ?? null,
+    ideaId: idea?.id ?? priorWorkflow?.ideaId ?? null,
+    articleId: article?.id ?? priorWorkflow?.articleId ?? null,
+    approvalId: approval?.id ?? priorWorkflow?.approvalId ?? null,
+    experimentId: experiment?.id ?? priorWorkflow?.experimentId ?? null,
+    publishedRemoteId: article?.remoteId ?? priorWorkflow?.publishedRemoteId ?? null,
+    aiCostUsd: Number(priorWorkflow?.aiCostUsd || 0),
     error: null,
   }
   await upsertWorkflow(store, workflow, { limit: 2000 })
 
-  let cycleCostUsd = 0
+  let cycleCostUsd = Number(priorWorkflow?.aiCostUsd || 0)
   try {
-    await recordActivity(store, { blogId, agent: 'observer', type: 'cycle.observe', message: `${blog.name} の状態観測を開始しました。`, detail: { trigger: workflow.trigger } })
+    await recordActivity(store, { blogId, agent: 'observer', type: 'cycle.observe', message: `${blog.name} の状態観測を開始しました。`, detail: { trigger: workflow.trigger, idempotencyKey: cycleKey || null, attempt: workflow.attempt } })
 
-    const connector = createConnector({ blog, store })
-    const [posts, cmsMetrics] = await Promise.all([connector.listPosts(30), connector.getMetrics()])
-    const metrics = await collectAnalytics(blog, cmsMetrics)
-    const snapshot = { id: createId('metric'), blogId, capturedAt: nowIso(), ...metrics }
-    await appendAnalyticsSnapshot(store, snapshot, { limit: 5000 })
-
-    if (metrics.warnings?.length) {
-      await recordActivity(store, { blogId, agent: 'observer', type: 'analytics.partial', message: `${metrics.warnings.length}個のAnalytics sourceを取得できませんでしたが、利用可能なデータで継続します。`, detail: metrics.warnings })
-    }
-
-    const evaluation = await evaluateExperiments(store, blogId, snapshot)
-    for (const completed of evaluation.completed) {
-      await recordActivity(store, { blogId, agent: 'learner', type: 'experiment.completed', message: `実験結果をBlog Memoryへ保存しました: ${completed.result} / ${completed.targetMetric} ${Number(completed.deltaPct || 0).toFixed(1)}%`, detail: { experimentId: completed.id } })
+    const connector = options.connector ?? createConnector({ blog, store })
+    let posts
+    let metrics
+    if (snapshot) {
+      posts = await connector.listPosts(30)
+      metrics = snapshot
+    } else {
+      const observed = await Promise.all([connector.listPosts(30), connector.getMetrics()])
+      posts = observed[0]
+      const cmsMetrics = observed[1]
+      metrics = await collectAnalytics(blog, cmsMetrics)
+      snapshot = { id: metricId, blogId, capturedAt: nowIso(), ...metrics }
+      await appendAnalyticsSnapshot(store, snapshot, { limit: 5000 })
+      workflow.metricId = snapshot.id
+      evaluation = await evaluateExperiments(store, blogId, snapshot)
+      for (const completed of evaluation.completed) {
+        await recordActivity(store, { blogId, agent: 'learner', type: 'experiment.completed', message: `実験結果をBlog Memoryへ保存しました: ${completed.result} / ${completed.targetMetric} ${Number(completed.deltaPct || 0).toFixed(1)}%`, detail: { experimentId: completed.id } })
+      }
+      if (metrics.warnings?.length) {
+        await recordActivity(store, { blogId, agent: 'observer', type: 'analytics.partial', message: `${metrics.warnings.length}個のAnalytics sourceを取得できませんでしたが、利用可能なデータで継続します。`, detail: metrics.warnings })
+      }
     }
 
     const stateWithLearning = await store.read()
     const learnings = recentLearnings(stateWithLearning, blogId)
-    const decided = await callProvider(provider, 'decide', { blog, posts, metrics, learnings }, store, { blogId, workflowId: workflow.id })
-    cycleCostUsd += decided.costUsd
-    const decision = decided.value
-    workflow.decision = decision
+    const reusableIdea = idea && (idea.action !== 'UPDATE' || idea.targetPostId)
+    if (reusableIdea) {
+      decision = decisionFromIdea(idea)
+      workflow.decision = decision
+      await recordActivity(store, { blogId, agent: 'director', type: 'cycle.decide.reused', message: `${decision.action}: ${decision.rationale}`, detail: { ideaId: idea.id, idempotencyKey: cycleKey, learningsUsed: learnings.length } })
+    } else {
+      const decided = await callProvider(provider, 'decide', { blog, posts, metrics, learnings }, store, { blogId, workflowId: workflow.id })
+      cycleCostUsd += decided.costUsd
+      decision = decided.value
+      workflow.decision = decision
+      await recordActivity(store, { blogId, agent: 'director', type: 'cycle.decide', message: `${decision.action}: ${decision.rationale}`, detail: { ...decision, learningsUsed: learnings.length } })
 
-    await recordActivity(store, { blogId, agent: 'director', type: 'cycle.decide', message: `${decision.action}: ${decision.rationale}`, detail: { ...decision, learningsUsed: learnings.length } })
-
-    const idea = {
-      id: createId('idea'),
-      blogId,
-      action: decision.action,
-      topic: decision.topic ?? '',
-      title: decision.title ?? '',
-      rationale: decision.rationale ?? '',
-      confidence: Number(decision.confidence ?? 0),
-      status: decision.action === 'WAIT' ? 'observing' : 'proposed',
-      createdAt: nowIso(),
+      idea = {
+        id: ideaId,
+        blogId,
+        action: decision.action,
+        topic: decision.topic ?? '',
+        title: decision.title ?? '',
+        rationale: decision.rationale ?? '',
+        confidence: Number(decision.confidence ?? 0),
+        targetPostId: decision.targetPostId ?? null,
+        status: decision.action === 'WAIT' ? 'observing' : 'proposed',
+        createdAt: nowIso(),
+      }
+      await appendIdea(store, idea, { limit: 3000 })
+      workflow.ideaId = idea.id
     }
-    await appendIdea(store, idea, { limit: 3000 })
 
-    let article = null
-    let approval = null
-    let published = null
-    let experiment = null
-    let qualityContext = { sources: [], internalLinks: [] }
-
+    let qualityContext = { sources: article?.sources ?? [], internalLinks: [] }
     const budgetSnapshot = await store.read()
     const budgetExceeded = cycleBudgetExceeded(budgetSnapshot, cycleCostUsd)
     if (budgetExceeded && decision.action !== 'WAIT') {
       await recordActivity(store, { blogId, agent: 'cost-governor', type: 'ai.budget.cycle-limit', message: `1サイクルのAI予算上限に達したため、追加生成を止めました。 $${cycleCostUsd.toFixed(4)}` })
-    } else if (['CREATE', 'UPDATE'].includes(decision.action)) {
+    } else if (['CREATE', 'UPDATE'].includes(decision.action) && !article) {
       qualityContext = await prepareQualityContext(store, blog, posts, decision)
     }
 
     if (!budgetExceeded && decision.action === 'CREATE') {
       if (canExecute(blog, 'CREATE') && Number(blog.autonomy.level) >= 2) {
-        const drafted = await callProvider(provider, 'draft', { blog, decision, learnings, ...qualityContext }, store, { blogId, workflowId: workflow.id })
-        cycleCostUsd += drafted.costUsd
-        article = await createDraftArticle(store, { blog, idea, action: 'CREATE', draft: drafted.value, qualityContext })
-        await recordActivity(store, { blogId, agent: 'writer', type: 'content.drafted', message: `「${article.title}」の下書きを作成しました。`, detail: { articleId: article.id, provider: article.provider, quality: article.quality } })
+        if (!article) {
+          const drafted = await callProvider(provider, 'draft', { blog, decision, learnings, ...qualityContext }, store, { blogId, workflowId: workflow.id })
+          cycleCostUsd += drafted.costUsd
+          article = await createDraftArticle(store, { id: articleId, blog, idea, action: 'CREATE', draft: drafted.value, qualityContext })
+          workflow.articleId = article.id
+          await recordActivity(store, { blogId, agent: 'writer', type: 'content.drafted', message: `「${article.title}」の下書きを作成しました。`, detail: { articleId: article.id, provider: article.provider, quality: article.quality } })
+        } else {
+          await recordActivity(store, { blogId, agent: 'writer', type: 'content.draft-reused', message: `再試行のため既存下書き「${article.title}」を再利用しました。`, detail: { articleId: article.id, idempotencyKey: cycleKey } })
+        }
 
-        const canAutoPublish = canExecute(blog, 'PUBLISH') && article.quality.ok
-        if (canAutoPublish) {
-          const remote = await connector.createDraft(article)
-          published = await connector.publishPost(remote.id)
-          await store.mutate((state) => {
-            const saved = state.articles.find((item) => item.id === article.id)
-            saved.status = 'published'
-            saved.remoteId = remote.id
-            saved.updatedAt = nowIso()
-          })
-          experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE', snapshot })
-          await recordActivity(store, { blogId, agent: 'publisher', type: 'content.published', message: `「${article.title}」を自動公開しました。`, detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null } })
-        } else if (needsApproval(blog, 'PUBLISH') || !article.quality.ok) {
-          approval = await createApproval(store, { blogId, articleId: article.id, action: 'PUBLISH', reason: qualityApprovalReason(article, '現在の自動運用レベルでは公開に人間の承認が必要です。') })
-          await recordActivity(store, { blogId, agent: 'editor', type: 'approval.requested', message: `「${article.title}」の公開承認を待っています。`, detail: { approvalId: approval.id, quality: article.quality } })
+        if (article.status === 'published') {
+          published = article.remoteId ? { id: article.remoteId } : null
+          experiment ??= initial.experiments.find((item) => item.articleId === article.id && item.action === 'CREATE') ?? null
+        } else {
+          const canAutoPublish = canExecute(blog, 'PUBLISH') && article.quality.ok
+          if (canAutoPublish) {
+            const remote = await connector.createDraft(article)
+            published = await connector.publishPost(remote.id)
+            const updatedAt = nowIso()
+            await store.mutate((state) => {
+              const saved = state.articles.find((item) => item.id === article.id)
+              if (!saved) throw new Error('Article disappeared before publish completion')
+              saved.status = 'published'
+              saved.remoteId = remote.id
+              saved.updatedAt = updatedAt
+            })
+            article = { ...article, status: 'published', remoteId: remote.id, updatedAt }
+            experiment = await startLiveExperiment(store, { blog, article, action: 'CREATE', snapshot })
+            await recordActivity(store, { blogId, agent: 'publisher', type: 'content.published', message: `「${article.title}」を自動公開しました。`, detail: { articleId: article.id, remoteId: remote.id, experimentId: experiment?.id ?? null } })
+          } else if (needsApproval(blog, 'PUBLISH') || !article.quality.ok) {
+            approval = await createApproval(store, {
+              id: cycleKey ? cycleId('approval', cycleKey, 'publish') : null,
+              blogId,
+              articleId: article.id,
+              action: 'PUBLISH',
+              reason: qualityApprovalReason(article, '現在の自動運用レベルでは公開に人間の承認が必要です。'),
+            })
+            workflow.approvalId = approval.id
+            if (approval.status === 'pending') {
+              await recordActivity(store, { blogId, agent: 'editor', type: 'approval.requested', message: `「${article.title}」の公開承認を待っています。`, detail: { approvalId: approval.id, quality: article.quality } })
+            }
+          }
         }
       } else {
-        approval = await createApproval(store, { blogId, action: 'CREATE', reason: '現在の自動運用レベルでは下書き作成前に承認が必要です。' })
+        approval = await createApproval(store, {
+          id: cycleKey ? cycleId('approval', cycleKey, 'create') : null,
+          blogId,
+          action: 'CREATE',
+          reason: '現在の自動運用レベルでは下書き作成前に承認が必要です。',
+        })
+        workflow.approvalId = approval.id
       }
     } else if (!budgetExceeded && decision.action === 'UPDATE') {
       const target = posts.find((post) => String(post.id) === String(decision.targetPostId))
       if (!target) throw new Error('UPDATE target post was not found')
 
       if (canExecute(blog, 'UPDATE') && Number(blog.autonomy.level) >= 2) {
-        const revised = await callProvider(provider, 'revise', { blog, decision, post: target, learnings, ...qualityContext }, store, { blogId, workflowId: workflow.id })
-        cycleCostUsd += revised.costUsd
-        article = await createDraftArticle(store, { blog, idea, action: 'UPDATE', draft: revised.value, remoteId: target.id, qualityContext })
-        await recordActivity(store, { blogId, agent: 'writer', type: 'content.revision-drafted', message: `「${article.title}」の改稿案を作成しました。`, detail: { articleId: article.id, remoteId: target.id, quality: article.quality } })
-
-        const canAutoUpdate = canExecute(blog, 'PUBLISH') && article.quality.ok
-        if (canAutoUpdate) {
-          published = await connector.updatePost(target.id, { title: article.title, content: article.body })
-          await store.mutate((state) => {
-            const saved = state.articles.find((item) => item.id === article.id)
-            saved.status = 'published'
-            saved.updatedAt = nowIso()
-          })
-          experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE', snapshot })
-          await recordActivity(store, { blogId, agent: 'publisher', type: 'content.updated', message: `「${article.title}」の改稿を自動反映しました。`, detail: { articleId: article.id, remoteId: target.id, experimentId: experiment?.id ?? null } })
+        if (!article) {
+          const revised = await callProvider(provider, 'revise', { blog, decision, post: target, learnings, ...qualityContext }, store, { blogId, workflowId: workflow.id })
+          cycleCostUsd += revised.costUsd
+          article = await createDraftArticle(store, { id: articleId, blog, idea, action: 'UPDATE', draft: revised.value, remoteId: target.id, qualityContext })
+          workflow.articleId = article.id
+          await recordActivity(store, { blogId, agent: 'writer', type: 'content.revision-drafted', message: `「${article.title}」の改稿案を作成しました。`, detail: { articleId: article.id, remoteId: target.id, quality: article.quality } })
         } else {
-          approval = await createApproval(store, { blogId, articleId: article.id, targetRemoteId: target.id, action: 'UPDATE', reason: qualityApprovalReason(article, '既存記事の改稿反映には人間の承認が必要です。') })
-          await recordActivity(store, { blogId, agent: 'editor', type: 'approval.requested', message: `「${article.title}」の改稿反映を待っています。`, detail: { approvalId: approval.id, remoteId: target.id, quality: article.quality } })
+          await recordActivity(store, { blogId, agent: 'writer', type: 'content.revision-reused', message: `再試行のため既存改稿案「${article.title}」を再利用しました。`, detail: { articleId: article.id, idempotencyKey: cycleKey } })
+        }
+
+        if (article.status === 'published') {
+          published = article.remoteId ? { id: article.remoteId } : { id: target.id }
+          experiment ??= initial.experiments.find((item) => item.articleId === article.id && item.action === 'UPDATE') ?? null
+        } else {
+          const canAutoUpdate = canExecute(blog, 'PUBLISH') && article.quality.ok
+          if (canAutoUpdate) {
+            published = await connector.updatePost(target.id, { title: article.title, content: article.body })
+            const updatedAt = nowIso()
+            await store.mutate((state) => {
+              const saved = state.articles.find((item) => item.id === article.id)
+              if (!saved) throw new Error('Article disappeared before update completion')
+              saved.status = 'published'
+              saved.updatedAt = updatedAt
+            })
+            article = { ...article, status: 'published', updatedAt }
+            experiment = await startLiveExperiment(store, { blog, article, action: 'UPDATE', snapshot })
+            await recordActivity(store, { blogId, agent: 'publisher', type: 'content.updated', message: `「${article.title}」の改稿を自動反映しました。`, detail: { articleId: article.id, remoteId: target.id, experimentId: experiment?.id ?? null } })
+          } else {
+            approval = await createApproval(store, {
+              id: cycleKey ? cycleId('approval', cycleKey, 'update') : null,
+              blogId,
+              articleId: article.id,
+              targetRemoteId: target.id,
+              action: 'UPDATE',
+              reason: qualityApprovalReason(article, '既存記事の改稿反映には人間の承認が必要です。'),
+            })
+            workflow.approvalId = approval.id
+            if (approval.status === 'pending') {
+              await recordActivity(store, { blogId, agent: 'editor', type: 'approval.requested', message: `「${article.title}」の改稿反映を待っています。`, detail: { approvalId: approval.id, remoteId: target.id, quality: article.quality } })
+            }
+          }
         }
       } else {
-        approval = await createApproval(store, { blogId, action: 'UPDATE', targetRemoteId: target.id, reason: '現在の自動運用レベルでは改稿案の作成前に承認が必要です。' })
+        approval = await createApproval(store, {
+          id: cycleKey ? cycleId('approval', cycleKey, 'update-before-draft') : null,
+          blogId,
+          action: 'UPDATE',
+          targetRemoteId: target.id,
+          reason: '現在の自動運用レベルでは改稿案の作成前に承認が必要です。',
+        })
+        workflow.approvalId = approval.id
       }
     }
 
@@ -458,11 +602,16 @@ export async function runBlogCycle(store, blogId, options = {}) {
     workflow.status = 'completed'
     workflow.finishedAt = finishedAt
     workflow.decision = decision
-    workflow.experimentId = experiment?.id ?? null
+    workflow.metricId = snapshot?.id ?? workflow.metricId
+    workflow.ideaId = idea?.id ?? workflow.ideaId
+    workflow.articleId = article?.id ?? workflow.articleId
+    workflow.approvalId = approval?.id ?? workflow.approvalId
+    workflow.experimentId = experiment?.id ?? workflow.experimentId
+    workflow.publishedRemoteId = article?.remoteId ?? published?.id ?? workflow.publishedRemoteId
     workflow.aiCostUsd = cycleCostUsd
     await upsertWorkflow(store, workflow, { limit: 2000 })
 
-    return { workflowId: workflow.id, decision, idea, article, approval, published, experiment, evaluation, metrics, aiCostUsd: cycleCostUsd, budgetExceeded }
+    return { workflowId: workflow.id, resumed: Boolean(cycleKey && priorWorkflow), decision, idea, article, approval, published, experiment, evaluation, metrics, aiCostUsd: cycleCostUsd, budgetExceeded }
   } catch (error) {
     if (typeof provider.drainUsage === 'function') {
       const dangling = provider.drainUsage()
@@ -470,10 +619,17 @@ export async function runBlogCycle(store, blogId, options = {}) {
     }
     workflow.status = 'failed'
     workflow.finishedAt = nowIso()
+    workflow.decision = decision ?? workflow.decision
+    workflow.metricId = snapshot?.id ?? workflow.metricId
+    workflow.ideaId = idea?.id ?? workflow.ideaId
+    workflow.articleId = article?.id ?? workflow.articleId
+    workflow.approvalId = approval?.id ?? workflow.approvalId
+    workflow.experimentId = experiment?.id ?? workflow.experimentId
+    workflow.publishedRemoteId = article?.remoteId ?? published?.id ?? workflow.publishedRemoteId
     workflow.aiCostUsd = cycleCostUsd
     workflow.error = error.message
     await upsertWorkflow(store, workflow, { limit: 2000 })
-    await recordActivity(store, { blogId, agent: 'system', type: 'cycle.failed', message: error.message, detail: { trigger: workflow.trigger } })
+    await recordActivity(store, { blogId, agent: 'system', type: 'cycle.failed', message: error.message, detail: { trigger: workflow.trigger, idempotencyKey: cycleKey || null } })
     throw error
   }
 }
@@ -488,7 +644,15 @@ export async function runPortfolioCycle(store, options = {}) {
   const results = []
   for (const blog of ordered) {
     try {
-      results.push({ blogId: blog.id, ok: true, result: await runBlogCycle(store, blog.id, { trigger: options.trigger || 'portfolio' }) })
+      const childKey = options.idempotencyKey ? `${options.idempotencyKey}:${blog.id}` : null
+      results.push({
+        blogId: blog.id,
+        ok: true,
+        result: await runBlogCycle(store, blog.id, {
+          trigger: options.trigger || 'portfolio',
+          idempotencyKey: childKey,
+        }),
+      })
     } catch (error) {
       results.push({ blogId: blog.id, ok: false, error: error.message })
     }
