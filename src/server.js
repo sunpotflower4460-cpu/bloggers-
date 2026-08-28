@@ -22,11 +22,16 @@ import {
   revokeAllOidcSessions,
   revokeOidcSession,
 } from './oidc-session-store.js'
-import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, testConnection, updateBlog } from './orchestrator.js'
+import { recordActivity, addBlog, setPaused, summarizeHQ, testConnection, updateBlog } from './orchestrator.js'
 import { buildPortfolioPlan } from './portfolio.js'
 import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
-import { configureScheduler, createScheduler } from './scheduler.js'
+import { createScheduler } from './scheduler.js'
 import { resolveSecret, secretResolverStatus } from './secrets.js'
+import {
+  configureAiBudgetVersioned,
+  configureSchedulerVersioned,
+  settingsVersions,
+} from './settings-control.js'
 import { createStore, storageMode } from './storage.js'
 import { publicSystemView } from './system-store.js'
 
@@ -235,6 +240,7 @@ async function api(request, response, url, auth) {
     const secretStatus = secretResolverStatus()
     return sendJson(response, 200, {
       system: publicSystemView(state.system),
+      systemVersions: await settingsVersions(store),
       ai: aiSettings(),
       aiUsage: auth.role === 'viewer' ? [] : state.aiUsage.slice(0, 100),
       runtime: {
@@ -258,7 +264,10 @@ async function api(request, response, url, auth) {
   }
 
   if (request.method === 'PATCH' && pathname === '/api/settings/scheduler') {
-    const schedulerConfig = await configureScheduler(store, await readJson(request))
+    const body = await readJson(request)
+    const expectedVersion = body.expectedVersion ?? null
+    delete body.expectedVersion
+    const schedulerConfig = await configureSchedulerVersioned(store, body, { expectedVersion })
     await recordActivity(store, {
       agent: 'human-control',
       type: 'scheduler.configured',
@@ -269,7 +278,10 @@ async function api(request, response, url, auth) {
   }
 
   if (request.method === 'PATCH' && pathname === '/api/settings/ai-budget') {
-    const budget = await configureAiBudget(store, await readJson(request))
+    const body = await readJson(request)
+    const expectedVersion = body.expectedVersion ?? null
+    delete body.expectedVersion
+    const budget = await configureAiBudgetVersioned(store, body, { expectedVersion })
     await recordActivity(store, { agent: 'human-control', type: 'ai.budget.configured', message: `AI月間予算を$${budget.monthlyUsd}に設定しました。`, detail: { ...budget, actor: auth?.principal?.id ?? null } })
     return sendJson(response, 200, { aiBudget: budget })
   }
