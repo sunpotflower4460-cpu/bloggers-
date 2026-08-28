@@ -1,5 +1,7 @@
 // @feature F-005
 // @feature F-011
+import { resolveSecret } from './secrets.js'
+
 function stripFence(text) {
   return String(text ?? '')
     .trim()
@@ -255,7 +257,7 @@ export class OpenAICompatibleProvider {
 
 export function createAIProvider() {
   const baseUrl = process.env.BLOGGERS_AI_BASE_URL
-  const apiKey = process.env.BLOGGERS_AI_API_KEY
+  const apiKey = resolveSecret('BLOGGERS_AI_API_KEY', { label: 'AI API key' })
   const fallback = process.env.BLOGGERS_AI_MODEL
   const models = {
     default: fallback,
