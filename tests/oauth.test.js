@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { clearGoogleTokenCache, resolveGoogleAccessToken } from '../src/oauth.js'
+import { initializeSecretResolver } from '../src/secrets.js'
 
 function saveEnv(names) {
   return Object.fromEntries(names.map((name) => [name, process.env[name]]))
@@ -50,6 +51,46 @@ test('Google OAuth refreshes once and keeps the access token in memory cache onl
   } finally {
     clearGoogleTokenCache()
     restoreEnv(before)
+  }
+})
+
+test('Google OAuth can refresh from managed secret references', async () => {
+  clearGoogleTokenCache()
+  await initializeSecretResolver({
+    env: { BLOGGERS_SECRET_PROVIDER_MODULE: 'google-managed-provider' },
+    importer: async () => ({
+      resolver: (key) => ({
+        'google/refresh': 'managed-refresh',
+        'google/client-id': 'managed-client-id',
+        'google/client-secret': 'managed-client-secret',
+      })[key] || null,
+    }),
+  })
+
+  let body = ''
+  try {
+    const result = await resolveGoogleAccessToken({
+      refreshTokenEnv: 'managed:google/refresh',
+      clientIdEnv: 'managed:google/client-id',
+      clientSecretEnv: 'managed:google/client-secret',
+    }, {
+      fetchImpl: async (_url, options) => {
+        body = String(options.body)
+        return new Response(JSON.stringify({ access_token: 'managed-access', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      },
+      now: () => Date.parse('2026-08-28T04:00:00.000Z'),
+    })
+    assert.equal(result.accessToken, 'managed-access')
+    assert.equal(result.source, 'refresh-token')
+    assert.match(body, /refresh_token=managed-refresh/)
+    assert.match(body, /client_id=managed-client-id/)
+    assert.match(body, /client_secret=managed-client-secret/)
+  } finally {
+    clearGoogleTokenCache()
+    await initializeSecretResolver({ env: {} })
   }
 })
 
