@@ -246,3 +246,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: Emergency Pause・AI Budget・Schedulerは更新頻度と責務が異なり、1つのglobal rowへ再集約すると正規化後も不要なlock競合が残るため。既存上位APIとの互換性を保ちつつ、最も高頻度なScheduler hot pathを独立させる。
 - 根拠（Q-ID）: Q-002
 - 却下した案: system全体を1つのPostgreSQL rowへ移す方式、または互換mutateでnormalizedな非system collectionの更新まで黙って許可する方式。
+
+### D-036
+- 日付: 2026-08-28
+- 決定: OIDCの署名済みSession Cookieは、login callback成功時にcookie fingerprintをserver-side registryへ登録し、API認証ではCookie署名/期限検証に加えてregistry上でactiveであることも必須とする。logoutは該当fingerprintを失効し、adminは全OIDC Sessionを一括失効できる。registry本体はpublic system viewからredactし、admin UI/APIには件数サマリだけを返す。
+- 理由: 盗難・複製された有効期限内Cookieを、Cookie削除だけではserver側から即時無効化できないため。またSession識別情報をviewer向けHQ/Settingsへ露出しないため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: HMAC署名Cookieだけを有効期限まで無条件に信用する、logout時にブラウザCookieだけ削除する、session fingerprint一覧を一般Settingsレスポンスへ含める方式。
