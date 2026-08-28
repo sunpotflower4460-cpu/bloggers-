@@ -127,3 +127,10 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: WordPress / Google / Analytics / RBAC / AIの秘密値をstate.jsonへ誤保存する経路を減らし、将来のmanaged Vault backendへ差し替えやすくするため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: 各moduleがprocess.envを個別に読み、設定APIから渡された値を無検証でJSON保存する方式。
+
+### D-019
+- 日付: 2026-08-28
+- 決定: Connector LayerへGhost Admin API adapterを追加し、Custom Integration Admin API keyから有効期間5分のHS256 JWTを都度生成する。Ghost更新・公開は毎回最新postを取得し、collision detection用のupdated_atを送る。
+- 理由: 複数ブログ統合OSをWordPress専用にせず、CMS差異をConnectorへ閉じ込めたままGhostも同じCREATE / UPDATE / PUBLISHパイプラインへ載せるため。
+- 根拠（Q-ID）: Q-002
+- 却下した案: Ghost専用の別運用フローを作る、Admin API keyをstate.jsonへ保存する、updated_atを再取得せず上書きする方式。
