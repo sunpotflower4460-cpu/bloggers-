@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { authorizeApiAccess, loadAuthConfig, requiredRole } from '../src/auth.js'
+import { initializeSecretResolver } from '../src/secrets.js'
 
 test('RBAC loads tokens by environment-variable reference without exposing raw config tokens', () => {
   const config = loadAuthConfig({
@@ -17,6 +18,32 @@ test('RBAC loads tokens by environment-variable reference without exposing raw c
   assert.equal(config.principals.length, 3)
   assert.equal(config.principals.find((item) => item.id === 'reader').tokenEnv, 'VIEWER_TOKEN')
   assert.equal(config.principals.find((item) => item.id === 'legacy-admin').role, 'admin')
+})
+
+test('RBAC may resolve admin and principal tokens through managed references', async () => {
+  await initializeSecretResolver({
+    env: { BLOGGERS_SECRET_PROVIDER_MODULE: 'auth-managed-provider' },
+    importer: async () => ({
+      resolver: (key) => ({
+        'bloggers/admin': 'managed-admin-secret',
+        'bloggers/editor': 'managed-editor-secret',
+      })[key] || null,
+    }),
+  })
+  try {
+    const config = loadAuthConfig({
+      BLOGGERS_ADMIN_TOKEN_REF: 'managed:bloggers/admin',
+      BLOGGERS_RBAC_JSON: JSON.stringify([
+        { id: 'managed-editor', role: 'editor', tokenEnv: 'managed:bloggers/editor' },
+      ]),
+    })
+    assert.equal(config.configured, true)
+    assert.equal(config.principals.length, 2)
+    assert.equal(authorizeApiAccess({ method: 'POST', pathname: '/api/workflows/run', token: 'managed-editor-secret', loopback: false, config }).ok, true)
+    assert.equal(authorizeApiAccess({ method: 'POST', pathname: '/api/system/resume', token: 'managed-admin-secret', loopback: false, config }).ok, true)
+  } finally {
+    await initializeSecretResolver({ env: {} })
+  }
 })
 
 test('viewer can read but cannot run workflows', () => {
