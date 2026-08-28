@@ -41,6 +41,12 @@ export function mergeSystemSections(sections = {}, fallback = DEFAULT_STATE.syst
   }
 }
 
+export function publicSystemView(system = {}) {
+  const visible = clone(system ?? {})
+  delete visible.oidcSessions
+  return visible
+}
+
 function assertSection(section) {
   if (!SYSTEM_SECTIONS.includes(section)) throw new Error(`Unsupported system section: ${section}`)
 }
