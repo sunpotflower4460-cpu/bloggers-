@@ -11,8 +11,16 @@ function accessToken(envName) {
   return String(process.env[envName] || '').trim() || null
 }
 
+function analyticsTimeoutMs() {
+  const value = Number(process.env.BLOGGERS_ANALYTICS_TIMEOUT_MS || 12_000)
+  return Math.max(1000, Math.min(120_000, Number.isFinite(value) ? value : 12_000))
+}
+
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options)
+  const response = await fetch(url, {
+    ...options,
+    signal: options.signal ?? AbortSignal.timeout(analyticsTimeoutMs()),
+  })
   const text = await response.text()
   let payload = null
   try {
