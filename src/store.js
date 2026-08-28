@@ -1,9 +1,10 @@
 // @feature F-012
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { assertPersistableSecretReferences } from './secrets.js'
 
 const DEFAULT_STATE = {
-  version: 4,
+  version: 5,
   system: {
     paused: false,
     pausedAt: null,
@@ -113,6 +114,7 @@ export class JsonStore {
   }
 
   async #write(state) {
+    assertPersistableSecretReferences(state)
     const temp = `${this.#path}.tmp`
     await writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
     await rename(temp, this.#path)
