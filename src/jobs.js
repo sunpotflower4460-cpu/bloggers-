@@ -1,7 +1,7 @@
 // @feature F-012
 import { createId, nowIso } from './store.js'
 
-const DEFAULT_LEASE_MS = 5 * 60 * 1000
+export const DEFAULT_JOB_LEASE_MS = 5 * 60 * 1000
 
 function dueAtMs(job) {
   return new Date(job.dueAt || job.createdAt || 0).getTime()
@@ -13,6 +13,17 @@ function leaseExpired(job, now) {
 
 function isActiveJob(job) {
   return job.status === 'queued' || job.status === 'running'
+}
+
+function leaseLostError(jobId) {
+  const error = new Error(`Job lease ownership was lost: ${jobId}`)
+  error.code = 'JOB_LEASE_LOST'
+  return error
+}
+
+function assertLeaseOwnership(job, owner) {
+  if (!owner) return
+  if (job.status !== 'running' || job.leaseOwner !== owner) throw leaseLostError(job.id)
 }
 
 export async function enqueueJob(store, input) {
@@ -27,6 +38,7 @@ export async function enqueueJob(store, input) {
     dueAt: input.dueAt ?? nowIso(),
     leaseUntil: null,
     leasedAt: null,
+    leaseOwner: null,
     finishedAt: null,
     lastError: null,
     failureReason: null,
@@ -47,7 +59,12 @@ export async function enqueueJob(store, input) {
   })
 }
 
-export async function leaseDueJobs(store, { limit = 10, leaseMs = DEFAULT_LEASE_MS, now = Date.now() } = {}) {
+export async function leaseDueJobs(store, {
+  limit = 10,
+  leaseMs = DEFAULT_JOB_LEASE_MS,
+  now = Date.now(),
+  owner = `process:${process.pid}`,
+} = {}) {
   return store.mutate((state) => {
     state.jobs ??= []
     for (const job of state.jobs) {
@@ -55,6 +72,7 @@ export async function leaseDueJobs(store, { limit = 10, leaseMs = DEFAULT_LEASE_
         job.status = 'queued'
         job.leaseUntil = null
         job.leasedAt = null
+        job.leaseOwner = null
         job.updatedAt = nowIso()
       }
     }
@@ -69,32 +87,58 @@ export async function leaseDueJobs(store, { limit = 10, leaseMs = DEFAULT_LEASE_
       job.attempt += 1
       job.leasedAt = new Date(now).toISOString()
       job.leaseUntil = new Date(now + leaseMs).toISOString()
+      job.leaseOwner = owner
       job.updatedAt = nowIso()
     }
     return structuredClone(due)
   })
 }
 
-export async function completeJob(store, jobId, result = null) {
+export async function renewJobLease(store, jobId, {
+  owner,
+  leaseMs = DEFAULT_JOB_LEASE_MS,
+  now = Date.now(),
+} = {}) {
+  if (!owner) throw new Error('Job lease renewal requires an owner')
   return store.mutate((state) => {
     const job = (state.jobs ?? []).find((item) => item.id === jobId)
     if (!job) throw new Error('Job not found')
+    assertLeaseOwnership(job, owner)
+    job.leaseUntil = new Date(now + leaseMs).toISOString()
+    job.updatedAt = nowIso()
+    return structuredClone(job)
+  })
+}
+
+export async function completeJob(store, jobId, result = null, { owner = null } = {}) {
+  return store.mutate((state) => {
+    const job = (state.jobs ?? []).find((item) => item.id === jobId)
+    if (!job) throw new Error('Job not found')
+    assertLeaseOwnership(job, owner)
     job.status = 'completed'
     job.result = result
     job.leaseUntil = null
+    job.leaseOwner = null
     job.finishedAt = nowIso()
     job.updatedAt = nowIso()
     return structuredClone(job)
   })
 }
 
-export async function failJob(store, jobId, error, { retryDelayMinutes = 10, now = Date.now(), retryable = true } = {}) {
+export async function failJob(store, jobId, error, {
+  retryDelayMinutes = 10,
+  now = Date.now(),
+  retryable = true,
+  owner = null,
+} = {}) {
   return store.mutate((state) => {
     const job = (state.jobs ?? []).find((item) => item.id === jobId)
     if (!job) throw new Error('Job not found')
+    assertLeaseOwnership(job, owner)
     job.lastError = error?.message ?? String(error)
     job.failureReason = error?.code ?? null
     job.leaseUntil = null
+    job.leaseOwner = null
     job.updatedAt = nowIso()
     if (retryable && job.attempt < job.maxAttempts) {
       job.status = 'queued'
