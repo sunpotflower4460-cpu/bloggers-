@@ -15,6 +15,13 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { authorizeApiAccess, loadAuthConfig, publicAuthSummary } from './auth.js'
 import { createOidcManager } from './oidc.js'
+import {
+  oidcSessionIsActive,
+  oidcSessionRegistrySummary,
+  registerOidcSession,
+  revokeAllOidcSessions,
+  revokeOidcSession,
+} from './oidc-session-store.js'
 import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, testConnection, updateBlog } from './orchestrator.js'
 import { buildPortfolioPlan } from './portfolio.js'
 import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
@@ -109,9 +116,27 @@ function isMutation(method) {
   return !['GET', 'HEAD', 'OPTIONS'].includes(String(method || 'GET').toUpperCase())
 }
 
-function authorizeApi(request, response, url) {
+async function oidcStatus(cookieHeader) {
+  const status = oidc.status(cookieHeader)
+  if (!status.authenticated || !status.principal) return { ...status, serverSideRevocation: true }
+  const active = await oidcSessionIsActive(store, { cookieHeader, principal: status.principal })
+  return {
+    ...status,
+    authenticated: active,
+    principal: active ? status.principal : null,
+    serverSideRevocation: true,
+  }
+}
+
+async function authorizeApi(request, response, url) {
   const token = presentedToken(request)
-  const sessionPrincipal = token ? null : oidc.sessionPrincipal(request.headers.cookie)
+  let sessionPrincipal = null
+  if (!token) {
+    const candidate = oidc.sessionPrincipal(request.headers.cookie)
+    if (candidate && await oidcSessionIsActive(store, { cookieHeader: request.headers.cookie, principal: candidate })) {
+      sessionPrincipal = candidate
+    }
+  }
   if (sessionPrincipal && isMutation(request.method) && !oidc.trustedMutationOrigin(request.headers.origin)) {
     sendJson(response, 403, { error: 'Session-authenticated mutations require an exact same-origin Origin header.' })
     return null
@@ -215,7 +240,8 @@ async function api(request, response, url, auth) {
       },
       security: {
         ...publicAuthSummary(authConfig),
-        oidc: oidc.status(request.headers.cookie),
+        oidc: await oidcStatus(request.headers.cookie),
+        oidcSessions: auth.role === 'admin' ? await oidcSessionRegistrySummary(store) : null,
         currentPrincipal: auth?.principal ? {
           id: auth.principal.id,
           name: auth.principal.name,
@@ -243,6 +269,17 @@ async function api(request, response, url, auth) {
     return sendJson(response, 200, { aiBudget: budget })
   }
 
+  if (request.method === 'POST' && pathname === '/api/settings/sessions/revoke-all') {
+    const result = await revokeAllOidcSessions(store, { actor: auth?.principal?.id ?? null })
+    await recordActivity(store, {
+      agent: 'human-control',
+      type: 'oidc.sessions.revoked-all',
+      message: `OIDC Sessionを${result.revokedCount}件失効しました。`,
+      detail: { ...result, actor: auth?.principal?.id ?? null },
+    })
+    return sendJson(response, 200, result)
+  }
+
   if (request.method === 'POST' && pathname === '/api/workflows/run') {
     const body = await readJson(request)
     const result = body.blogId
@@ -265,7 +302,7 @@ async function api(request, response, url, auth) {
 
 async function authRoute(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/auth/status') {
-    return sendJson(response, 200, oidc.status(request.headers.cookie))
+    return sendJson(response, 200, await oidcStatus(request.headers.cookie))
   }
 
   if (request.method === 'GET' && url.pathname === '/auth/login') {
@@ -278,6 +315,10 @@ async function authRoute(request, response, url) {
       query: Object.fromEntries(url.searchParams.entries()),
       cookieHeader: request.headers.cookie,
     })
+    await registerOidcSession(store, {
+      cookieHeader: completed.setCookies[0],
+      principal: completed.principal,
+    })
     return sendRedirect(response, completed.returnTo, completed.setCookies)
   }
 
@@ -286,7 +327,20 @@ async function authRoute(request, response, url) {
     if (!oidc.trustedMutationOrigin(request.headers.origin)) {
       return sendJson(response, 403, { error: 'OIDC logout requires an exact same-origin Origin header.' })
     }
-    return sendJson(response, 200, { ok: true }, { 'Set-Cookie': oidc.logoutCookies() })
+    const principal = oidc.sessionPrincipal(request.headers.cookie)
+    const revocation = await revokeOidcSession(store, {
+      cookieHeader: request.headers.cookie,
+      actor: principal?.id ?? null,
+    })
+    if (revocation.revoked) {
+      await recordActivity(store, {
+        agent: 'human-control',
+        type: 'oidc.session.revoked',
+        message: 'OIDC Sessionをserver-sideで失効してログアウトしました。',
+        detail: { actor: principal?.id ?? null },
+      })
+    }
+    return sendJson(response, 200, { ok: true, serverSideRevoked: revocation.revoked }, { 'Set-Cookie': oidc.logoutCookies() })
   }
 
   return sendJson(response, 404, { error: 'Authentication route not found' })
@@ -314,7 +368,7 @@ const server = createServer(async (request, response) => {
       })
     }
     if (url.pathname.startsWith('/api/')) {
-      const auth = authorizeApi(request, response, url)
+      const auth = await authorizeApi(request, response, url)
       if (!auth) return
       return await api(request, response, url, auth)
     }
