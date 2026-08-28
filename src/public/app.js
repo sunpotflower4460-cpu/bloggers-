@@ -1,12 +1,14 @@
 // @feature F-001
 // @feature F-002
 // @feature F-004
+// @feature F-005
 // @feature F-006
 // @feature F-007
 // @feature F-008
 // @feature F-009
 // @feature F-010
 // @feature F-011
+// @feature F-012
 const view = document.querySelector('#view')
 const title = document.querySelector('#view-title')
 const eyebrow = document.querySelector('#view-eyebrow')
@@ -20,10 +22,11 @@ let currentView = 'hq'
 let cache = {
   hq: null,
   blogs: [],
-  content: null,
+  content: { ideas: [], articles: [], approvals: [] },
   analytics: { analytics: [], experiments: [], memories: [] },
-  activity: null,
+  activity: { activities: [], workflows: [] },
   settings: null,
+  jobs: [],
 }
 
 const labels = {
@@ -49,6 +52,10 @@ function fmtDate(value) {
   return new Intl.DateTimeFormat('ja-JP', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
 }
 
+function usd(value) {
+  return `$${Number(value || 0).toFixed(4)}`
+}
+
 function authToken() {
   return sessionStorage.getItem('bloggersAdminToken') || ''
 }
@@ -57,7 +64,6 @@ async function request(path, options = {}, allowPrompt = true) {
   const token = authToken()
   const headers = { 'Content-Type': 'application/json', ...(options.headers ?? {}) }
   if (token) headers.Authorization = `Bearer ${token}`
-
   const response = await fetch(path, { ...options, headers })
   if (response.status === 401 && allowPrompt) {
     const entered = window.prompt('Bloggers HQ 管理トークンを入力してください')
@@ -66,7 +72,6 @@ async function request(path, options = {}, allowPrompt = true) {
       return request(path, options, false)
     }
   }
-
   const payload = await response.json()
   if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`)
   return payload
@@ -81,15 +86,16 @@ function flash(message, kind = 'info') {
 }
 
 async function loadAll() {
-  const [hq, blogs, content, analytics, activity, settings] = await Promise.all([
+  const [hq, blogs, content, analytics, activity, settings, jobs] = await Promise.all([
     request('/api/hq'),
     request('/api/blogs'),
     request('/api/content'),
     request('/api/analytics'),
     request('/api/activity?limit=120'),
     request('/api/settings'),
+    request('/api/jobs'),
   ])
-  cache = { hq, blogs: blogs.blogs, content, analytics, activity, settings }
+  cache = { hq, blogs: blogs.blogs, content, analytics, activity, settings, jobs: jobs.jobs }
   updateSystemState()
 }
 
@@ -117,15 +123,8 @@ function renderHQ() {
   const blogRows = data.blogs.length
     ? data.blogs.map((blog) => `
       <article class="blog-row">
-        <div>
-          <span class="connector-pill">${h(blog.connector)}</span>
-          <h3>${h(blog.name)}</h3>
-          <p>Autonomy L${h(blog.autonomyLevel)} · Score ${h(blog.portfolioScore ?? '—')} · 承認待ち ${h(blog.pendingApprovals)}</p>
-        </div>
-        <div class="blog-row-status">
-          <strong>${blog.latestMetric ? `${h(blog.latestMetric.clicks ?? blog.latestMetric.views ?? blog.latestMetric.posts ?? 0)} ${blog.latestMetric.clicks !== undefined ? 'clicks' : blog.latestMetric.views !== undefined ? 'views' : 'posts'}` : '未観測'}</strong>
-          <small>${blog.lastWorkflow ? fmtDate(blog.lastWorkflow.finishedAt || blog.lastWorkflow.startedAt) : 'サイクル未実行'}</small>
-        </div>
+        <div><span class="connector-pill">${h(blog.connector)}</span><h3>${h(blog.name)}</h3><p>Autonomy L${h(blog.autonomyLevel)} · Score ${h(blog.portfolioScore ?? '—')} · 承認待ち ${h(blog.pendingApprovals)}</p></div>
+        <div class="blog-row-status"><strong>${blog.latestMetric ? `${h(blog.latestMetric.clicks ?? blog.latestMetric.views ?? blog.latestMetric.posts ?? 0)} ${blog.latestMetric.clicks !== undefined ? 'clicks' : blog.latestMetric.views !== undefined ? 'views' : 'posts'}` : '未観測'}</strong><small>${blog.lastWorkflow ? fmtDate(blog.lastWorkflow.finishedAt || blog.lastWorkflow.startedAt) : 'サイクル未実行'}</small></div>
       </article>`).join('')
     : '<div class="empty-state"><strong>まだブログが接続されていません。</strong><p>Blogsから最初のBlog Brainを作成すると、AI編集部が動き始めます。</p></div>'
 
@@ -144,7 +143,8 @@ function renderHQ() {
       ${metric('Published', data.totals.published, 'Bloggers経由の公開')}
       ${metric('Approvals', data.totals.pendingApprovals, '人間の判断待ち')}
       ${metric('Experiments', data.totals.runningExperiments, '検証中')}
-      ${metric('Learnings', data.totals.learnings, 'Blog Memoryへ昇格')}
+      ${metric('AI Spend', usd(data.ai?.usage?.totalUsd), `${data.ai?.usage?.calls ?? 0} calls / ${h(data.ai?.usage?.month || '')}`)}
+      ${metric('Queued Jobs', data.totals.queuedJobs, `${data.totals.failedJobs} failed`)}
     </div>
     <div class="hero-panel"><div><p class="eyebrow">PORTFOLIO BRAIN</p><h2>いま全体で何をすべきか</h2></div><p class="hero-message">${h(data.portfolioRecommendation)}</p></div>
     <div class="two-column">
@@ -162,6 +162,12 @@ function analyticsLabels(blog) {
   return labels.length ? labels.join(' + ') : 'CMS only'
 }
 
+function researchLabel(blog) {
+  const count = blog.research?.sources?.length || 0
+  if (!count) return '未設定'
+  return `${count} sources${blog.research?.requireCitations ? ' / citations required' : ''}`
+}
+
 function renderBlogs() {
   const template = document.querySelector('#blog-form-template')
   const cards = cache.blogs.length
@@ -173,6 +179,7 @@ function renderBlogs() {
           <div><dt>Audience</dt><dd>${h(blog.brain.audience || '未設定')}</dd></div>
           <div><dt>Voice</dt><dd>${h(blog.brain.voice || '未設定')}</dd></div>
           <div><dt>Topics</dt><dd>${h((blog.brain.topics || []).join(' / ') || '未設定')}</dd></div>
+          <div><dt>Research</dt><dd>${h(researchLabel(blog))}</dd></div>
           <div><dt>Analytics</dt><dd>${h(analyticsLabels(blog))}</dd></div>
         </dl>
         <div class="inline-controls">
@@ -182,24 +189,31 @@ function renderBlogs() {
         </div>
       </article>`).join('')
     : '<div class="empty-state"><strong>Blog Brainはまだありません。</strong><p>下のフォームから最初のブログを登録してください。</p></div>'
-
   view.innerHTML = `<div class="stack">${cards}</div><div id="blog-form-host"></div>`
   document.querySelector('#blog-form-host').append(template.content.cloneNode(true))
   bindBlogForm()
+}
+
+function qualitySummary(article) {
+  if (!article.quality) return 'quality未評価'
+  if (!article.quality.ok) return `BLOCK · ${article.quality.blocking.join(' / ')}`
+  const notes = []
+  if (article.quality.citedSources?.length) notes.push(`${article.quality.citedSources.length} cited`)
+  if (article.quality.linkedInternalPosts?.length) notes.push(`${article.quality.linkedInternalPosts.length} internal links`)
+  if (article.quality.warnings?.length) notes.push(`${article.quality.warnings.length} warnings`)
+  return notes.length ? notes.join(' · ') : 'quality OK'
 }
 
 function renderContent() {
   const articles = cache.content.articles.length
     ? cache.content.articles.map((article) => {
         const blog = cache.blogs.find((item) => item.id === article.blogId)
-        return `<article class="content-row"><div><span class="state-badge">${h(article.status)}</span><h3>${h(article.title)}</h3><p>${h(blog?.name || 'Unknown blog')} · ${fmtDate(article.createdAt)}</p></div><small>${h(article.provider || '')}</small></article>`
+        return `<article class="content-row"><div><span class="state-badge">${h(article.status)}</span><h3>${h(article.title)}</h3><p>${h(blog?.name || 'Unknown blog')} · ${fmtDate(article.createdAt)}</p><small>${h(qualitySummary(article))}</small></div><small>${h(article.provider || '')}</small></article>`
       }).join('')
     : '<p class="muted">AIが作成した記事はまだありません。</p>'
-
   const ideas = cache.content.ideas.length
     ? cache.content.ideas.slice(0, 20).map((idea) => `<div class="idea-row"><strong>${h(idea.action)}</strong><div><h3>${h(idea.title || idea.topic)}</h3><p>${h(idea.rationale)}</p></div></div>`).join('')
     : '<p class="muted">企画はまだありません。</p>'
-
   view.innerHTML = `<div class="two-column"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">ARTICLES</p><h2>制作物</h2></div></div><div class="stack">${articles}</div></section><section class="panel"><div class="panel-heading"><div><p class="eyebrow">OPPORTUNITIES</p><h2>AIの企画判断</h2></div></div><div class="stack">${ideas}</div></section></div>`
 }
 
@@ -210,21 +224,15 @@ function renderAnalytics() {
         return `<tr><td>${h(blog?.name || item.blogId)}</td><td>${h(item.source)}</td><td>${h(item.clicks ?? '—')}</td><td>${h(item.views ?? '—')}</td><td>${h(item.impressions ?? '—')}</td><td>${h(item.posts ?? '—')}</td><td>${fmtDate(item.capturedAt)}</td></tr>`
       }).join('')
     : '<tr><td colspan="7">まだ観測データがありません。AI運用サイクルを実行してください。</td></tr>'
-
   const experiments = cache.analytics.experiments.length
     ? cache.analytics.experiments.slice(0, 20).map((item) => `<div class="idea-row"><strong>${h(item.status)}</strong><div><h3>${h(item.action)} · ${h(item.targetMetric)}</h3><p>${h(item.hypothesis)} / Δ ${h(Number(item.deltaPct || 0).toFixed(1))}% / obs ${h(item.observations)}</p></div></div>`).join('')
-    : '<p class="muted">まだ実験はありません。実行されたCREATE施策から自動で始まります。</p>'
-
+    : '<p class="muted">まだ実験はありません。公開・改稿が実際に反映されると自動で始まります。</p>'
   const memories = cache.analytics.memories.length
     ? cache.analytics.memories.slice(0, 20).map((item) => `<div class="activity-row"><time>${fmtDate(item.createdAt)}</time><span class="agent-name">learned</span><div><p>${h(item.text)}</p><small>confidence ${h(Number(item.confidence || 0).toFixed(2))}</small></div></div>`).join('')
     : '<p class="muted">確定した学習はまだありません。</p>'
-
   view.innerHTML = `
-    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">MEASUREMENT</p><h2>観測スナップショット</h2></div><p class="muted">CMS + Search Console + GA4 + Custom Metricsを同一スナップショットへ統合します。</p></div><div class="table-wrap"><table><thead><tr><th>Blog</th><th>Source</th><th>Clicks</th><th>Views</th><th>Impressions</th><th>Posts</th><th>Captured</th></tr></thead><tbody>${rows}</tbody></table></div></section>
-    <div class="two-column">
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">EXPERIMENTS</p><h2>仮説 → 検証</h2></div></div><div class="stack">${experiments}</div></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLOG MEMORY</p><h2>学習済み知見</h2></div></div><div class="timeline">${memories}</div></section>
-    </div>`
+    <section class="panel"><div class="panel-heading"><div><p class="eyebrow">MEASUREMENT</p><h2>観測スナップショット</h2></div><p class="muted">CMS + Search Console + GA4 + Custom Metricsを統合します。</p></div><div class="table-wrap"><table><thead><tr><th>Blog</th><th>Source</th><th>Clicks</th><th>Views</th><th>Impressions</th><th>Posts</th><th>Captured</th></tr></thead><tbody>${rows}</tbody></table></div></section>
+    <div class="two-column"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">EXPERIMENTS</p><h2>仮説 → 検証</h2></div></div><div class="stack">${experiments}</div></section><section class="panel"><div class="panel-heading"><div><p class="eyebrow">BLOG MEMORY</p><h2>学習済み知見</h2></div></div><div class="timeline">${memories}</div></section></div>`
 }
 
 function renderAI() {
@@ -234,26 +242,38 @@ function renderAI() {
         return `<div class="activity-row"><time>${fmtDate(item.createdAt)}</time><span class="agent-name">${h(item.agent)}</span><div><strong>${h(item.type)}</strong><p>${h(item.message)}</p>${blog ? `<small>${h(blog.name)}</small>` : ''}</div></div>`
       }).join('')
     : '<p class="muted">AI活動ログはまだありません。</p>'
-
-  view.innerHTML = `<section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div><p class="muted">Observer / Director / Writer / Publisher / Learner / Scheduler の判断を追跡します。</p></div><div class="timeline">${activities}</div></section>`
+  const jobs = cache.jobs.length
+    ? cache.jobs.slice(0, 30).map((job) => `<div class="activity-row"><time>${fmtDate(job.updatedAt)}</time><span class="agent-name">${h(job.status)}</span><div><strong>${h(job.type)}</strong><p>${h(job.blogId || 'portfolio')} · attempt ${h(job.attempt)}/${h(job.maxAttempts)}</p>${job.lastError ? `<small>${h(job.lastError)}</small>` : ''}</div></div>`).join('')
+    : '<p class="muted">Job Queueは空です。</p>'
+  view.innerHTML = `<div class="two-column"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>AI Activity</h2></div></div><div class="timeline">${activities}</div></section><section class="panel"><div class="panel-heading"><div><p class="eyebrow">DURABLE QUEUE</p><h2>Jobs</h2></div></div><div class="timeline">${jobs}</div></section></div>`
 }
 
 function renderSettings() {
   const settings = cache.settings
   const scheduler = settings.system.scheduler || {}
+  const budget = settings.system.aiBudget || {}
+  const usage = cache.hq.ai?.usage || {}
+  const models = settings.ai.models || {}
   view.innerHTML = `
     <div class="two-column">
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AI PROVIDER</p><h2>推論エンジン</h2></div></div><dl class="brain-grid"><div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div><div><dt>Model</dt><dd>${h(settings.ai.model || 'ローカルルールベース')}</dd></div></dl><p class="muted">BLOGGERS_AI_BASE_URL / BLOGGERS_AI_API_KEY / BLOGGERS_AI_MODEL を設定すると、OpenAI互換APIへ切り替わります。</p></section>
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyの範囲内でのみ動きます。'}</p><p class="muted">削除操作は常に禁止です。外部公開時はBLOGGERS_ADMIN_TOKENでAPIを保護します。</p><button class="button button-ghost" id="forget-token">この端末の管理トークンを忘れる</button></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">AI ROUTER</p><h2>推論エンジン</h2></div></div><dl class="brain-grid"><div><dt>Mode</dt><dd>${h(settings.ai.mode)}</dd></div><div><dt>Director</dt><dd>${h(models.decide || 'local')}</dd></div><div><dt>Writer</dt><dd>${h(models.write || 'local')}</dd></div><div><dt>Reviser</dt><dd>${h(models.revise || 'local')}</dd></div></dl><p class="muted">役割ごとに別モデルを指定できます。token usageはCost Governorへ記録されます。</p></section>
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SAFETY</p><h2>Human Control</h2></div></div><p>${settings.system.paused ? '現在、全AI操作は停止しています。' : 'AIは各ブログのAutonomy Policyと品質ゲートの範囲内でのみ動きます。'}</p><p class="muted">削除は禁止。外部公開時はBLOGGERS_ADMIN_TOKENでAPIを保護します。</p><button class="button button-ghost" id="forget-token">この端末の管理トークンを忘れる</button></section>
     </div>
+    <form class="panel form-grid" id="budget-form">
+      <div class="panel-heading"><div><p class="eyebrow">COST GOVERNOR</p><h2>AI予算</h2></div><p class="muted">今月 ${usd(usage.totalUsd)} / ${usage.calls || 0} calls。価格を環境変数へ設定すると概算費用を自動計算します。</p></div>
+      <label>状態<select name="enabled"><option value="true" ${budget.enabled === false ? '' : 'selected'}>ON</option><option value="false" ${budget.enabled === false ? 'selected' : ''}>OFF</option></select></label>
+      <label>月間上限 USD<input name="monthlyUsd" type="number" min="0" step="0.01" value="${h(budget.monthlyUsd ?? 20)}"></label>
+      <label>1サイクル上限 USD<input name="perCycleUsd" type="number" min="0" step="0.01" value="${h(budget.perCycleUsd ?? 2)}"></label>
+      <label>残して停止する額 USD<input name="reserveUsd" type="number" min="0" step="0.01" value="${h(budget.reserveUsd ?? 0.5)}"></label>
+      <div class="form-actions wide"><button class="button button-primary" type="submit">AI予算を保存</button></div>
+    </form>
     <form class="panel form-grid" id="scheduler-form">
-      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">プロセス起動中、Portfolio Brainの優先順位で自動サイクルを回します。</p></div>
+      <div class="panel-heading"><div><p class="eyebrow">AUTONOMOUS SCHEDULER</p><h2>定時自律運転</h2></div><p class="muted">永続Job Queueへ先に登録してから実行するため、途中終了してもlease切れ後に回収できます。</p></div>
       <label>状態<select name="enabled"><option value="false" ${scheduler.enabled ? '' : 'selected'}>OFF</option><option value="true" ${scheduler.enabled ? 'selected' : ''}>ON</option></select></label>
       <label>間隔（分）<input name="intervalMinutes" type="number" min="15" max="10080" value="${h(scheduler.intervalMinutes ?? 360)}"></label>
       <label>最大リトライ<input name="maxRetries" type="number" min="0" max="5" value="${h(scheduler.maxRetries ?? 2)}"></label>
       <label>リトライ間隔（分）<input name="retryDelayMinutes" type="number" min="1" max="1440" value="${h(scheduler.retryDelayMinutes ?? 10)}"></label>
-      <div><dt>Last run</dt><dd>${fmtDate(scheduler.lastRunAt)}</dd></div>
-      <div><dt>Next run</dt><dd>${fmtDate(scheduler.nextRunAt)}</dd></div>
+      <div><dt>Last run</dt><dd>${fmtDate(scheduler.lastRunAt)}</dd></div><div><dt>Next run</dt><dd>${fmtDate(scheduler.nextRunAt)}</dd></div>
       <div class="form-actions wide"><button class="button button-primary" type="submit">Scheduler設定を保存</button></div>
     </form>`
 
@@ -261,19 +281,19 @@ function renderSettings() {
     sessionStorage.removeItem('bloggersAdminToken')
     flash('このブラウザに保持した管理トークンを削除しました。')
   })
+  document.querySelector('#budget-form').addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const data = new FormData(event.currentTarget)
+    try {
+      await request('/api/settings/ai-budget', { method: 'PATCH', body: JSON.stringify({ enabled: data.get('enabled') === 'true', monthlyUsd: Number(data.get('monthlyUsd')), perCycleUsd: Number(data.get('perCycleUsd')), reserveUsd: Number(data.get('reserveUsd')) }) })
+      await refresh('AI予算を保存しました。')
+    } catch (error) { flash(error.message, 'error') }
+  })
   document.querySelector('#scheduler-form').addEventListener('submit', async (event) => {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
     try {
-      await request('/api/settings/scheduler', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          enabled: data.get('enabled') === 'true',
-          intervalMinutes: Number(data.get('intervalMinutes')),
-          maxRetries: Number(data.get('maxRetries')),
-          retryDelayMinutes: Number(data.get('retryDelayMinutes')),
-        }),
-      })
+      await request('/api/settings/scheduler', { method: 'PATCH', body: JSON.stringify({ enabled: data.get('enabled') === 'true', intervalMinutes: Number(data.get('intervalMinutes')), maxRetries: Number(data.get('maxRetries')), retryDelayMinutes: Number(data.get('retryDelayMinutes')) }) })
       await refresh('Scheduler設定を保存しました。')
     } catch (error) { flash(error.message, 'error') }
   })
@@ -297,9 +317,15 @@ async function refresh(message = null) {
     await loadAll()
     render()
     if (message) flash(message, 'success')
-  } catch (error) {
-    flash(error.message, 'error')
-  }
+  } catch (error) { flash(error.message, 'error') }
+}
+
+function parseResearchSources(value) {
+  return String(value || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+    const separator = line.indexOf('|')
+    if (separator === -1) return { label: '', url: line }
+    return { label: line.slice(0, separator).trim(), url: line.slice(separator + 1).trim() }
+  }).filter((item) => item.url)
 }
 
 function bindBlogForm() {
@@ -316,19 +342,9 @@ function bindBlogForm() {
         method: 'POST',
         body: JSON.stringify({
           name: data.get('name'),
-          brain: {
-            purpose: data.get('purpose'),
-            audience: data.get('audience'),
-            voice: data.get('voice'),
-            editorialPolicy: data.get('editorialPolicy'),
-            topics: String(data.get('topics') || '').split(',').map((item) => item.trim()).filter(Boolean),
-          },
-          connector: {
-            type: data.get('connectorType'),
-            endpoint: data.get('endpoint'),
-            usernameEnv: data.get('usernameEnv'),
-            passwordEnv: data.get('passwordEnv'),
-          },
+          brain: { purpose: data.get('purpose'), audience: data.get('audience'), voice: data.get('voice'), editorialPolicy: data.get('editorialPolicy'), topics: String(data.get('topics') || '').split(',').map((item) => item.trim()).filter(Boolean) },
+          connector: { type: data.get('connectorType'), endpoint: data.get('endpoint'), usernameEnv: data.get('usernameEnv'), passwordEnv: data.get('passwordEnv') },
+          research: { requireCitations: data.get('requireCitations') === 'true', sources: parseResearchSources(data.get('researchSources')) },
           analytics: {
             searchConsole: { siteUrl: data.get('gscSiteUrl'), accessTokenEnv: data.get('gscTokenEnv') },
             ga4: { propertyId: data.get('ga4PropertyId'), accessTokenEnv: data.get('ga4TokenEnv') },
@@ -345,7 +361,6 @@ function bindBlogForm() {
 document.addEventListener('click', async (event) => {
   const nav = event.target.closest('[data-view]')
   if (nav) { currentView = nav.dataset.view; render(); return }
-
   const runBlog = event.target.closest('[data-run-blog]')
   if (runBlog) {
     try {
@@ -355,7 +370,6 @@ document.addEventListener('click', async (event) => {
     } catch (error) { flash(error.message, 'error') }
     return
   }
-
   const testBlog = event.target.closest('[data-test-blog]')
   if (testBlog) {
     try {
@@ -365,7 +379,6 @@ document.addEventListener('click', async (event) => {
     } catch (error) { flash(error.message, 'error') }
     return
   }
-
   const approve = event.target.closest('[data-approve]')
   if (approve) {
     try {
