@@ -25,6 +25,7 @@ export async function enqueueJob(store, input) {
     leasedAt: null,
     finishedAt: null,
     lastError: null,
+    failureReason: null,
     createdAt: nowIso(),
     updatedAt: nowIso(),
   }
@@ -83,14 +84,15 @@ export async function completeJob(store, jobId, result = null) {
   })
 }
 
-export async function failJob(store, jobId, error, { retryDelayMinutes = 10, now = Date.now() } = {}) {
+export async function failJob(store, jobId, error, { retryDelayMinutes = 10, now = Date.now(), retryable = true } = {}) {
   return store.mutate((state) => {
     const job = (state.jobs ?? []).find((item) => item.id === jobId)
     if (!job) throw new Error('Job not found')
     job.lastError = error?.message ?? String(error)
+    job.failureReason = error?.code ?? null
     job.leaseUntil = null
     job.updatedAt = nowIso()
-    if (job.attempt < job.maxAttempts) {
+    if (retryable && job.attempt < job.maxAttempts) {
       job.status = 'queued'
       job.dueAt = new Date(now + retryDelayMinutes * 60 * 1000).toISOString()
     } else {
