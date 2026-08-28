@@ -33,10 +33,13 @@ export async function runPortfolioCycleExclusive(store, options = {}) {
   const results = []
   for (const item of plan.ranking) {
     try {
-      const result = await runBlogCycleExclusive(store, item.blogId, { trigger: options.trigger || 'portfolio' })
+      const result = await runBlogCycleExclusive(store, item.blogId, {
+        ...options,
+        trigger: options.trigger || 'portfolio',
+      })
       results.push({ blogId: item.blogId, ok: true, result })
     } catch (error) {
-      results.push({ blogId: item.blogId, ok: false, error: error.message })
+      results.push({ blogId: item.blogId, ok: false, error: error.message, code: error.code ?? null })
     }
   }
   return { skipped: false, plan, results }
