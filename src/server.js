@@ -18,6 +18,7 @@ import { recordActivity, addBlog, configureAiBudget, setPaused, summarizeHQ, tes
 import { buildPortfolioPlan } from './portfolio.js'
 import { resolveApprovalExclusive, runBlogCycleExclusive, runPortfolioCycleExclusive } from './runtime.js'
 import { configureScheduler, createScheduler } from './scheduler.js'
+import { resolveSecret, secretResolverStatus } from './secrets.js'
 import { createStore, storageMode } from './storage.js'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -114,7 +115,9 @@ function aiSettings() {
     write: process.env.BLOGGERS_AI_WRITE_MODEL || fallback,
     revise: process.env.BLOGGERS_AI_REVISE_MODEL || process.env.BLOGGERS_AI_WRITE_MODEL || fallback,
   }
-  const remote = Boolean(process.env.BLOGGERS_AI_BASE_URL && process.env.BLOGGERS_AI_API_KEY && models.decide && models.write && models.revise)
+  const apiKeyReference = process.env.BLOGGERS_AI_API_KEY_REF || 'BLOGGERS_AI_API_KEY'
+  const apiKeyConfigured = Boolean(resolveSecret(apiKeyReference, { label: 'AI API key' }))
+  const remote = Boolean(process.env.BLOGGERS_AI_BASE_URL && apiKeyConfigured && models.decide && models.write && models.revise)
   return { mode: remote ? 'remote-openai-compatible-routed' : 'local-rule-based', models }
 }
 
@@ -176,6 +179,7 @@ async function api(request, response, url, auth) {
 
   if (request.method === 'GET' && pathname === '/api/settings') {
     const state = await store.read()
+    const secretStatus = secretResolverStatus()
     return sendJson(response, 200, {
       system: state.system,
       ai: aiSettings(),
@@ -184,6 +188,7 @@ async function api(request, response, url, auth) {
         schedulerMode,
         storage: storageMode(),
         storageBackend: store.backend ?? 'unknown',
+        managedSecrets: secretStatus.managed,
       },
       security: {
         ...publicAuthSummary(authConfig),
@@ -241,6 +246,7 @@ const server = createServer(async (request, response) => {
         scheduler: state.system.scheduler,
         schedulerMode,
         storageBackend: store.backend ?? 'unknown',
+        managedSecrets: secretResolverStatus().managed,
         queuedJobs: state.jobs.filter((item) => item.status === 'queued').length,
         activeLocks: state.locks.length,
       })
