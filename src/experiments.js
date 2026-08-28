@@ -41,8 +41,20 @@ export async function startExperiment(store, { blog, decision, snapshot, ideaId 
     createdAt: nowIso(),
     completedAt: null,
   }
-  await store.mutate((state) => state.experiments.unshift(experiment))
-  return experiment
+
+  let saved = null
+  await store.mutate((state) => {
+    const existing = articleId
+      ? state.experiments.find((item) => item.articleId === articleId && item.action === decision.action)
+      : null
+    if (existing) {
+      saved = structuredClone(existing)
+      return
+    }
+    state.experiments.unshift(experiment)
+    saved = structuredClone(experiment)
+  })
+  return saved
 }
 
 export async function evaluateExperiments(store, blogId, snapshot) {
