@@ -4,6 +4,7 @@
 import { withExecutionContext } from './execution-context.js'
 import { completeJob, DEFAULT_JOB_LEASE_MS, enqueueJob, failJob, leaseDueJobs, renewJobLease } from './jobs.js'
 import { createId } from './store.js'
+import { mutateSystemSection } from './system-store.js'
 
 const MIN_INTERVAL_MINUTES = 15
 const MAX_INTERVAL_MINUTES = 7 * 24 * 60
@@ -42,14 +43,15 @@ function nextRunAt(intervalMinutes, from = Date.now()) {
 }
 
 export async function configureScheduler(store, changes = {}) {
-  return store.mutate((state) => {
-    const current = normalizeSchedulerConfig(state.system.scheduler)
+  return mutateSystemSection(store, 'scheduler', (scheduler) => {
+    const current = normalizeSchedulerConfig(scheduler)
     const next = normalizeSchedulerConfig({ ...current, ...changes })
     if (next.enabled && (!current.enabled || changes.intervalMinutes !== undefined || !next.nextRunAt)) {
       next.nextRunAt = nextRunAt(next.intervalMinutes)
     }
     if (!next.enabled) next.nextRunAt = null
-    state.system.scheduler = next
+    for (const key of Object.keys(scheduler)) delete scheduler[key]
+    Object.assign(scheduler, next)
     return structuredClone(next)
   })
 }
@@ -84,8 +86,8 @@ async function migrateLegacyRetries(store, config) {
       dedupeKey: `legacy-retry:${item.blogId}:${item.dueAt}`,
     })
   }
-  await store.mutate((state) => {
-    state.system.scheduler.retryQueue = []
+  await mutateSystemSection(store, 'scheduler', (scheduler) => {
+    scheduler.retryQueue = []
   })
 }
 
@@ -106,10 +108,10 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
       payload: { trigger: 'scheduler', scheduledFor },
       dedupeKey: `portfolio:${scheduledFor}`,
     })
-    await store.mutate((state) => {
-      const live = normalizeSchedulerConfig(state.system.scheduler)
-      state.system.scheduler.lastRunAt = new Date(now).toISOString()
-      state.system.scheduler.nextRunAt = nextRunAt(live.intervalMinutes, now)
+    await mutateSystemSection(store, 'scheduler', (scheduler) => {
+      const live = normalizeSchedulerConfig(scheduler)
+      scheduler.lastRunAt = new Date(now).toISOString()
+      scheduler.nextRunAt = nextRunAt(live.intervalMinutes, now)
     })
     return job
   }
@@ -249,9 +251,10 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
     if (jobs.length === 0) return { skipped: true, reason: 'not-due' }
 
     running = true
-    await store.mutate((state) => {
-      state.system.scheduler = normalizeSchedulerConfig(state.system.scheduler)
-      state.system.scheduler.running = true
+    await mutateSystemSection(store, 'scheduler', (scheduler) => {
+      const live = normalizeSchedulerConfig(scheduler)
+      for (const key of Object.keys(scheduler)) delete scheduler[key]
+      Object.assign(scheduler, live, { running: true })
     })
 
     try {
@@ -268,9 +271,10 @@ export function createScheduler({ store, runPortfolioCycle, runBlogCycle, record
       }
     } finally {
       running = false
-      await store.mutate((state) => {
-        state.system.scheduler = normalizeSchedulerConfig(state.system.scheduler)
-        state.system.scheduler.running = false
+      await mutateSystemSection(store, 'scheduler', (scheduler) => {
+        const live = normalizeSchedulerConfig(scheduler)
+        for (const key of Object.keys(scheduler)) delete scheduler[key]
+        Object.assign(scheduler, live, { running: false })
       })
     }
   }
