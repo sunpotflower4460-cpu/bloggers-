@@ -44,7 +44,7 @@
     <form class="panel form-grid" id="blog-form">
       <div class="panel-heading">
         <div><p class="eyebrow">CONNECT A BLOG</p><h2>ブログを追加</h2></div>
-        <p class="muted">資格情報そのものは保存せず、環境変数名だけを登録します。</p>
+        <p class="muted">資格情報そのものは保存せず、ENV_NAME / env:ENV_NAME / managed:logical/key のSecret Referenceだけを登録します。</p>
       </div>
 
       <label>ブログ名<input name="name" required placeholder="例: Music Journal"></label>
@@ -69,13 +69,13 @@
 
       <div class="wordpress-fields wide" hidden>
         <label>WordPress URL<input name="wpEndpoint" placeholder="https://example.com"></label>
-        <label>ユーザー名の環境変数<input name="usernameEnv" placeholder="WP_MUSIC_USER"></label>
-        <label>Application Passwordの環境変数<input name="passwordEnv" placeholder="WP_MUSIC_PASSWORD"></label>
+        <label>ユーザー名 Secret Reference<input name="usernameEnv" placeholder="WP_MUSIC_USER または managed:blogs/music/wp-user"></label>
+        <label>Application Password Secret Reference<input name="passwordEnv" placeholder="WP_MUSIC_PASSWORD または managed:blogs/music/wp-password"></label>
       </div>
 
       <div class="ghost-fields wide" hidden>
         <label>Ghost Admin URL<input name="ghostEndpoint" placeholder="https://your-site.ghost.io"></label>
-        <label>Admin API Keyの環境変数<input name="adminKeyEnv" placeholder="GHOST_MUSIC_ADMIN_KEY"></label>
+        <label>Admin API Key Secret Reference<input name="adminKeyEnv" placeholder="GHOST_MUSIC_ADMIN_KEY または managed:blogs/music/ghost-key"></label>
         <label>Admin API version<input name="ghostApiVersion" value="v6.0" placeholder="v6.0"></label>
       </div>
 
@@ -85,13 +85,13 @@
       </label>
       <label class="wide">Research Sources<textarea name="researchSources" rows="4" placeholder="OpenAI Docs | https://platform.openai.com/docs&#10;https://example.com/primary-source"></textarea></label>
 
-      <div class="wide"><p class="eyebrow">OPTIONAL ANALYTICS</p><p class="muted">未設定でもCMSの基本指標だけで動きます。アクセストークン自体は保存しません。</p></div>
+      <div class="wide"><p class="eyebrow">OPTIONAL ANALYTICS</p><p class="muted">未設定でもCMSの基本指標だけで動きます。アクセストークン自体は保存せずSecret Referenceだけを保持します。</p></div>
       <label>Search Console site URL<input name="gscSiteUrl" placeholder="https://example.com/"></label>
-      <label>GSC token環境変数<input name="gscTokenEnv" placeholder="GSC_ACCESS_TOKEN"></label>
+      <label>GSC token Secret Reference<input name="gscTokenEnv" placeholder="GSC_ACCESS_TOKEN または managed:google/gsc-token"></label>
       <label>GA4 Property ID<input name="ga4PropertyId" placeholder="123456789"></label>
-      <label>GA4 token環境変数<input name="ga4TokenEnv" placeholder="GA4_ACCESS_TOKEN"></label>
+      <label>GA4 token Secret Reference<input name="ga4TokenEnv" placeholder="GA4_ACCESS_TOKEN または managed:google/ga4-token"></label>
       <label>Custom Metrics URL<input name="metricsEndpoint" placeholder="https://metrics.example.com/blog"></label>
-      <label>Custom token環境変数<input name="metricsTokenEnv" placeholder="BLOG_METRICS_TOKEN"></label>
+      <label>Custom token Secret Reference<input name="metricsTokenEnv" placeholder="BLOG_METRICS_TOKEN または managed:metrics/blog-token"></label>
 
       <div class="form-actions wide"><button class="button button-primary" type="submit">Blog Brainを作成して接続</button></div>
     </form>
