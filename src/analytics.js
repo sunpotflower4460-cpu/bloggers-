@@ -1,14 +1,10 @@
 // @feature F-007
 import { resolveGoogleAccessToken } from './oauth.js'
+import { resolveSecret } from './secrets.js'
 
 function dateDaysAgo(days) {
   const date = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
   return date.toISOString().slice(0, 10)
-}
-
-function accessToken(envName) {
-  if (!envName) return null
-  return String(process.env[envName] || '').trim() || null
 }
 
 function analyticsTimeoutMs() {
@@ -98,7 +94,7 @@ async function ga4Metrics(config, sharedAuth) {
 
 async function httpMetrics(config) {
   if (!config?.endpoint) return null
-  const token = accessToken(config.bearerTokenEnv)
+  const token = resolveSecret(config.bearerTokenEnv, { label: 'Custom analytics bearer token' })
   const headers = { Accept: 'application/json' }
   if (token) headers.Authorization = `Bearer ${token}`
   const payload = await fetchJson(config.endpoint, { headers })
