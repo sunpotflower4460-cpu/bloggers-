@@ -225,3 +225,17 @@ ADR形式の追記ログ。新しい決定は末尾に追記する。
 - 理由: ExperimentだけcompletedになってLearning Memoryが保存されない中間状態を許さず、実測結果だけを次のDirector/Writer/Reviserへ戻す契約をDB境界でも維持するため。
 - 根拠（Q-ID）: Q-002
 - 却下した案: ExperimentとMemoryを独立tableへ分けた後、それぞれ別transactionで更新する方式。
+
+### D-033
+- 日付: 2026-08-28
+- 決定: PostgreSQLのExperiment/Memory transactionはblog単位のtransactional advisory lockを取得してから対象行を`FOR UPDATE`する。
+- 理由: 初回Experiment作成時は対象行がまだ0件でrow lockだけでは同時作成を直列化できず、同じarticle/actionのunique競合や不要なretryを生む可能性があるため。存在しない行も含めたblog単位のlearning critical sectionを作る。
+- 根拠（Q-ID）: Q-002
+- 却下した案: unique index違反を通常の競合制御として利用し、初回raceを例外retryへ任せる方式。
+
+### D-034
+- 日付: 2026-08-28
+- 決定: Blog Brainは`bloggers_blogs`へ正規化し、Blog設定変更とMemory Connectorのlocal `remotePosts`更新は対象Blog rowを`FOR UPDATE`するbackend-neutral Blog Store経由で行う。slugはDB unique制約でも保護する。
+- 理由: `blogs`がglobal state documentに残ると、別ブログ同士の独立した設定変更やMemory Connector検証まで同じ`bloggers_state`行をロックするため。Blog単位の隔離をDB transaction境界にも反映する。
+- 根拠（Q-ID）: Q-002
+- 却下した案: Blog Brainをglobal documentに残し続ける、またはMemory Connectorだけ例外的にglobal stateへ書き戻す方式。
