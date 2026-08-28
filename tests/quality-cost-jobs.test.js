@@ -42,13 +42,17 @@ test('private research endpoints are rejected before fetch', async () => {
   await assert.rejects(() => assertPublicHttpUrl('http://localhost/private'), /Local research/)
 })
 
-test('internal link candidates prefer posts related to the decision topic', () => {
-  const links = buildInternalLinkCandidates([
+test('internal link candidates prefer related posts and exclude the article being revised', () => {
+  const posts = [
     { id: 1, title: '録音の基本', content: 'マイクと録音', link: 'https://example.com/recording' },
-    { id: 2, title: '旅行記', content: '海へ行く', link: 'https://example.com/travel' },
-  ], { topic: '録音', title: '録音を始める' })
-  assert.equal(links.length, 1)
-  assert.equal(links[0].id, 1)
+    { id: 2, title: '録音マイク比較', content: '録音向けマイク', link: 'https://example.com/microphones' },
+    { id: 3, title: '旅行記', content: '海へ行く', link: 'https://example.com/travel' },
+  ]
+  const createLinks = buildInternalLinkCandidates(posts, { action: 'CREATE', topic: '録音', title: '録音を始める' })
+  assert.deepEqual(createLinks.map((item) => item.id), [1, 2])
+
+  const updateLinks = buildInternalLinkCandidates(posts, { action: 'UPDATE', targetPostId: 1, topic: '録音', title: '録音の基本' })
+  assert.deepEqual(updateLinks.map((item) => item.id), [2])
 })
 
 test('autopublish is downgraded to human approval when citations are required but unavailable', async () => {
