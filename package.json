@@ -1,14 +1,14 @@
 {
   "name": "bloggers-ai-editorial-os",
   "private": true,
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
     "worker": "node src/worker.js",
     "migrate:postgres": "node src/migrate-to-postgres.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/worker.js && node --check src/migrate-to-postgres.js && node --check src/storage.js && node --check src/postgres-store.js && node --check src/postgres-runtime-store.js && node --check src/auth.js && node --check src/oidc.js && node --check src/secrets.js && node --check src/store.js && node --check src/execution-context.js && node --check src/connectors.js && node --check src/oauth.js && node --check src/analytics.js && node --check src/analytics-store.js && node --check src/ai.js && node --check src/cost.js && node --check src/jobs.js && node --check src/leases.js && node --check src/runtime.js && node --check src/quality.js && node --check src/experiments.js && node --check src/portfolio.js && node --check src/orchestrator.js && node --check src/scheduler.js && node --check src/public/app.js",
+    "check": "node --check src/server.js && node --check src/worker.js && node --check src/migrate-to-postgres.js && node --check src/storage.js && node --check src/postgres-store.js && node --check src/postgres-runtime-store.js && node --check src/auth.js && node --check src/oidc.js && node --check src/secrets.js && node --check src/store.js && node --check src/execution-context.js && node --check src/connectors.js && node --check src/oauth.js && node --check src/analytics.js && node --check src/analytics-store.js && node --check src/activity-store.js && node --check src/ai.js && node --check src/cost.js && node --check src/jobs.js && node --check src/leases.js && node --check src/runtime.js && node --check src/quality.js && node --check src/experiments.js && node --check src/portfolio.js && node --check src/orchestrator.js && node --check src/scheduler.js && node --check src/public/app.js",
     "test": "node --test tests/*.test.js",
     "status": "node scripts/guard/status.mjs",
     "guard": "node scripts/guard/index.mjs",
