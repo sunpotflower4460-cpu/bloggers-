@@ -1,4 +1,5 @@
 // @feature F-003
+import { resolveSecret } from './secrets.js'
 import { createId, nowIso } from './store.js'
 
 function timeoutMs(name, fallback) {
@@ -93,8 +94,8 @@ class WordPressConnector extends BaseConnector {
     super(options)
     const config = this.blog.connector ?? {}
     this.endpoint = String(config.endpoint ?? '').replace(/\/$/, '')
-    this.username = process.env[config.usernameEnv ?? '']
-    this.password = process.env[config.passwordEnv ?? '']
+    this.username = resolveSecret(config.usernameEnv, { label: 'WordPress username' })
+    this.password = resolveSecret(config.passwordEnv, { label: 'WordPress Application Password' })
     if (!this.endpoint) throw new Error('WordPress endpoint is required')
   }
 
